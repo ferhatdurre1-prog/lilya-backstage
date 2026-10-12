@@ -18,6 +18,8 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS moves_pkey ON moves(pkey)`,
   `CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS guard(x INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS audit_pkg(pkg_id TEXT PRIMARY KEY, order_no TEXT, day TEXT, units INTEGER, revenue REAL, paid REAL, status TEXT, seen_at TEXT)`,
+  `CREATE INDEX IF NOT EXISTS audit_pkg_day ON audit_pkg(day)`,
   `CREATE TABLE IF NOT EXISTS order_fin(order_no TEXT PRIMARY KEY, revenue REAL, commission REAL, net REAL, cargo REAL, service REAL, updated_at TEXT)`,
   `INSERT OR IGNORE INTO settings(k,v) VALUES('rev','1'),('lock_sync','0'),('auto_accept','1'),('fee_cargo_ty','46.48'),('fee_cargo_t1','46.48'),('fee_cargo_t2','84.50'),('fee_cargo_t3','98.35'),('cargo_desi_mode','0'),('desi_table','[]'),('fee_service_ty','13.19'),('fee_cargo_sh','0'),('stopaj','1')`
 ];
@@ -64,6 +66,9 @@ async function init(env) {
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_rescan2'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_rescan2','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
+  }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_audit1'`).first())) {
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_audit1','1')`), setStmt(env, 'fin_backfill_day', '13'), setStmt(env, 'audit_state', 'running'), setStmt(env, 'audit_started', iso())]); } catch (e) {}
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
@@ -286,6 +291,23 @@ async function ty(env, path, params) {
   const e = new Error('Trendyol çok fazla istek uyarısı verdi (429). Biraz sonra tekrar denenecek.'); e.status = 429; throw e;
 }
 const TY_ORDER_DATE_SHIFT = 3 * 3600000;
+const trDay = (ms) => new Date(ms + TY_TZ).toISOString().slice(0, 10); // Türkiye takvim günü
+async function recordAuditPkgs(env, pkgs) {
+  const now = iso(), st = [];
+  for (const p of pkgs) {
+    const status = p.shipmentPackageStatus || p.status || '';
+    const cancelledPkg = TY_CANCELLED.has(status);
+    let units = 0, revenue = 0, paid = 0;
+    for (const l of (p.lines || [])) {
+      if (cancelledPkg || /cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))) continue;
+      units += Number(l.quantity) || 0; const f = tyLineFin(l); if (f) { revenue += f.revenue; paid += f.paid; }
+    }
+    const day = p.orderDate ? trDay(Number(p.orderDate) - TY_ORDER_DATE_SHIFT) : null;
+    st.push(env.DB.prepare('INSERT OR REPLACE INTO audit_pkg(pkg_id,order_no,day,units,revenue,paid,status,seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)')
+      .bind(String(p.shipmentPackageId || p.id), String(p.orderNumber), day, units, Math.round(revenue * 100) / 100, Math.round(paid * 100) / 100, status, now));
+  }
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+}
 const TY_CANCELLED = new Set(['Cancelled', 'UnSupplied', 'UnPacked']);
 function tyLineFin(l) {
   const q = Math.max(1, Number(l.quantity) || 1);
@@ -360,7 +382,7 @@ async function syncTrendyolOrders(env) {
   let shift = s.ty_shift !== null && s.ty_shift !== undefined ? Number(s.ty_shift) : null;
   if (list.length && shift === null) { shift = maxMod > now + 30 * 60000 ? 3 * 3600000 : 0; await setSetting(env, 'ty_shift', shift); }
   let stats = null;
-  if (list.length) stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' });
+  if (list.length) { stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' }); await recordAuditPkgs(env, list); }
   const desiSt = [];
   for (const p of list) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const ls = p.lines || []; if (d > 0 && ls.length === 1 && ls[0].stockCode) desiSt.push(env.DB.prepare('UPDATE products SET desi=?1 WHERE key=?2').bind(Math.round(d / Math.max(1, Number(ls[0].quantity) || 1) * 100) / 100, skuKey(ls[0].stockCode))); }
   for (let i = 0; i < desiSt.length; i += 90) await env.DB.batch(desiSt.slice(i, i + 90));
@@ -377,8 +399,10 @@ async function backfillTrendyolOrders(env) {
   const pkgs = await fetchOrderPackages(env, start, end);
   const latest = new Map(); for (const p of pkgs) { const k = String(p.shipmentPackageId || p.id); const o = latest.get(k); if (!o || (p.lastModifiedDate || 0) >= (o.lastModifiedDate || 0)) latest.set(k, p); }
   const stats = latest.size ? await ingestOrders(env, 'trendyol', tyPackagesToOrders([...latest.values()], shift), { source: 'trendyol' }) : null;
+  if (latest.size) await recordAuditPkgs(env, [...latest.values()]);
   if (stats && stats.recon.length) await processReconQueue(env, stats.recon, 0);
   await setSetting(env, 'fin_backfill_day', day - 1 > 0 ? String(day - 1) : 'done');
+  if (day - 1 <= 0 && (await getSetting(env, 'audit_state')) === 'running') await finishAudit(env);
   return { day, packages: latest.size, stats };
 }
 /* Trendyol bir paketi bozup yeni numarayla açtığında eski paket "aktif" kalabilir.
@@ -394,8 +418,16 @@ async function fetchOrderByNumber(env, no, dateIso) {
 }
 async function reconcileTrendyolOrder(env, no) {
   const ord = await env.DB.prepare('SELECT * FROM orders WHERE id=?1').bind(orderId('trendyol', no)).first();
-  if (!ord) return null;
+  if (!ord) {
+    const a = await env.DB.prepare('SELECT day FROM audit_pkg WHERE order_no=?1 LIMIT 1').bind(String(no)).first();
+    const pk = (await fetchOrderByNumber(env, no, a && a.day ? a.day + 'T12:00:00.000Z' : iso()) || []).filter(p => String(p.orderNumber) === String(no));
+    if (!pk.length) return { no, skipped: true };
+    await recordAuditPkgs(env, pk);
+    const st = await ingestOrders(env, 'trendyol', tyPackagesToOrders(pk, 0), { source: 'trendyol' });
+    return { no, added: true, sold: st.sold };
+  }
   const pkgs = (await fetchOrderByNumber(env, no, ord.date) || []).filter(p => String(p.orderNumber) === String(no));
+  if (pkgs.length) await recordAuditPkgs(env, pkgs);
   if (!pkgs.length) return { no, skipped: true };   // doğrulanamıyorsa dokunma
   const cur = new Set(pkgs.map(p => String(p.shipmentPackageId || p.id)));
   const conv = tyPackagesToOrders(pkgs, 0);
@@ -412,7 +444,41 @@ async function processReconQueue(env, add, max = 6) {
   for (const no of q.slice(0, max)) { try { done.push(await reconcileTrendyolOrder(env, no)); } catch (e) { if (e.status === 429) break; done.push({ no, error: String(e.message || e).slice(0, 80) }); } }
   const rest = q.slice(done.length);
   await setSetting(env, 'recon_q', JSON.stringify(rest.slice(0, 500)));
+  if (!rest.length && done.length && (await getSetting(env, 'audit_state')) === 'fixing') await setSetting(env, 'audit_state', 'done');
   return done.length ? done : null;
+}
+const AUDIT_FROM = '2026-10-01';
+async function auditCompare(env, from) {
+  from = from || AUDIT_FROM;
+  const fromIso = new Date(Date.parse(from + 'T00:00:00.000Z') - TY_TZ).toISOString();
+  const [a, o] = await env.DB.batch([
+    env.DB.prepare('SELECT * FROM audit_pkg WHERE day >= ?1').bind(from),
+    env.DB.prepare(`SELECT order_no, date, lines FROM orders WHERE channel='trendyol' AND date >= ?1`).bind(fromIso)]);
+  const ty = new Map(), bs = new Map();   // order_no → {day, units, revenue, paid, pkgs:Set}
+  for (const r of a.results) { const x = ty.get(r.order_no) || { day: r.day, units: 0, revenue: 0, paid: 0, pkgs: new Set() }; x.units += r.units; x.revenue += r.revenue; x.paid += r.paid; if (r.units > 0) x.pkgs.add(r.pkg_id); ty.set(r.order_no, x); }
+  for (const r of o.results) {
+    const day = trDay(Date.parse(r.date)); if (day < from) continue;
+    const x = { day, units: 0, revenue: 0, paid: 0, pkgs: new Set() };
+    for (const l of JSON.parse(r.lines || '[]')) { if (l.status === 'cancelled' || !l.qty) continue; x.units += l.qty; if (l.fin) { x.revenue += Number(l.fin.revenue) || 0; x.paid += Number(l.fin.paid ?? l.fin.revenue) || 0; } x.pkgs.add(String(l.key).split('|')[0]); }
+    bs.set(r.order_no, x);
+  }
+  const days = new Map(); const D = (d) => { let x = days.get(d); if (!x) { x = { day: d, tyOrders: 0, tyUnits: 0, tyRevenue: 0, tyPaid: 0, bsOrders: 0, bsUnits: 0, bsRevenue: 0, bsPaid: 0, diff: 0 }; days.set(d, x); } return x; };
+  for (const [, x] of ty) if (x.units > 0) { const d = D(x.day); d.tyOrders++; d.tyUnits += x.units; d.tyRevenue += x.revenue; d.tyPaid += x.paid; }
+  for (const [, x] of bs) if (x.units > 0) { const d = D(x.day); d.bsOrders++; d.bsUnits += x.units; d.bsRevenue += x.revenue; d.bsPaid += x.paid; }
+  const mism = [];
+  for (const no of new Set([...ty.keys(), ...bs.keys()])) {
+    const t = ty.get(no) || { units: 0, revenue: 0, day: (bs.get(no) || {}).day }, b = bs.get(no) || { units: 0, revenue: 0, day: t.day };
+    if (t.units !== b.units || Math.abs(t.revenue - b.revenue) > 0.05) { mism.push({ orderNo: no, day: t.day || b.day, tyUnits: t.units, bsUnits: b.units, tyRevenue: Math.round(t.revenue * 100) / 100, bsRevenue: Math.round(b.revenue * 100) / 100, reason: !b.units && t.units ? 'Backstage\'de eksik' : !t.units && b.units ? (ty.has(no) ? 'Trendyol\'da iptal' : 'Trendyol taramasında yok') : t.units !== b.units ? 'Adet farklı' : 'Tutar farklı' }); D(t.day || b.day).diff++; }
+  }
+  const R2 = (n) => Math.round(n * 100) / 100;
+  const list = [...days.values()].map(d => ({ ...d, tyRevenue: R2(d.tyRevenue), tyPaid: R2(d.tyPaid), bsRevenue: R2(d.bsRevenue), bsPaid: R2(d.bsPaid) })).sort((x, y) => y.day.localeCompare(x.day));
+  return { from, days: list, mismatches: mism.sort((x, y) => (y.day || '').localeCompare(x.day || '')).slice(0, 200), mismatchCount: mism.length };
+}
+async function finishAudit(env) {
+  const c = await auditCompare(env);
+  const nos = c.mismatches.filter(m => m.reason !== 'Trendyol taramasında yok' || m.bsUnits > 0).map(m => m.orderNo);
+  await processReconQueue(env, nos, 0);
+  await env.DB.batch([setStmt(env, 'audit_state', 'fixing'), setStmt(env, 'audit_at', iso()), setStmt(env, 'audit_found', String(c.mismatchCount))]);
 }
 async function queueSuspectOrders(env) {
   // tek seferlik tarama: son 14 günde birden fazla aktif paketi olan Trendyol siparişleri
@@ -921,6 +987,21 @@ async function api(req, env, path) {
     return json(await computeProfit(env, iso(from), iso(to)));
   }
   if (path === '/api/pricing') return json(await computePricing(env));
+  if (path === '/api/audit') {
+    const s = await getSettings(env, ['audit_state', 'audit_at', 'audit_started', 'audit_found', 'fin_backfill_day', 'recon_q']);
+    let q = 0; try { q = JSON.parse(s.recon_q || '[]').length; } catch (e) {}
+    return json({ state: s.audit_state || 'idle', at: s.audit_at, started: s.audit_started, found: Number(s.audit_found) || 0, scanDay: s.fin_backfill_day, queue: q, ...(await auditCompare(env, body.from)) });
+  }
+  if (path === '/api/audit/start') {
+    if (!tyConfigured(env)) return bad('Trendyol bilgileri girilmemiş.');
+    await env.DB.batch([setStmt(env, 'fin_backfill_day', '13'), setStmt(env, 'audit_state', 'running'), setStmt(env, 'audit_started', iso()), REV(env)]);
+    return json({ ok: true });
+  }
+  if (path === '/api/audit/fix') {
+    const c = await auditCompare(env); const nos = c.mismatches.map(m => m.orderNo);
+    await processReconQueue(env, nos, 0); await setSetting(env, 'audit_state', 'fixing');
+    return json({ ok: true, queued: nos.length });
+  }
   if (path === '/api/finance/sync') {
     if (!tyConfigured(env)) return bad('Trendyol bilgileri girilmemiş.');
     try { const r = await syncTrendyolFinance(env, true); await setSetting(env, 'fin_err', ''); return json({ ok: true, result: r }); }

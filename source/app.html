@@ -824,6 +824,7 @@ function viewProfit(){
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
   if (P.err) return h + `<div class="banner bad"><div>${esc(P.err)}</div></div>`;
   if (!D) return h + loading();
+  if (P.sub === 'audit') return h + viewAudit() + feesCard(fees);
   if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + feesCard(fees);
   const rows = [['Satış (ciro)', s.revenue, false], ['Komisyon', s.commission, true], ['Kargo', s.cargo, true], ['Hizmet bedeli', s.service, true], ['Stopaj', s.stopaj, true], ['Ürün maliyeti', s.cost, true]];
   const maxV = Math.max(1, s.revenue);
@@ -836,9 +837,10 @@ function viewProfit(){
   if (s.noDesiTable && s.desiOrders) h += `<div class="banner"><div><b>${fmtN(s.desiOrders)} paket 350 TL üzerinde</b>, ama desi ücretleri henüz bilinmiyor; bu paketlere 200–349,99 ücreti uygulandı. Trendyol kargo faturaları okununca desi ücretleri kendiliğinden öğrenilecek.</div></div>`;
   else if (s.desiMissing) h += `<div class="banner"><div><b>${fmtN(s.desiMissing)} paketin desisi Trendyol'dan gelmedi</b>; 1 desi sayıldı.</div></div>`;
   if (s.missingPrice) h += `<div class="banner"><div><b>${fmtN(s.missingPrice)} sipariş satırında satış tutarı yok.</b> Eski ya da elle girilmiş siparişler olabilir; bu satırların cirosu 0 sayıldı.</div></div>`;
-  const subs = [['products','Ürünler'],['orders','Siparişler'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi']];
+  const subs = [['products','Ürünler'],['orders','Siparişler'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi'],['audit','Kontrol']];
   h += `<div class="filters"><div class="chips">${subs.map(([id,l]) => `<button class="chip" data-act="psub" data-id="${id}" aria-pressed="${P.sub===id}">${l}${id==='losers'?` · ${D.products.filter(x=>x.profit<0).length}`:id==='winners'?` · ${D.products.filter(x=>x.profit>0).length}`:''}</button>`).join('')}</div></div>`;
   if (P.sub === 'pricing') h += viewPricing();
+  else if (P.sub === 'audit') h += viewAudit();
   else if (P.sub === 'orders') {
     h += `<div class="list">${D.orders.slice(0,300).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span></div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>${D.orders.length>300?'<p class="muted small">İlk 300 sipariş gösteriliyor.</p>':''}`;
   } else {
@@ -881,6 +883,31 @@ function viewPricing(){
     <td class="r num">${fmtTL(x.price)}</td><td class="r num">${x.minQty}</td><td class="r num">${fmtTL(x.order)}</td><td class="r num">${fmtTL(x.cargo)}</td>
     <td class="r num" style="${x.profit===null?'':profitCls(x.profit)}"><b>${x.profit===null?'<span style="color:var(--warn)">maliyet yok</span>':tlS(x.profit)}</b></td><td class="r num">${x.perUnit===null?'—':tlS(x.perUnit)}</td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
   <p class="muted small">Sipariş = fiyat × min. adet. Kargo bu tutara göre baremden ya da desiden hesaplanır; hizmet bedeli sipariş başına bir kez düşülür.</p>`;
+}
+async function loadAudit(){
+  const P = profS(); if (P.auditLoading) return; P.auditLoading = true;
+  try { P.audit = await api('/api/audit', {}); P.auditErr = ''; } catch(e) { P.auditErr = errText(e); }
+  P.auditLoading = false; P.auditAt = Date.now(); if (S.tab === 'profit' && P.sub === 'audit') render();
+}
+function viewAudit(){
+  const P = profS();
+  if ((!P.audit && !P.auditErr) || Date.now() - (P.auditAt||0) > 15000) setTimeout(loadAudit, 0);
+  if (P.auditErr) return `<div class="banner bad"><div>${esc(P.auditErr)}</div></div>`;
+  if (!P.audit) return loading();
+  const A = P.audit;
+  const stTxt = A.state === 'running' ? `Trendyol'dan 1 Ekim'den bugüne bütün siparişler okunuyor… (kalan ${esc(A.scanDay && A.scanDay !== 'done' ? A.scanDay : '0')} gün)` : A.state === 'fixing' ? `Farklar onarılıyor… (${fmtN(A.queue)} sipariş kaldı)` : A.state === 'done' ? `Son kontrol ${esc(ago(A.at))} tamamlandı.` : 'Henüz kontrol yapılmadı.';
+  const ok = A.mismatchCount === 0;
+  let h = `<div class="card"><div class="spread"><div><h3 style="margin:0 0 4px">Trendyol ile karşılaştırma</h3><p class="muted small" style="margin:0">${stTxt}</p></div>
+    <span class="pill ${ok?'p-good':'p-warn'}">${ok?'Bütün günler tutuyor':fmtN(A.mismatchCount)+' sipariş farklı'}</span></div>
+    <p class="muted small" style="margin:0">Her gün için Trendyol'dan okunan siparişlerle Backstage'deki kayıtlar karşılaştırılır. <b>Ciro</b> = ürün fiyatı − senin indirimin; <b>Müşteri ödedi</b> = Trendyol indirimleri de düşülmüş tutar. Panelindeki rakam hangisine uyuyorsa bana söyle; kâr hesabını ona göre ayarlarım.</p>
+    <div class="row"><button class="btn sm primary" data-act="audit-start" ${A.state==='running'?'disabled':''}>Yeniden tara ve onar</button>${A.mismatchCount && A.state!=='running' ? `<button class="btn sm" data-act="audit-fix">Farkları şimdi onar</button>` : ''}<button class="btn sm ghost" data-act="audit-reload">Yenile</button></div></div>`;
+  h += `<div class="tbl-wrap" style="margin-top:12px"><table class="t"><thead><tr><th>Gün</th><th class="r">Trendyol<br>sipariş · adet</th><th class="r">Trendyol<br>ciro</th><th class="r">Müşteri<br>ödedi</th><th class="r">Backstage<br>sipariş · adet</th><th class="r">Backstage<br>ciro</th><th></th></tr></thead><tbody>
+    ${A.days.map(d => { const same = d.diff === 0 && d.tyOrders === d.bsOrders && d.tyUnits === d.bsUnits; return `<tr><td class="num">${esc(new Date(d.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td>
+      <td class="r num">${fmtN(d.tyOrders)} · ${fmtN(d.tyUnits)}</td><td class="r num">${fmtTL(d.tyRevenue)}</td><td class="r num muted">${fmtTL(d.tyPaid)}</td>
+      <td class="r num" style="${same?'':'color:var(--bad)'}">${fmtN(d.bsOrders)} · ${fmtN(d.bsUnits)}</td><td class="r num" style="${Math.abs(d.tyRevenue-d.bsRevenue)>0.05?'color:var(--bad)':''}">${fmtTL(d.bsRevenue)}</td>
+      <td>${same && Math.abs(d.tyRevenue-d.bsRevenue)<=0.05 ? '<span class="pill p-good">✓</span>' : `<span class="pill p-warn">${fmtN(d.diff)}</span>`}</td></tr>`; }).join('')}</tbody></table></div>`;
+  if (A.mismatches.length) h += `<h3 style="margin:16px 0 8px">Farklı siparişler</h3><div class="list">${A.mismatches.slice(0,60).map(m => `<div class="item" style="grid-template-columns:1fr auto;cursor:default"><div class="main"><div class="ttl"><span class="mono">#${esc(m.orderNo)}</span></div><div class="meta"><span>${esc(m.day||'')}</span><span class="pill p-warn">${esc(m.reason)}</span></div></div><div class="end small num">Trendyol ${fmtN(m.tyUnits)} adet · ${fmtTL(m.tyRevenue)}<br>Backstage ${fmtN(m.bsUnits)} adet · ${fmtTL(m.bsRevenue)}</div></div>`).join('')}</div>`;
+  return h;
 }
 function feesCard(fees){
   const t = (S.sync && S.sync.trendyol) || {};
@@ -1287,6 +1314,9 @@ document.addEventListener('click', async e => {
     case 'psub': profS().sub = id; render(); break;
     case 'pfilter': profS().pfilter = id; render(); break;
     case 'pricing-reload': profS().pricing = null; render(); break;
+    case 'audit-reload': profS().auditAt = 0; render(); break;
+    case 'audit-start': try { await api('/api/audit/start', {}); toast('Tarama başladı; birkaç dakika sürer.'); } catch(e) { toast(errText(e), true); } profS().auditAt = 0; render(); break;
+    case 'audit-fix': try { const r = await api('/api/audit/fix', {}); toast(`${fmtN(r.queued)} sipariş onarım sırasına alındı.`); } catch(e) { toast(errText(e), true); } profS().auditAt = 0; render(); break;
     case 'psort': profS().sort = id; render(); break;
     case 'goto-missing-cost': S.vfilter = 'missing'; setTab('value'); break;
     case 'fin-sync': { S.syncing = true; render(); try { const r = await api('/api/finance/sync', {}); toast(`Trendyol kesintileri okundu: ${fmtN(r.result.orders)} sipariş.`); } catch(e) { toast(errText(e), true); } S.syncing = false; await refresh(true); profS().key = ''; render(); break; }
