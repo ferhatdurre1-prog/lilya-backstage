@@ -1,0 +1,6 @@
+# Uygulamaya girerken kullanacağın şifre (en az 8 karakter, kendin belirle)
+APP_PASSWORD=
+# Trendyol satıcı paneli → Hesap Bilgilerim → Entegrasyon Bilgileri
+TRENDYOL_SELLER_ID=
+TRENDYOL_API_KEY=
+TRENDYOL_API_SECRET=

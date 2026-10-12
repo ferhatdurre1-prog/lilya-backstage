@@ -1,0 +1,21 @@
+{
+  "name": "lilya-backstage",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lilya Home Backstage: SKU bazlı ortak stok, Trendyol otomatik eşitleme, sipariş, iade ve stok değeri.",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": { "description": "Stok, sipariş, iade ve hareket kayıtlarının tutulduğu veritabanı. Otomatik oluşturulur." },
+      "APP_PASSWORD": { "description": "Uygulamaya giriş şifren. Kendin belirle, en az 8 karakter." },
+      "TRENDYOL_SELLER_ID": { "description": "Trendyol Satıcı ID (Hesap Bilgilerim → Entegrasyon Bilgileri)." },
+      "TRENDYOL_API_KEY": { "description": "Trendyol API Key (Hesap Bilgilerim → Entegrasyon Bilgileri)." },
+      "TRENDYOL_API_SECRET": { "description": "Trendyol API Secret (Hesap Bilgilerim → Entegrasyon Bilgileri)." }
+    }
+  }
+}
