@@ -789,7 +789,7 @@ async function runCosts(){
 }
 
 /* ============ Kâr analizi ============ */
-const PERIODS = [['today','Bugün'],['yesterday','Dün'],['d7','Son 7 gün'],['week','Bu hafta (Pzt–)'],['month','Bu ay'],['lastmonth','Geçen ay'],['d30','Son 30 gün'],['custom','Tarih seç']];
+const PERIODS = [['today','Bugün'],['yesterday','Dün'],['month','Bu ay'],['d30','Son 30 gün'],['custom','Tarih seç']];
 function periodRange(id, cf, ct){
   const d0 = new Date(); d0.setHours(0,0,0,0);
   const add = (d, n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
@@ -803,7 +803,7 @@ function periodRange(id, cf, ct){
   const f = cf ? new Date(cf+'T00:00') : add(d0,-6), t = ct ? add(new Date(ct+'T00:00'),1) : add(d0,1);
   return [f, t];
 }
-function profS(){ if (!S.prof) { let p = 'month'; try { p = localStorage.getItem('lb-period') || 'month'; } catch(e){} S.prof = {period:p, sub:'products', sort:'profit', data:null, key:'', loading:false, cf:'', ct:''}; } return S.prof; }
+function profS(){ if (!S.prof) { let p = 'month'; try { p = localStorage.getItem('lb-period') || 'month'; } catch(e){} if (!PERIODS.some(x => x[0] === p)) p = 'month'; S.prof = {period:p, sub:'products', sort:'profit', data:null, key:'', loading:false, cf:'', ct:''}; } return S.prof; }
 async function loadProfit(force){
   const P = profS(); const [f, t] = periodRange(P.period, P.cf, P.ct);
   const key = f.toISOString() + '|' + t.toISOString() + '|' + S.rev;
