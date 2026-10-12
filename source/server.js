@@ -18,7 +18,8 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS moves_pkey ON moves(pkey)`,
   `CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS guard(x INTEGER NOT NULL)`,
-  `INSERT OR IGNORE INTO settings(k,v) VALUES('rev','1'),('lock_sync','0'),('auto_accept','1')`
+  `CREATE TABLE IF NOT EXISTS order_fin(order_no TEXT PRIMARY KEY, revenue REAL, commission REAL, net REAL, cargo REAL, service REAL, updated_at TEXT)`,
+  `INSERT OR IGNORE INTO settings(k,v) VALUES('rev','1'),('lock_sync','0'),('auto_accept','1'),('fee_cargo_ty','46.49'),('fee_service_ty','13.19'),('fee_cargo_sh','0'),('stopaj','1')`
 ];
 
 /* ---------- küçük yardımcılar ---------- */
@@ -114,6 +115,11 @@ function resolveLine(l, bmap) {
   return null;
 }
 /* orders: [{orderNo, date, lines:[{key, sku, barcode, name, image, qty, status:'active'|'cancelled'|'returned'}]}] */
+function cleanFin(fin, price, qty) {
+  if (fin && typeof fin === 'object' && Number.isFinite(Number(fin.revenue))) return { revenue: Number(fin.revenue), rate: fin.rate === null || fin.rate === undefined ? null : Number(fin.rate), vat: fin.vat === null || fin.vat === undefined ? null : Number(fin.vat) };
+  const p = numOrNull(price);
+  return p !== null && p >= 0 ? { revenue: Math.round(p * qty * 100) / 100, rate: null, vat: null } : null;
+}
 async function ingestOrders(env, channel, input, opts = {}) {
   const dry = !!opts.dry, source = opts.source || 'import';
   const start = opts.start !== undefined ? opts.start : await getSetting(env, 'started_at');
@@ -127,7 +133,7 @@ async function ingestOrders(env, channel, input, opts = {}) {
       const r = resolveLine(l, bmap); const qty = intOr(l.qty, 0);
       if (!r || qty <= 0) continue;
       const key = String(l.key || ('|' + r.pkey));
-      m.lines.set(key, { key, pkey: r.pkey, sku: r.sku || String(l.sku || l.barcode || '').trim(), name: String(l.name || '').trim(), image: String(l.image || ''), barcode: String(l.barcode || '').trim(), qty, status: ['cancelled', 'returned'].includes(l.status) ? l.status : 'active' });
+      m.lines.set(key, { key, pkey: r.pkey, sku: r.sku || String(l.sku || l.barcode || '').trim(), name: String(l.name || '').trim(), image: String(l.image || ''), barcode: String(l.barcode || '').trim(), qty, status: ['cancelled', 'returned'].includes(l.status) ? l.status : 'active', fin: cleanFin(l.fin, l.price, qty) });
     }
   }
   const orders = [...merged.values()].filter(o => o.lines.size);
@@ -157,14 +163,14 @@ async function ingestOrders(env, channel, input, opts = {}) {
         stmts.push(...changeQty(env, fl.pkey, d, { type, channel, ref: o.orderNo }));
         if (d < 0) s.sold += -d; else s.restored += d;
       }
-      const line = { key: fl.key, pkey: fl.pkey, sku: fl.sku, name: fl.name || (prev && prev.name) || (kp && kp.name) || fl.sku, qty: fl.qty, status: fl.status, applied: desired, ret: !!(prev && prev.ret) };
+      const line = { key: fl.key, pkey: fl.pkey, sku: fl.sku, name: fl.name || (prev && prev.name) || (kp && kp.name) || fl.sku, qty: fl.qty, status: fl.status, applied: desired, ret: !!(prev && prev.ret), fin: fl.fin || (prev && prev.fin) || null };
       if (fl.status === 'returned' && !line.ret) {
         line.ret = true; s.newReturns++;
         const rid = 'r-' + safeSeg(id + '~' + fl.key).slice(0, 180);
         stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO returns(id,channel,order_no,order_id,line_key,pkey,sku,name,qty,status,source,note,ext_status,created_at,decided_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'requested',?10,?11,'',?12,NULL)`)
           .bind(rid, channel, o.orderNo, id, fl.key, fl.pkey, fl.sku, line.name, fl.qty, source, 'Pazaryerinde iade olarak işaretlendi', iso()));
       }
-      if (!prev || prev.qty !== line.qty || prev.status !== line.status || prev.applied !== line.applied || !!prev.ret !== line.ret) changed = true;
+      if (!prev || prev.qty !== line.qty || prev.status !== line.status || prev.applied !== line.applied || !!prev.ret !== line.ret || JSON.stringify(prev.fin || null) !== JSON.stringify(line.fin)) changed = true;
       prevLines.set(fl.key, line);
     }
     if (!changed) return { changed: false, isNew, baseline, s };
@@ -252,6 +258,16 @@ async function ty(env, path, params) {
   const e = new Error('Trendyol çok fazla istek uyarısı verdi (429). Biraz sonra tekrar denenecek.'); e.status = 429; throw e;
 }
 const TY_CANCELLED = new Set(['Cancelled', 'UnSupplied', 'UnPacked']);
+function tyLineFin(l) {
+  const q = Math.max(1, Number(l.quantity) || 1);
+  const gross = Number(l.lineGrossAmount), unit = Number(l.lineUnitPrice), sd = Number(l.lineSellerDiscount) || 0;
+  if (!Number.isFinite(gross) && !Number.isFinite(unit)) return null;
+  // lineGrossAmount satır toplamı mı birim mi belirsiz: birim fiyat × adetten küçükse birim kabul et
+  const perUnit = Number.isFinite(gross) && Number.isFinite(unit) && q > 1 && gross < unit * q - 0.01;
+  const grossTotal = Number.isFinite(gross) ? (perUnit ? gross * q : gross) : unit * q;
+  const discTotal = perUnit ? sd * q : sd;
+  return { revenue: Math.round((grossTotal - discTotal) * 100) / 100, rate: Number.isFinite(Number(l.commission)) ? Number(l.commission) : null, vat: Number.isFinite(Number(l.vatRate)) ? Number(l.vatRate) : null };
+}
 function tyPackagesToOrders(pkgs, shift) {
   return pkgs.map(p => ({
     orderNo: String(p.orderNumber),
@@ -259,6 +275,7 @@ function tyPackagesToOrders(pkgs, shift) {
     lines: (p.lines || []).map(l => ({
       key: `${p.shipmentPackageId || p.id}|${l.lineId ?? l.id ?? l.barcode}`,
       sku: l.stockCode || l.merchantSku || '', barcode: l.barcode || '', name: l.productName || '', qty: l.quantity,
+      fin: tyLineFin(l),
       status: (TY_CANCELLED.has(p.shipmentPackageStatus || p.status) || /cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))) ? 'cancelled' : 'active'
     }))
   }));
@@ -314,6 +331,19 @@ async function syncTrendyolOrders(env) {
   if (list.length) stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' });
   await setSetting(env, 'ty_orders_hwm', String(list.length ? maxMod : (hwm || Math.min(end, now))));
   return { packages: list.length, stats };
+}
+async function backfillTrendyolOrders(env) {
+  const v = await getSetting(env, 'fin_backfill_day');
+  if (v === 'done') return null;
+  const now = Date.now(), shift = Number(await getSetting(env, 'ty_shift')) || 0;
+  let day = v === null ? 13 : Number(v);
+  if (!(day > 0)) { await setSetting(env, 'fin_backfill_day', 'done'); return null; }
+  const start = now - day * 86400000 + shift, end = Math.min(now + shift, start + 86400000 + 60000);
+  const pkgs = await fetchOrderPackages(env, start, end);
+  const latest = new Map(); for (const p of pkgs) { const k = String(p.shipmentPackageId || p.id); const o = latest.get(k); if (!o || (p.lastModifiedDate || 0) >= (o.lastModifiedDate || 0)) latest.set(k, p); }
+  const stats = latest.size ? await ingestOrders(env, 'trendyol', tyPackagesToOrders([...latest.values()], shift), { source: 'trendyol' }) : null;
+  await setSetting(env, 'fin_backfill_day', day - 1 > 0 ? String(day - 1) : 'done');
+  return { day, packages: latest.size, stats };
 }
 const CLAIM_OPEN = new Set(['Created', 'WaitingInAction', 'WaitingFraudCheck', 'InAnalysis', 'Unresolved']);
 async function syncTrendyolClaims(env) {
@@ -433,6 +463,54 @@ async function checkTrendyolPushBatch(env) {
   await env.DB.batch([setStmt(env, 'ty_push_fail', msg), setStmt(env, 'ty_push_batch', '')]);
   return { failed: failed.length };
 }
+const FIN_TYPES = 'Sale,Return,Discount,DiscountCancel,Coupon,CouponCancel,ManualRefund,ManualRefundCancel';
+async function syncTrendyolFinance(env, force) {
+  const s = await getSettings(env, ['fin_at', 'cargo_inv_done']);
+  if (!force && s.fin_at && Date.now() - Date.parse(s.fin_at) < 6 * 3600000) return null;
+  const sid = env.TRENDYOL_SELLER_ID, end = Date.now(), start = end - 15 * 86400000 + 60000;
+  const agg = new Map(); const get = (no) => { let a = agg.get(no); if (!a) { a = { revenue: 0, commission: 0, net: 0, cargo: null, service: null, sale: false }; agg.set(no, a); } return a; };
+  let rows = 0;
+  for (let page = 0; page < 20; page++) {
+    const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionTypes: FIN_TYPES, startDate: start, endDate: end, page, size: 1000, supplierId: sid });
+    for (const x of (r.content || [])) {
+      if (!x.orderNumber) continue; rows++;
+      const a = get(String(x.orderNumber)); const credit = Number(x.credit) || 0, debt = Number(x.debt) || 0;
+      a.revenue += credit - debt; if (x.transactionType === 'Sale') a.sale = true;
+      const ca = Math.abs(Number(x.commissionAmount) || 0);
+      if (x.transactionType === 'Sale' || x.transactionType === 'DiscountCancel' || x.transactionType === 'CouponCancel') a.commission += ca; else a.commission -= ca;
+      a.net += Number(x.sellerRevenue) || 0;
+    }
+    if (page + 1 >= (r.totalPages || 0)) break;
+  }
+  // Kargo ve platform hizmet bedeli faturaları
+  const done = new Set(JSON.parse(s.cargo_inv_done || '[]')); let cargoInv = 0;
+  try {
+    for (let page = 0; page < 5; page++) {
+      const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', startDate: start, endDate: end, page, size: 500, supplierId: sid });
+      for (const x of (r.content || [])) {
+        const t = String(x.transactionType || '') + ' ' + String(x.description || '');
+        if (/kargo/i.test(t) && x.id && !done.has(String(x.id))) {
+          for (let p2 = 0; p2 < 20; p2++) {
+            const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(x.id)}/items`, { page: p2, size: 500 });
+            for (const c of (it.content || [])) if (c.orderNumber) { const a = get(String(c.orderNumber)); a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
+            if (p2 + 1 >= (it.totalPages || 0)) break;
+          }
+          done.add(String(x.id)); cargoInv++;
+        } else if (/platform|hizmet/i.test(t) && x.orderNumber) { const a = get(String(x.orderNumber)); a.service = (a.service || 0) + Math.abs(Number(x.debt) || Number(x.credit) || 0); }
+      }
+      if (page + 1 >= (r.totalPages || 0)) break;
+    }
+  } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Kargo faturaları okunamadı: ' + String(e.message || e).slice(0, 200)); }
+  const now = iso(); const st = [];
+  for (const [no, a] of agg) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,revenue,commission,net,cargo,service,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)
+    ON CONFLICT(order_no) DO UPDATE SET revenue=CASE WHEN ?8 THEN excluded.revenue ELSE order_fin.revenue END, commission=CASE WHEN ?8 THEN excluded.commission ELSE order_fin.commission END, net=CASE WHEN ?8 THEN excluded.net ELSE order_fin.net END,
+      cargo=CASE WHEN excluded.cargo IS NULL THEN order_fin.cargo ELSE COALESCE(order_fin.cargo,0)+excluded.cargo END,
+      service=COALESCE(excluded.service, order_fin.service), updated_at=excluded.updated_at`)
+    .bind(no, a.sale ? Math.round(a.revenue * 100) / 100 : null, a.sale ? Math.round(a.commission * 100) / 100 : null, a.sale ? Math.round(a.net * 100) / 100 : null, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.service, now, a.sale ? 1 : 0));
+  st.push(setStmt(env, 'fin_at', now), setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))), REV(env));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  return { orders: agg.size, rows, cargoInvoices: cargoInv };
+}
 async function tryLock(env, ms) {
   const now = Date.now();
   const r = await env.DB.prepare(`UPDATE settings SET v=?1 WHERE k='lock_sync' AND CAST(v AS INTEGER) < ?2`).bind(String(now + ms), now).run();
@@ -451,6 +529,8 @@ async function pollOnce(env, full) {
     }
     result.orders = await syncTrendyolOrders(env);
     if (full) { result.claims = await syncTrendyolClaims(env); result.products = await syncTrendyolProducts(env); }
+    try { result.backfill = await backfillTrendyolOrders(env); } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Geçmiş sipariş taraması: ' + String(e.message || e).slice(0, 200)); }
+    if (full) { try { result.finance = await syncTrendyolFinance(env, false); if (result.finance) await setSetting(env, 'fin_err', ''); } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Cari hesap ekstresi: ' + String(e.message || e).slice(0, 200)); } }
     try { result.push = await pushTrendyolStock(env); if (full) result.pushCheck = await checkTrendyolPushBatch(env); }
     catch (e) { await setSetting(env, 'ty_push_err', iso() + ' · ' + String(e.message || e).slice(0, 250)); }
     await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', ''), setStmt(env, 'ty_ms', Date.now() - t)]);
@@ -493,14 +573,84 @@ async function loginCookie(env) {
   return `lb=${encodeURIComponent(v)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${120 * 86400}`;
 }
 
+/* ---------- kâr hesabı ---------- */
+const MARKETPLACES = new Set(['trendyol', 'hepsiburada', 'temu']);
+async function computeProfit(env, from, to) {
+  const s = await getSettings(env, ['fee_cargo_ty', 'fee_service_ty', 'fee_cargo_sh', 'stopaj']);
+  const fee = { cargoTy: Number(s.fee_cargo_ty) || 0, serviceTy: Number(s.fee_service_ty) || 0, cargoSh: Number(s.fee_cargo_sh) || 0, stopaj: Number(s.stopaj) || 0 };
+  const [o, p, r] = await env.DB.batch([
+    env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
+    env.DB.prepare('SELECT key, sku, name, image, cost, barcode FROM products'),
+    env.DB.prepare(`SELECT order_id, pkey, SUM(qty) q FROM returns WHERE status='accepted' AND order_id<>'' GROUP BY order_id, pkey`)]);
+  const prods = new Map(p.results.map(x => [x.key, x]));
+  const rets = new Map(r.results.map(x => [x.order_id + '|' + x.pkey, x.q]));
+  const orderNos = o.results.filter(x => x.channel === 'trendyol').map(x => x.order_no);
+  const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x]));
+  const R2 = (n) => Math.round(n * 100) / 100;
+  const blank = () => ({ revenue: 0, commission: 0, cargo: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0 });
+  const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
+  const sum = { ...blank(), orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0 };
+  const byProduct = new Map(), byOrder = [], missingCostSkus = new Set();
+  for (const ord of o.results) {
+    const lines = JSON.parse(ord.lines || '[]').filter(l => l.status !== 'cancelled');
+    if (!lines.length) continue;
+    const ch = ord.channel, mk = MARKETPLACES.has(ch);
+    const rows = [];
+    for (const l of lines) {
+      const retQ = rets.get(ord.id + '|' + l.pkey) || 0; const qty = Math.max(0, l.qty - retQ);
+      const pr = prods.get(l.pkey); const unitCost = pr && pr.cost !== null && pr.cost !== undefined ? pr.cost : null;
+      const f = l.fin; const unitRev = f && Number.isFinite(f.revenue) && l.qty ? f.revenue / l.qty : null;
+      if (unitRev === null) sum.missingPrice++;
+      if (unitCost === null && qty) { sum.missingCost++; missingCostSkus.add(l.sku); }
+      const revenue = (unitRev || 0) * qty;
+      const commission = f && f.rate !== null && f.rate !== undefined ? revenue * f.rate / 100 : 0;
+      const vat = f && f.vat !== null && f.vat !== undefined ? f.vat : 20;
+      const stopaj = mk ? revenue / (1 + vat / 100) * fee.stopaj / 100 : 0;
+      rows.push({ l, qty, revenue, commission, stopaj, cost: (unitCost || 0) * qty, pr });
+    }
+    const pkgs = new Set(lines.filter(l => l.qty).map(l => String(l.key).split('|')[0] || 'x'));
+    let cargo = ch === 'trendyol' ? fee.cargoTy * pkgs.size : ch === 'shopify' ? fee.cargoSh : 0;
+    let service = ch === 'trendyol' ? fee.serviceTy * pkgs.size : 0;
+    const est = rows.reduce((a, x) => a + x.revenue, 0);
+    let revenue = est, commission = rows.reduce((a, x) => a + x.commission, 0); let actual = false;
+    const fa = ch === 'trendyol' ? fin.get(ord.order_no) : null;
+    if (fa) {
+      if (fa.revenue !== null) { revenue = fa.revenue; commission = fa.commission || 0; actual = true; }
+      if (fa.cargo !== null) { cargo = fa.cargo; actual = true; }
+      if (fa.service !== null) service = fa.service;
+    }
+    const stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0);
+    const cost = rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
+    const profit = revenue - commission - cargo - service - stopaj - cost;
+    const oRes = { revenue, commission, cargo, service, stopaj, cost, profit, units };
+    add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++;
+    byOrder.push({ id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    // sipariş kesintilerini ürünlere satış payına göre dağıt
+    const base = est || rows.reduce((a, x) => a + x.qty, 0) || 1;
+    for (const x of rows) {
+      const share = est ? x.revenue / est : x.qty / base;
+      const k = x.l.pkey; let bp = byProduct.get(k);
+      if (!bp) { bp = { key: k, sku: x.l.sku, name: (x.pr && x.pr.name) || x.l.name, image: x.pr ? x.pr.image : '', costKnown: !!(x.pr && x.pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(k, bp); }
+      const lr = revenue * share, lc = commission * share, ls = stopaj * share;
+      const res = { revenue: lr, commission: lc, cargo: cargo * share, service: service * share, stopaj: ls, cost: x.cost, units: x.qty };
+      res.profit = lr - lc - res.cargo - res.service - ls - x.cost;
+      add(bp, res); bp.orders++;
+    }
+  }
+  const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
+  const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
+  round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
+  return { from, to, fees: fee, summary: sum, products, orders: byOrder.slice(0, 500), missingCostSkus: [...missingCostSkus].slice(0, 30) };
+}
+
 /* ---------- API ---------- */
 function mapOrder(r) { return { id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
 function mapProduct(r) { return { id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '' } }, now: iso(), version: APP_VERSION };
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_ty', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day']);
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoTy: Number(s.fee_cargo_ty ?? 46.49), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
 }
 async function api(req, env, path) {
   const method = req.method;
@@ -553,7 +703,7 @@ async function api(req, env, path) {
   if (path === '/api/orders/manual') {
     const channel = String(body.channel || 'manuel'), orderNo = String(body.orderNo || '').trim();
     if (!orderNo) return bad('Sipariş numarası gerekli.');
-    const lines = (body.lines || []).filter(l => String(l.sku || '').trim() && intOr(l.qty, 0) > 0).map(l => ({ sku: String(l.sku).trim(), qty: intOr(l.qty, 0), status: 'active', name: '' }));
+    const lines = (body.lines || []).filter(l => String(l.sku || '').trim() && intOr(l.qty, 0) > 0).map(l => ({ sku: String(l.sku).trim(), qty: intOr(l.qty, 0), status: 'active', name: '', price: numOrNull(l.price) }));
     if (!lines.length) return bad('En az bir kalem gerekli.');
     const known = new Map((await selectIn(env, 'SELECT key, name FROM products', 'key', lines.map(l => skuKey(l.sku)))).map(r => [r.key, r.name]));
     lines.forEach(l => { l.name = known.get(skuKey(l.sku)) || l.sku; });
@@ -595,6 +745,9 @@ async function api(req, env, path) {
     if (body.startedAt) { const d = Date.parse(body.startedAt); if (!d) return bad('Tarih geçersiz.'); st.push(setStmt(env, 'started_at', iso(d)), setStmt(env, 'started_at_auto', '0')); }
     if (body.autoAccept !== undefined) st.push(setStmt(env, 'auto_accept', body.autoAccept ? '1' : '0'));
     if (body.prodInitial !== undefined) st.push(setStmt(env, 'ty_prod_initial', body.prodInitial ? '1' : '0'));
+    for (const [k, f] of [['feeCargoTy', 'fee_cargo_ty'], ['feeServiceTy', 'fee_service_ty'], ['feeCargoSh', 'fee_cargo_sh'], ['stopaj', 'stopaj']]) {
+      if (body[k] !== undefined) { const n = numOrNull(body[k]); if (n === null || n < 0 || n > 100000) return bad('Gider değeri geçersiz.'); st.push(setStmt(env, f, n)); }
+    }
     if (body.pushStock !== undefined) st.push(setStmt(env, 'ty_push', body.pushStock ? '1' : '0'));
     if (body.resyncProducts) st.push(setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z'));
     if (st.length) { st.push(REV(env)); await env.DB.batch(st); }
@@ -611,6 +764,16 @@ async function api(req, env, path) {
     const st = await ingestProducts(env, String(body.channel || 'manuel'), body.items, { dry: !!body.dry, useStock: !!body.useStock, overwrite: !!body.overwrite });
     if (!body.dry && body.label) await setSetting(env, 'last_import', JSON.stringify({ at: iso(), label: String(body.label).slice(0, 160) }));
     return json({ ok: true, stats: st });
+  }
+  if (path === '/api/profit') {
+    const from = Date.parse(body.from), to = Date.parse(body.to);
+    if (!from || !to || to <= from || to - from > 400 * 86400000) return bad('Tarih aralığı geçersiz.');
+    return json(await computeProfit(env, iso(from), iso(to)));
+  }
+  if (path === '/api/finance/sync') {
+    if (!tyConfigured(env)) return bad('Trendyol bilgileri girilmemiş.');
+    try { const r = await syncTrendyolFinance(env, true); await setSetting(env, 'fin_err', ''); return json({ ok: true, result: r }); }
+    catch (e) { await setSetting(env, 'fin_err', iso() + ' · Cari hesap ekstresi: ' + String(e.message || e).slice(0, 200)); return bad('Trendyol cari hesap ekstresi okunamadı: ' + String(e.message || e).slice(0, 200), 502); }
   }
   if (path === '/api/costs') {
     const items = Array.isArray(body.items) ? body.items : null;
