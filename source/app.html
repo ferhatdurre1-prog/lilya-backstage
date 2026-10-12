@@ -456,7 +456,7 @@ function sheetProduct(first){
   if (!p) return {title:'Ürün bulunamadı', body:`<div class="card"><p class="muted">Bu ürün silinmiş olabilir.</p></div>`};
   const mode = S.sheet.mode || 'in';
   const pm = allMoves().filter(m => m.key === p.id).slice(0, 30);
-  const live = `<div class="spread"><div><div class="muted small">Depodaki adet</div><div class="qty ${p.qty<0?'neg':''}" style="font-size:34px">${fmtN(p.qty)}<small>adet</small></div></div><div style="text-align:right">${stockPill(p) || '<span class="pill p-good">Stokta</span>'}<div class="muted small" style="margin-top:6px">Stok değeri <b class="num" style="color:var(--ink)">${p.cost!=null?fmtTL(Math.max(0,p.qty)*p.cost):'—'}</b></div></div></div>`;
+  const live = `<div class="spread"><div><div class="muted small">Depodaki adet</div><div class="qty ${p.qty<0?'neg':''}" style="font-size:34px">${fmtN(p.qty)}<small>adet</small></div></div><div style="text-align:right">${stockPill(p) || '<span class="pill p-good">Stokta</span>'}<div class="muted small" style="margin-top:6px">Stok değeri <b class="num" style="color:var(--ink)">${p.cost!=null?fmtTL(Math.max(0,p.qty)*p.cost):'—'}</b></div></div></div>${tyLine(p)}`;
   const body = `
   <div class="card"><div id="p-live">${live}</div>
     <div class="seg" role="group" aria-label="Hareket türü">${[['in','Giriş'],['out','Çıkış'],['count','Sayım']].map(([id,l]) => `<button data-act="pmode" data-id="${id}" aria-pressed="${mode===id}">${l}</button>`).join('')}</div>
@@ -480,6 +480,14 @@ function sheetProduct(first){
   <div class="card"><h3>Son hareketler</h3><div id="p-moves">${pm.length ? pm.map(moveRow).join('') : '<p class="muted small" style="margin:0">Son günlerde bu ürünle ilgili hareket yok.</p>'}</div></div>
   <div class="row"><button class="btn danger sm" data-act="del-product" data-id="${esc(p.id)}">Ürünü sil</button></div>`;
   return {title: esc(p.name), sub:`<span class="mono">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
+}
+function tyLine(p){
+  if (!p.channels.includes('trendyol') || !p.barcode) return '';
+  const target = Math.min(Math.max(p.qty, 0), 20000);
+  if (S.settings.pushStock === false) return `<p class="muted small" style="margin:0">Trendyol'a stok gönderimi kapalı.</p>`;
+  if (p.tyQty === target) return `<p class="small" style="margin:0;color:var(--good)">✓ Trendyol stoğu eşit: ${fmtN(target)} adet</p>`;
+  if (p.tyQty !== null && p.tyQty < 0) return `<p class="small" style="margin:0;color:var(--bad)">Trendyol bu ürünün stok güncellemesini kabul etmedi. Ayrıntı Bağlantılar ekranında.</p>`;
+  return `<p class="small" style="margin:0;color:var(--warn)">Trendyol'a gönderiliyor: ${fmtN(target)} adet (birkaç saniye içinde)</p>`;
 }
 function sheetNewProduct(){
   return {title:'Yeni ürün', body:`<form id="f-new" class="card grid2">
@@ -656,7 +664,7 @@ async function returnDecision(id, accept){
 /* ============ Stok değeri ============ */
 function viewValue(){
   const ps = productsArr();
-  const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<div class="row"><button class="btn" data-act="export-value">Excel indir</button><button class="btn primary" data-act="open-costs">Excel'den fiyat yükle</button></div>` : ''}</div>`;
+  const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<div class="row"><button class="btn" data-act="export-value">Excel indir</button><button class="btn primary" data-act="open-costs">Excel'den fiyat / stok yükle</button></div>` : ''}</div>`;
   if (!S.loaded.products) return head + loading();
   if (!ps.length) return head + `<div class="panel empty"><h4>Hesaplanacak ürün yok</h4><p>Önce ürünleri ekle ya da aktar, sonra alış fiyatlarını buradan gir.</p></div>`;
   const val = p => Math.max(0, p.qty) * (p.cost || 0);
@@ -716,30 +724,36 @@ function sheetCosts(){
     else if (C.computing) h += `<p class="muted small" style="margin:0">Ürünlerle eşleştiriliyor…</p><div class="progress"><i style="width:40%"></i></div>`;
     else if (C.stats) {
       const s = C.stats;
-      h += `<p class="muted small" style="margin:0">Okunan sütunlar: stok kodu <b>${esc(C.map.sku || '—')}</b>${C.map.barcode ? `, barkod <b>${esc(C.map.barcode)}</b>` : ''}, fiyat <b>${esc(C.map.cost)}</b></p>
-      <div class="stat-grid"><div class="stat"><b>${fmtN(s.updated)}</b><span>ürünün fiyatı ${C.done?'güncellendi':'güncellenecek'}</span></div><div class="stat"><b>${fmtN(s.unchanged)}</b><span>fiyatı zaten aynı</span></div><div class="stat"><b>${fmtN(s.notFound)}</b><span>stok kodu bulunamadı</span></div><div class="stat"><b>${fmtN(C.skipped)}</b><span>boş/geçersiz fiyat (atlandı)</span></div></div>`;
+      h += `<p class="muted small" style="margin:0">Okunan sütunlar: stok kodu <b>${esc(C.map.sku || '—')}</b>${C.map.barcode ? `, barkod <b>${esc(C.map.barcode)}</b>` : ''}, fiyat <b>${esc(C.map.cost || '—')}</b>${C.map.stock ? `, stok <b>${esc(C.map.stock)}</b>` : ''}</p>
+      ${C.map.stock ? `<label class="chk small"><input type="checkbox" id="cost-setstock" ${C.setStock?'checked':''} ${S.busy||C.done?'disabled':''}><span>Dosyadaki <b>${esc(C.map.stock)}</b> adetlerini depo stoğu olarak da yaz. Farklar sayım düzeltmesi olarak kaydedilir ve Trendyol'a gönderilir.</span></label>` : ''}
+      <div class="stat-grid"><div class="stat"><b>${fmtN(s.updated)}</b><span>ürünün fiyatı ${C.done?'güncellendi':'güncellenecek'}</span></div><div class="stat"><b>${fmtN(s.unchanged)}</b><span>fiyatı zaten aynı</span></div><div class="stat"><b>${fmtN(s.notFound)}</b><span>stok kodu bulunamadı</span></div><div class="stat"><b>${fmtN(C.skipped)}</b><span>boş/geçersiz satır (atlandı)</span></div>${C.setStock ? `<div class="stat"><b>${fmtN(s.stockUpdated)}</b><span>ürünün stoğu ${C.done?'güncellendi':'değişecek'}</span></div><div class="stat"><b style="color:${s.stockDelta<0?'var(--bad)':'var(--good)'}">${s.stockDelta>0?'+':''}${fmtN(s.stockDelta)}</b><span>toplam adet farkı</span></div>` : ''}</div>`;
       if (s.notFoundList && s.notFoundList.length) h += `<p class="muted small" style="margin:0">Bulunamayanlar: <span class="mono">${s.notFoundList.map(esc).join(', ')}</span>${s.notFound > s.notFoundList.length ? ' …' : ''}</p>`;
       if (C.sample && C.sample.length) h += `<div class="preview-tbl"><table><thead><tr><th>Stok kodu</th><th>Ürün</th><th>Eski</th><th>Yeni</th></tr></thead><tbody>${C.sample.map(r => `<tr><td class="mono">${esc(r.sku)}</td><td>${esc(r.name)}</td><td>${r.old!=null?fmtTL(r.old):'—'}</td><td><b>${fmtTL(r.cost)}</b></td></tr>`).join('')}</tbody></table></div>`;
-      if (C.done) h += `<div class="banner" style="background:var(--good-soft);margin:0"><div><b>Fiyatlar kaydedildi.</b> Stok değeri yeniden hesaplandı.</div></div>`;
-      else h += `<div class="row"><button class="btn primary" data-act="cost-run" ${S.busy||!s.updated?'disabled':''}>${s.updated ? fmtN(s.updated) + ' ürünün fiyatını kaydet' : 'Güncellenecek fiyat yok'}</button></div>`;
+      if (C.setStock && C.stockSample && C.stockSample.length) h += `<div class="preview-tbl"><table><thead><tr><th>Stok kodu</th><th>Ürün</th><th>Depo</th><th>Dosya</th></tr></thead><tbody>${C.stockSample.map(r => `<tr><td class="mono">${esc(r.sku)}</td><td>${esc(r.name)}</td><td>${fmtN(r.oldQty)}</td><td><b>${fmtN(r.qty)}</b></td></tr>`).join('')}</tbody></table></div>`;
+      const nStock = C.setStock ? s.stockUpdated : 0;
+      if (C.done) h += `<div class="banner" style="background:var(--good-soft);margin:0"><div><b>Kaydedildi.</b> Stok değeri yeniden hesaplandı.${nStock ? ' Yeni stoklar birkaç saniye içinde Trendyol\'a gönderilecek.' : ''}</div></div>`;
+      else h += `<div class="row"><button class="btn primary" data-act="cost-run" ${S.busy||!(s.updated||nStock)?'disabled':''}>${(s.updated||nStock) ? [s.updated ? fmtN(s.updated) + ' fiyat' : '', nStock ? fmtN(nStock) + ' stok' : ''].filter(Boolean).join(' + ') + ' kaydet' : 'Güncellenecek bir şey yok'}</button></div>`;
     }
     body += `<div class="card">${h}</div>`;
   }
-  return {title:'Excel ile alış fiyatı', body};
+  return {title:'Excel ile fiyat ve stok', body};
 }
 function parseCostRows(f){
   const H = f.headers;
   const costH = H.filter(h => !/kar|marj|oran|yuzde|%/.test(norm(h).replace('karar','')) || /^(urun)?maliyet/.test(norm(h)));
-  const map = {sku:findCol(H, COLS.sku) || findCol(H, COLS.model), barcode:findCol(H, COLS.barcode), cost:findCol(costH, COST_COLS)};
-  if (!map.cost) throw new Error(`Alış fiyatı sütunu bulunamadı. Sütun başlığı "Alış fiyatı" ya da "Birim alış fiyatı (TL)" olmalı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
+  const map = {sku:findCol(H, COLS.sku) || findCol(H, COLS.model), barcode:findCol(H, COLS.barcode), cost:findCol(costH, COST_COLS), stock:findCol(H.filter(h => !/kod|min|satis|gun/.test(norm(h))), COLS.stock)};
+  if (!map.cost && !map.stock) throw new Error(`Alış fiyatı sütunu bulunamadı. Sütun başlığı "Alış fiyatı" ya da "Birim alış fiyatı (TL)" olmalı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
   if (!map.sku && !map.barcode) throw new Error(`Stok kodu ya da barkod sütunu bulunamadı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
   const items = []; let skipped = 0;
   for (const r of f.rows) {
     const sku = map.sku ? String(r[map.sku] ?? '').trim() : '', barcode = map.barcode ? String(r[map.barcode] ?? '').trim() : '';
-    const raw = r[map.cost]; const cost = num(raw);
+    const raw = map.cost ? r[map.cost] : ''; const cost = num(raw);
+    const sraw = map.stock ? r[map.stock] : ''; const stock = num(sraw);
     if (!sku && !barcode) continue;
-    if (raw === '' || raw === null || raw === undefined || !isFinite(cost) || cost < 0) { skipped++; continue; }
-    items.push({sku, barcode, cost:Math.round(cost*100)/100});
+    const okCost = !(raw === '' || raw === null || raw === undefined || !isFinite(cost) || cost < 0);
+    const okStock = !(sraw === '' || sraw === null || sraw === undefined || !isFinite(stock) || stock < 0);
+    if (!okCost && !okStock) { skipped++; continue; }
+    items.push({sku, barcode, cost: okCost ? Math.round(cost*100)/100 : null, stock: okStock ? Math.round(stock) : null});
   }
   return {map, items, skipped};
 }
@@ -751,16 +765,21 @@ async function onCostFile(file){
     if (f.json) throw new Error('Bu bir Excel ya da CSV dosyası değil.');
     const {map, items, skipped} = parseCostRows(f);
     if (!items.length) throw new Error('Dosyada fiyatı dolu satır bulunamadı.');
-    const r = await api('/api/costs', {items, dry:true});
-    S.costImp = {file:file.name, rows:f.rows.length, map, items, skipped, stats:r.stats, sample:r.sample};
+    const r = await api('/api/costs', {items, dry:true, setStock:false});
+    S.costImp = {file:file.name, rows:f.rows.length, map, items, skipped, stats:r.stats, sample:r.sample, stockSample:r.stockSample, setStock:false};
   } catch(e) { S.costImp = {file:file.name, error:errText(e)}; }
   renderSheet(false);
+}
+async function recomputeCosts(){
+  const C = S.costImp; if (!C || !C.items) return; C.computing = true; renderSheet(false);
+  try { const r = await api('/api/costs', {items:C.items, dry:true, setStock:!!C.setStock}); C.stats = r.stats; C.sample = r.sample; C.stockSample = r.stockSample; } catch(e) { C.error = errText(e); }
+  C.computing = false; renderSheet(false);
 }
 async function runCosts(){
   const C = S.costImp; if (!C || !C.items || S.busy) return;
   await run(async () => {
-    const r = await api('/api/costs', {items:C.items});
-    C.stats = r.stats; C.done = true; await refresh(true); toast(`${fmtN(r.stats.updated)} ürünün alış fiyatı kaydedildi.`);
+    const r = await api('/api/costs', {items:C.items, setStock:!!C.setStock});
+    C.stats = r.stats; C.done = true; await refresh(true); toast(`${fmtN(r.stats.updated)} fiyat${C.setStock ? `, ${fmtN(r.stats.stockUpdated)} stok` : ''} güncellendi.`);
   });
   renderSheet(false);
 }
@@ -925,8 +944,11 @@ function tyCardLive(){
   const t = (S.sync && S.sync.trendyol) || {}; const st = tyState();
   if (!t.configured) return `<p class="muted small" style="margin:0">Cloudflare'de <span class="mono">TRENDYOL_SELLER_ID</span>, <span class="mono">TRENDYOL_API_KEY</span> ve <span class="mono">TRENDYOL_API_SECRET</span> girildiğinde otomatik eşitleme başlar.</p>`;
   return `<dl class="kv"><dt>Durum</dt><dd><span class="pill ${st.cls==='ok'?'p-good':st.cls==='err'?'p-bad':'p-warn'}">${esc(st.text)}</span></dd>
-    <dt>Siparişler</dt><dd>Her 10 saniyede, uygulama kapalıyken de</dd><dt>İadeler</dt><dd>Her dakika</dd><dt>Ürün listesi</dt><dd>${t.productsAt ? '6 saatte bir · son ' + esc(ago(t.productsAt)) : 'İlk tarama sürüyor'}</dd></dl>
-    ${st.cls==='err' ? `<div class="banner bad" style="margin:0"><div>${esc(st.err||'')}</div></div>` : ''}`;
+    <dt>Siparişler</dt><dd>Her 10 saniyede, uygulama kapalıyken de</dd>
+    <dt>Stok → Trendyol</dt><dd>${S.settings.pushStock===false ? 'Kapalı' : t.pushAt ? 'Son gönderim ' + esc(ago(t.pushAt)) + ' · ' + fmtN(t.pushCount) + ' ürün' : 'Değişiklik olunca gönderilir'}</dd><dt>İadeler</dt><dd>Her dakika</dd><dt>Ürün listesi</dt><dd>${t.productsAt ? '6 saatte bir · son ' + esc(ago(t.productsAt)) : 'İlk tarama sürüyor'}</dd></dl>
+    ${st.cls==='err' ? `<div class="banner bad" style="margin:0"><div>${esc(st.err||'')}</div></div>` : ''}
+    ${t.pushErr ? `<div class="banner bad" style="margin:0"><div><b>Stok gönderimi:</b> ${esc(t.pushErr.slice(27))}</div></div>` : ''}
+    ${t.pushFail ? `<div class="banner" style="margin:0"><div><b>Trendyol bazı stokları kabul etmedi:</b> ${esc(t.pushFail)}</div></div>` : ''}`;
 }
 function sheetImport(){
   const I = S.imp, st = startedAt(), set = S.settings || {};
@@ -934,6 +956,7 @@ function sheetImport(){
   return {title:'Bağlantılar & Yedek', body:`
   <div class="card"><div class="spread"><h3 style="margin:0">${chBadge('trendyol')} Otomatik eşitleme</h3><button class="btn sm" data-act="sync-now" ${S.syncing||!(S.sync.trendyol&&S.sync.trendyol.configured)?'disabled':''}>${S.syncing?'Eşitleniyor…':'Şimdi eşitle'}</button></div>
     <div id="ty-live">${tyCardLive()}</div>
+    <label class="chk small"><input type="checkbox" id="set-push" ${set.pushStock!==false?'checked':''}><span>Ortak stok değişince Trendyol'daki stoğu da güncelle (sayım, giriş/çıkış, sipariş, iade, Excel)</span></label>
     <label class="chk small"><input type="checkbox" id="set-auto" ${set.autoAccept!==false?'checked':''}>Trendyol'da onaylanan iadeleri otomatik stoğa ekle</label>
     <label class="chk small"><input type="checkbox" id="set-prodinit" ${set.prodInitial!==false?'checked':''}>Trendyol'dan ilk kez gelen ürünlerde Trendyol stok adedini başlangıç stoğu yap</label>
     <div class="row"><button class="btn sm ghost" data-act="resync-products">Ürün listesini şimdi yeniden tara</button></div>
@@ -1156,6 +1179,8 @@ document.addEventListener('change', e => {
   if (t.dataset && t.dataset.cost) saveCost(t);
   if (t.id === 'imp-file') onImportFile(t.files[0]);
   if (t.id === 'cost-file') onCostFile(t.files[0]);
+  if (t.id === 'cost-setstock') { S.costImp.setStock = t.checked; recomputeCosts(); }
+  if (t.id === 'set-push') saveSetting({pushStock:t.checked}, t.checked ? 'Stok değişiklikleri Trendyol\'a gönderilecek.' : 'Trendyol\'a stok gönderimi durduruldu.');
   if (t.id === 'imp-kind') { S.imp.kind = t.value; computePreview(); }
   if (t.id === 'imp-ch') { S.imp.channel = t.value; computePreview(); }
   if (t.id === 'imp-usestock') { S.imp.useStock = t.checked; computePreview(); }

@@ -43,6 +43,7 @@ async function init(env) {
   if (!env.DB) throw new Error('D1 veritabanı bağlanmamış (DB).');
   await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s)));
   await env.DB.prepare(`INSERT OR IGNORE INTO settings(k,v) VALUES('started_at',?1)`).bind(iso()).run();
+  try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ty_qty INTEGER').run(); } catch (e) { /* sütun zaten var */ }
   READY = true;
 }
 async function getSetting(env, k) { const r = await env.DB.prepare('SELECT v FROM settings WHERE k=?1').bind(k).first(); return r ? r.v : null; }
@@ -224,6 +225,7 @@ async function ingestProducts(env, channel, items, opts = {}) {
       if (opts.overwrite && stock !== null && stock !== ex.qty) { batch.push(...setQty(env, it.pkey, stock, { type: 'count', channel, note: opts.note || 'Yedekten aktarım' })); st.setQty++; }
       else if (needs) st.updated++; else st.unchanged++;
     }
+    if (opts.tyQty && stock !== null && it.barcode) batch.push(env.DB.prepare('UPDATE products SET ty_qty=?1 WHERE key=?2').bind(stock, it.pkey));
     if (batch.length > 60) await flush();
   }
   await flush();
@@ -392,7 +394,7 @@ async function syncTrendyolProducts(env, maxPages = 4) {
         items.push({ sku: v.stockCode || '', barcode: v.barcode || '', name: (c.title || '') + (attrs && (c.variants || []).length > 1 ? ' · ' + attrs : ''), image: img, stock: v.stock && Number.isFinite(v.stock.quantity) ? v.stock.quantity : null });
       }
     }
-    if (items.length) { const st = await ingestProducts(env, 'trendyol', items, { useStock }); stats.created += st.created; stats.updated += st.updated; }
+    if (items.length) { const st = await ingestProducts(env, 'trendyol', items, { useStock, tyQty: true }); stats.created += st.created; stats.updated += st.updated; }
     total += items.length;
     const pages = r.totalPages || 0;
     if (!r.content || !r.content.length || page + 1 >= pages) { page = 0; await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', iso())]); return { variants: total, ...stats, finished: true }; }
@@ -400,6 +402,36 @@ async function syncTrendyolProducts(env, maxPages = 4) {
     await setSetting(env, 'ty_prod_page', page);
   }
   return { variants: total, ...stats, finished: false };
+}
+/* Ortak stok → Trendyol. Yalnızca değişen ürünler gönderilir (aynı istek 15 dk tekrarlanamaz). */
+const TY_PUSH_SQL = `SELECT key, barcode, qty, ty_qty FROM products WHERE barcode<>'' AND EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='trendyol') AND (ty_qty IS NULL OR (ty_qty <> MIN(MAX(qty,0),20000) AND ty_qty <> -(MIN(MAX(qty,0),20000)+2))) LIMIT 1000`;
+async function pushTrendyolStock(env) {
+  if ((await getSetting(env, 'ty_push')) === '0') return null;
+  const { results } = await env.DB.prepare(TY_PUSH_SQL).all();
+  if (!results.length) return { sent: 0 };
+  const items = results.map(r => ({ barcode: r.barcode, quantity: Math.min(Math.max(r.qty, 0), 20000) }));
+  const url = `${TY_BASE}inventory/sellers/${env.TRENDYOL_SELLER_ID}/products/price-and-inventory`;
+  const res = await fetch(url, { method: 'POST', headers: { ...tyHeaders(env), 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) });
+  const text = await res.text();
+  if (!res.ok) {
+    await setSetting(env, 'ty_push_err', iso() + ' · Trendyol stok güncellemesi reddedildi (' + res.status + '): ' + text.slice(0, 200));
+    return { sent: 0, error: res.status };
+  }
+  let batchId = ''; try { batchId = JSON.parse(text).batchRequestId || ''; } catch (e) {}
+  const now = iso(); const st = results.map((r, i) => env.DB.prepare('UPDATE products SET ty_qty=?1 WHERE key=?2').bind(items[i].quantity, r.key));
+  st.push(setStmt(env, 'ty_push_at', now), setStmt(env, 'ty_push_count', items.length), setStmt(env, 'ty_push_batch', batchId + '|' + Date.now()), setStmt(env, 'ty_push_err', ''), REV(env));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  return { sent: items.length, batchId };
+}
+async function checkTrendyolPushBatch(env) {
+  const v = await getSetting(env, 'ty_push_batch'); if (!v) return null;
+  const [id, at] = v.split('|'); if (!id || Date.now() - Number(at) < 20000 || Date.now() - Number(at) > 3.5 * 3600000) return null;
+  const r = await ty(env, `product/sellers/${env.TRENDYOL_SELLER_ID}/products/batch-requests/${id}`, {});
+  const failed = (r.items || []).filter(x => x.status && x.status !== 'SUCCESS');
+  const msg = failed.length ? `${failed.length} ürün güncellenemedi: ` + failed.slice(0, 3).map(x => `${(x.requestItem && x.requestItem.barcode) || '?'} (${(x.failureReasons || []).join(', ').slice(0, 80)})`).join('; ') : '';
+  if (failed.length) await env.DB.batch(failed.map(x => env.DB.prepare('UPDATE products SET ty_qty=-(ty_qty+2) WHERE barcode=?1 AND ty_qty>=0').bind((x.requestItem && x.requestItem.barcode) || '')));
+  await env.DB.batch([setStmt(env, 'ty_push_fail', msg), setStmt(env, 'ty_push_batch', '')]);
+  return { failed: failed.length };
 }
 async function tryLock(env, ms) {
   const now = Date.now();
@@ -419,6 +451,8 @@ async function pollOnce(env, full) {
     }
     result.orders = await syncTrendyolOrders(env);
     if (full) { result.claims = await syncTrendyolClaims(env); result.products = await syncTrendyolProducts(env); }
+    try { result.push = await pushTrendyolStock(env); if (full) result.pushCheck = await checkTrendyolPushBatch(env); }
+    catch (e) { await setSetting(env, 'ty_push_err', iso() + ' · ' + String(e.message || e).slice(0, 250)); }
     await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', ''), setStmt(env, 'ty_ms', Date.now() - t)]);
   } catch (e) {
     await setSetting(env, 'ty_err', iso() + ' · ' + String(e.message || e).slice(0, 300));
@@ -462,11 +496,11 @@ async function loginCookie(env) {
 /* ---------- API ---------- */
 function mapOrder(r) { return { id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
-function mapProduct(r) { return { id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, createdAt: r.created_at, updatedAt: r.updated_at }; }
+function mapProduct(r) { return { id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null } }, now: iso(), version: APP_VERSION };
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail']);
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '' } }, now: iso(), version: APP_VERSION };
 }
 async function api(req, env, path) {
   const method = req.method;
@@ -561,6 +595,7 @@ async function api(req, env, path) {
     if (body.startedAt) { const d = Date.parse(body.startedAt); if (!d) return bad('Tarih geçersiz.'); st.push(setStmt(env, 'started_at', iso(d)), setStmt(env, 'started_at_auto', '0')); }
     if (body.autoAccept !== undefined) st.push(setStmt(env, 'auto_accept', body.autoAccept ? '1' : '0'));
     if (body.prodInitial !== undefined) st.push(setStmt(env, 'ty_prod_initial', body.prodInitial ? '1' : '0'));
+    if (body.pushStock !== undefined) st.push(setStmt(env, 'ty_push', body.pushStock ? '1' : '0'));
     if (body.resyncProducts) st.push(setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z'));
     if (st.length) { st.push(REV(env)); await env.DB.batch(st); }
     return json({ ok: true });
@@ -583,28 +618,30 @@ async function api(req, env, path) {
     const bmap = await barcodeMap(env, items.filter(x => !String(x.sku || '').trim()).map(x => String(x.barcode || '').trim()));
     const want = new Map();
     for (const it of items) {
-      const cost = numOrNull(it.cost); if (cost === null || cost < 0) continue;
+      let cost = numOrNull(it.cost); if (cost !== null && cost < 0) cost = null; if (cost === null && !body.setStock) continue;
       const r = resolveLine(it, bmap); if (!r) continue;
-      want.set(r.pkey, { cost: Math.round(cost * 100) / 100, label: String(it.sku || it.barcode || '').trim() });
+      const stock = body.setStock && it.stock !== null && it.stock !== undefined && it.stock !== '' && Number.isFinite(Number(it.stock)) && Number(it.stock) >= 0 ? Math.round(Number(it.stock)) : null;
+      want.set(r.pkey, { cost: cost === null ? null : Math.round(cost * 100) / 100, stock, label: String(it.sku || it.barcode || '').trim() });
     }
-    const rows = await selectIn(env, 'SELECT key, sku, name, cost FROM products', 'key', [...want.keys()]);
+    const rows = await selectIn(env, 'SELECT key, sku, name, cost, qty FROM products', 'key', [...want.keys()]);
     const found = new Map(rows.map(r => [r.key, r]));
-    const stats = { updated: 0, unchanged: 0, notFound: 0, notFoundList: [] };
-    const changes = [];
+    const stats = { updated: 0, unchanged: 0, notFound: 0, notFoundList: [], stockUpdated: 0, stockDelta: 0 };
+    const changes = [], stockChanges = [];
     for (const [key, w] of want) {
       const p = found.get(key);
       if (!p) { stats.notFound++; if (stats.notFoundList.length < 20) stats.notFoundList.push(w.label); continue; }
+      if (w.stock !== null && w.stock !== p.qty) { stats.stockUpdated++; stats.stockDelta += w.stock - p.qty; stockChanges.push({ key, sku: p.sku, name: p.name, oldQty: p.qty, qty: w.stock }); }
+      if (w.cost === null) continue;
       if (p.cost !== null && Math.abs(p.cost - w.cost) < 0.005) { stats.unchanged++; continue; }
       stats.updated++; changes.push({ key, sku: p.sku, name: p.name, old: p.cost, cost: w.cost });
     }
-    if (!body.dry && changes.length) {
+    if (!body.dry && (changes.length || stockChanges.length)) {
       const now = iso();
-      for (let i = 0; i < changes.length; i += 80) {
-        const part = changes.slice(i, i + 80).map(c => env.DB.prepare('UPDATE products SET cost=?1, updated_at=?2 WHERE key=?3').bind(c.cost, now, c.key));
-        part.push(REV(env)); await env.DB.batch(part);
-      }
+      const all = [...changes.map(c => env.DB.prepare('UPDATE products SET cost=?1, updated_at=?2 WHERE key=?3').bind(c.cost, now, c.key)),
+        ...stockChanges.flatMap(c => setQty(env, c.key, c.qty, { type: 'count', channel: 'manuel', note: 'Excel ile stok güncelleme' }))];
+      for (let i = 0; i < all.length; i += 80) { const part = all.slice(i, i + 80); part.push(REV(env)); await env.DB.batch(part); }
     }
-    return json({ ok: true, stats, sample: changes.slice(0, 8) });
+    return json({ ok: true, stats, sample: changes.slice(0, 8), stockSample: stockChanges.slice(0, 8) });
   }
   if (path === '/api/sync') {
     if (!tyConfigured(env)) return bad('Trendyol bilgileri girilmemiş.');
