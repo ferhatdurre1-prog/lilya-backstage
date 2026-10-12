@@ -820,7 +820,7 @@ function profitCls(n){ return n > 0 ? 'color:var(--good)' : n < 0 ? 'color:var(-
 function viewProfit(){
   const P = profS(); setTimeout(() => loadProfit(false), 0);
   const D = P.data, s = D && D.summary;
-  const fees = (S.settings && S.settings.fees) || {cargoTy:46.49, serviceTy:13.19, cargoSh:0, stopaj:1};
+  const fees = (S.settings && S.settings.fees) || {cargoT1:46.48, cargoT2:84.5, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
   let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti</p></div></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
@@ -835,10 +835,13 @@ function viewProfit(){
   <div class="card" style="margin-bottom:14px">${rows.map(([l, v, neg]) => `<div><div class="spread small"><span>${neg?'− ':''}${l}</span><span class="num"><b>${fmtTL(v)}</b> <span class="muted">${s.revenue?'%'+(v/s.revenue*100).toFixed(1).replace('.',','):''}</span></span></div><div style="height:6px;border-radius:3px;margin-top:5px;background:${neg?'var(--bad-soft)':'var(--good-soft)'}"><div style="height:100%;border-radius:3px;width:${Math.min(100, v/maxV*100).toFixed(1)}%;background:${neg?'var(--bad)':'var(--good)'};opacity:.75"></div></div></div>`).join('')}
     <div class="spread" style="border-top:1px solid var(--line);padding-top:10px"><b>= Net kâr</b><b class="num" style="${profitCls(s.profit)}">${tlS(s.profit)}</b></div></div>`;
   if (s.missingCost) h += `<div class="banner"><div><b>${fmtN(s.missingCost)} satırda alış fiyatı yok</b>${D.missingCostSkus.length?` (<span class="mono">${D.missingCostSkus.slice(0,6).map(esc).join(', ')}</span>${D.missingCostSkus.length>6?'…':''})`:''}. Bu ürünlerin maliyeti 0 sayıldığı için kâr olduğundan yüksek görünür.</div><button class="btn sm" data-act="goto-missing-cost">Fiyat gir</button></div>`;
+  if (s.noDesiTable && s.desiOrders) h += `<div class="banner"><div><b>${fmtN(s.desiOrders)} paket 350 TL üzerinde</b>, ama desi tablosu boş; bu paketlere 200–349,99 ücreti uygulandı. Aşağıdaki varsayımlara desi ücretlerini gir.</div></div>`;
+  else if (s.desiMissing) h += `<div class="banner"><div><b>${fmtN(s.desiMissing)} paketin desisi Trendyol'dan gelmedi</b>; 1 desi sayıldı.</div></div>`;
   if (s.missingPrice) h += `<div class="banner"><div><b>${fmtN(s.missingPrice)} sipariş satırında satış tutarı yok.</b> Eski ya da elle girilmiş siparişler olabilir; bu satırların cirosu 0 sayıldı.</div></div>`;
-  const subs = [['products','Ürünler'],['orders','Siparişler'],['winners','Kâr edenler'],['losers','Zarar edenler']];
+  const subs = [['products','Ürünler'],['orders','Siparişler'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi']];
   h += `<div class="filters"><div class="chips">${subs.map(([id,l]) => `<button class="chip" data-act="psub" data-id="${id}" aria-pressed="${P.sub===id}">${l}${id==='losers'?` · ${D.products.filter(x=>x.profit<0).length}`:id==='winners'?` · ${D.products.filter(x=>x.profit>0).length}`:''}</button>`).join('')}</div></div>`;
-  if (P.sub === 'orders') {
+  if (P.sub === 'pricing') h += viewPricing();
+  else if (P.sub === 'orders') {
     h += `<div class="list">${D.orders.slice(0,300).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span></div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>${D.orders.length>300?'<p class="muted small">İlk 300 sipariş gösteriliyor.</p>':''}`;
   } else {
     let ps = D.products.slice();
@@ -857,18 +860,54 @@ function viewProfit(){
   }
   return h + feesCard(fees);
 }
+async function loadPricing(){
+  const P = profS(); if (P.pricingLoading) return; P.pricingLoading = true;
+  try { P.pricing = await api('/api/pricing', {}); P.pricingErr = ''; } catch(e) { P.pricingErr = errText(e); }
+  P.pricingLoading = false; if (S.tab === 'profit') render();
+}
+function viewPricing(){
+  const P = profS();
+  if (!P.pricing && !P.pricingErr) { setTimeout(loadPricing, 0); return loading(); }
+  if (P.pricingErr) return `<div class="banner bad"><div>${esc(P.pricingErr)}</div></div>`;
+  const D = P.pricing; let items = D.items.slice();
+  if (!items.length) return `<div class="panel empty"><h4>Trendyol fiyatları henüz gelmedi</h4><p>Ürün listesi Trendyol'dan yeniden taranıyor; satış fiyatı ve komisyon oranları birkaç dakika içinde gelir.</p><button class="btn" data-act="pricing-reload">Yenile</button></div>`;
+  const pf = P.pfilter || 'all';
+  if (pf === 'loss') items = items.filter(x => x.profit !== null && x.profit < 0); else if (pf === 'nocost') items = items.filter(x => x.profit === null);
+  items.sort((a,b) => (a.margin ?? 1e9) - (b.margin ?? 1e9));
+  const loss = D.items.filter(x => x.profit !== null && x.profit < 0).length, nocost = D.items.filter(x => x.profit === null).length;
+  return `<p class="muted small" style="margin:0 0 10px">Her ürünün <b>şu anki Trendyol fiyatıyla</b>, min. adetlik bir siparişten kalan net kâr. Kargo baremi, hizmet bedeli, komisyon ve stopaj dahil. En düşük marjlı ürünler üstte.</p>
+  ${D.noDesiTable ? `<div class="banner"><div>Desi tablosu boş; 350 TL üzeri siparişlere 200–349,99 kargo ücreti uygulandı.</div></div>` : ''}
+  <div class="filters"><div class="chips"><button class="chip" data-act="pfilter" data-id="all" aria-pressed="${pf==='all'}">Tümü · ${D.items.length}</button><button class="chip" data-act="pfilter" data-id="loss" aria-pressed="${pf==='loss'}">Zararına satılan · ${loss}</button><button class="chip" data-act="pfilter" data-id="nocost" aria-pressed="${pf==='nocost'}">Maliyeti eksik · ${nocost}</button></div><button class="btn sm ghost" data-act="pricing-reload">Yenile</button></div>
+  <div class="tbl-wrap"><table class="t"><thead><tr><th>Ürün</th><th class="r">Fiyat</th><th class="r">Min. adet</th><th class="r">Sipariş</th><th class="r">Kargo</th><th class="r">Kâr / sipariş</th><th class="r">Kâr / adet</th><th class="r">Marj</th></tr></thead>
+  <tbody>${items.slice(0,400).map(x => `<tr data-act="product" data-id="${esc(x.key)}" style="cursor:pointer"><td><div class="pcell">${thumb({name:x.name, image:x.image})}<div style="min-width:0"><span>${esc(x.name)}</span><span class="mono muted" style="font-size:11.5px">${esc(x.sku)} · kom. %${x.commRate ?? '?'}${x.cargoTier===3?` · ${x.desiKnown?esc(String(x.desi).replace('.',','))+' desi':'desi yok (1)'}`:''}</span></div></div></td>
+    <td class="r num">${fmtTL(x.price)}</td><td class="r num">${x.minQty}</td><td class="r num">${fmtTL(x.order)}</td><td class="r num">${fmtTL(x.cargo)}</td>
+    <td class="r num" style="${x.profit===null?'':profitCls(x.profit)}"><b>${x.profit===null?'<span style="color:var(--warn)">maliyet yok</span>':tlS(x.profit)}</b></td><td class="r num">${x.perUnit===null?'—':tlS(x.perUnit)}</td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
+  <p class="muted small">Sipariş = fiyat × min. adet. Kargo bu tutara göre baremden ya da desiden hesaplanır; hizmet bedeli sipariş başına bir kez düşülür.</p>`;
+}
 function feesCard(fees){
   const t = (S.sync && S.sync.trendyol) || {};
   return `<div class="card" style="margin-top:18px"><h3>Kesinti varsayımları</h3>
     <p class="muted small" style="margin:0">Trendyol'un gerçek kesintileri cari hesap ekstresinden 6 saatte bir çekilir ve geldiği siparişlerde bunların yerine geçer. ${t.finAt?`Son okuma: ${esc(ago(t.finAt))}.`:'Henüz okunmadı.'}${t.backfill && t.backfill!=='done'?' Geçmiş siparişlerin fiyatları taranıyor…':''}</p>
     ${t.finErr ? `<div class="banner bad" style="margin:0"><div>${esc(t.finErr.slice(27))}</div></div>` : ''}
     <form id="f-fees" class="grid2">
-      <label class="f">Trendyol kargo (TL / paket)<input class="input num" id="fe-cty" inputmode="decimal" value="${esc(String(fees.cargoTy).replace('.',','))}"></label>
+      <label class="f">Kargo: 0–199,99 TL paket<input class="input num" id="fe-ct1" inputmode="decimal" value="${esc(String(fees.cargoT1).replace('.',','))}"></label>
+      <label class="f">Kargo: 200–349,99 TL paket<input class="input num" id="fe-ct2" inputmode="decimal" value="${esc(String(fees.cargoT2).replace('.',','))}"></label>
+      <label class="f" style="grid-column:1/-1">Kargo: 350 TL ve üzeri, desi tablosu
+        <textarea class="input mono" id="fe-desi" rows="5" placeholder="1: 59,90&#10;2: 64,90&#10;3: 69,90&#10;+: 5,00">${esc(desiText(fees.desiTable))}</textarea>
+        <span class="muted small" style="font-weight:400">Her satıra <b>desi: ücret</b> yaz. Son satıra <b>+: ücret</b> yazarsan tablodaki son desiden sonraki her desi için bu ücret eklenir. Desi siparişten okunur; yoksa 1 desi sayılır.${fees.desiTable && fees.desiTable.length ? '' : ' <b style="color:var(--warn)">Tablo boşken 350 TL üzeri paketlere 200–349,99 ücreti uygulanır.</b>'}</span></label>
       <label class="f">Trendyol hizmet bedeli (TL / paket)<input class="input num" id="fe-sty" inputmode="decimal" value="${esc(String(fees.serviceTy).replace('.',','))}"></label>
       <label class="f">Shopify kargo (TL / sipariş)<input class="input num" id="fe-csh" inputmode="decimal" value="${esc(String(fees.cargoSh).replace('.',','))}"></label>
       <label class="f">Stopaj (%)<input class="input num" id="fe-stp" inputmode="decimal" value="${esc(String(fees.stopaj).replace('.',','))}"></label>
+      <p class="muted small" style="grid-column:1/-1;margin:0">Min. adet kuralı (Fiyat analizi): birim fiyat 25 TL altı 6 adet, 25–35 TL 4, 35–50 TL 3, 50–75 TL 2, üzeri 1 adet.</p>
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Kaydet</button><button class="btn ghost" type="button" data-act="fin-sync" ${S.syncing?'disabled':''}>Trendyol kesintilerini şimdi çek</button></div>
     </form></div>`;
+}
+function desiText(t){ if (!t || !t.length) return ''; const out = t.map(x => `${x.desi}: ${String(x.price).replace('.',',')}`); const last = t[t.length-1]; if (last.extra) out.push(`+: ${String(last.extra).replace('.',',')}`); return out.join('\n'); }
+function parseDesi(txt){
+  const rows = []; let extra = null;
+  for (const raw of String(txt||'').split(/\n/)) { const line = raw.trim(); if (!line) continue; const m = line.match(/^(\+|\d+(?:[.,]\d+)?)\s*(?:desi)?\s*[:=\-]\s*([\d.,]+)/i); if (!m) throw new Error(`Desi satırı anlaşılamadı: "${line}". Örnek: 1: 59,90`); const price = num(m[2]); if (!isFinite(price)) throw new Error(`Ücret okunamadı: "${line}"`); if (m[1] === '+') extra = price; else rows.push({desi:num(m[1]), price}); }
+  rows.sort((a,b) => a.desi - b.desi); if (extra !== null) { if (!rows.length) throw new Error('"+" satırından önce en az bir desi satırı yaz.'); rows[rows.length-1].extra = extra; }
+  return rows;
 }
 function orderProfitCard(o){
   const D = S.prof && S.prof.data; const x = D && D.orders.find(y => y.id === o.id);
@@ -1241,6 +1280,8 @@ document.addEventListener('click', async e => {
     case 'export-value': await exportValue(); break;
     case 'period': { const P = profS(); P.period = id; try { localStorage.setItem('lb-period', id); } catch(e){} P.data = null; P.key = ''; render(); break; }
     case 'psub': profS().sub = id; render(); break;
+    case 'pfilter': profS().pfilter = id; render(); break;
+    case 'pricing-reload': profS().pricing = null; render(); break;
     case 'psort': profS().sort = id; render(); break;
     case 'goto-missing-cost': S.vfilter = 'missing'; setTab('value'); break;
     case 'fin-sync': { S.syncing = true; render(); try { const r = await api('/api/finance/sync', {}); toast(`Trendyol kesintileri okundu: ${fmtN(r.result.orders)} sipariş.`); } catch(e) { toast(errText(e), true); } S.syncing = false; await refresh(true); profS().key = ''; render(); break; }
@@ -1268,7 +1309,7 @@ document.addEventListener('submit', async e => {
   else if (id === 'f-order') submitNewOrder();
   else if (id === 'f-ret') submitReturn();
   else if (id === 'f-period') { const P = profS(); P.cf = $('#pf-from').value; P.ct = $('#pf-to').value; if (!P.cf || !P.ct) return toast('İki tarihi de seç.', true); P.data = null; P.key = ''; render(); }
-  else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoTy:v('#fe-cty'), feeServiceTy:v('#fe-sty'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,49', true); await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); profS().key = ''; render(); }
+  else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeServiceTy:v('#fe-sty'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); try { body.desiTable = parseDesi($('#fe-desi').value); } catch(err) { return toast(err.message, true); } await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
   else if (id === 'f-start') { const v = $('#st-date').value; if (!v) return toast('Bir tarih seç.', true); await saveSetting({startedAt:new Date(v).toISOString()}, 'Başlangıç tarihi kaydedildi.'); if (S.imp && S.imp.preview) computePreview(); }
 });
 let qTimer;
