@@ -49,6 +49,13 @@ async function init(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ty_price REAL').run(); priceCol = true; } catch (e) {}
   for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   if (priceCol && await env.DB.prepare(`SELECT 1 FROM settings WHERE k='ty_prod_done' AND v<>''`).first()) await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]);
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tydate'`).first())) {
+    const sh = await env.DB.prepare(`SELECT v FROM settings WHERE k='ty_shift'`).first();
+    const already = sh && Number(sh.v) >= 3 * 3600000;
+    await env.DB.batch([
+      ...(already ? [] : [env.DB.prepare(`UPDATE orders SET date=strftime('%Y-%m-%dT%H:%M:%fZ', date, '-3 hours') WHERE channel='trendyol' AND date IS NOT NULL AND date<>''`)]),
+      setStmt(env, 'mig_tydate', '1'), REV(env)]);
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
 }
@@ -264,6 +271,7 @@ async function ty(env, path, params) {
   }
   const e = new Error('Trendyol çok fazla istek uyarısı verdi (429). Biraz sonra tekrar denenecek.'); e.status = 429; throw e;
 }
+const TY_ORDER_DATE_SHIFT = 3 * 3600000;
 const TY_CANCELLED = new Set(['Cancelled', 'UnSupplied', 'UnPacked']);
 function tyLineFin(l) {
   const q = Math.max(1, Number(l.quantity) || 1);
@@ -279,7 +287,7 @@ function tyLineFin(l) {
 function tyPackagesToOrders(pkgs, shift) {
   return pkgs.map(p => ({
     orderNo: String(p.orderNumber),
-    date: p.orderDate ? iso(Number(p.orderDate) - shift) : null,
+    date: p.orderDate ? iso(Number(p.orderDate) - TY_ORDER_DATE_SHIFT) : null,
     lines: (p.lines || []).map(l => ({
       key: `${p.shipmentPackageId || p.id}|${l.lineId ?? l.id ?? l.barcode}`,
       sku: l.stockCode || l.merchantSku || '', barcode: l.barcode || '', name: l.productName || '', qty: l.quantity,
