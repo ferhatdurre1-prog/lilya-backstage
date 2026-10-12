@@ -724,7 +724,7 @@ function sheetCosts(){
     else if (C.computing) h += `<p class="muted small" style="margin:0">Ürünlerle eşleştiriliyor…</p><div class="progress"><i style="width:40%"></i></div>`;
     else if (C.stats) {
       const s = C.stats;
-      h += `<p class="muted small" style="margin:0">Okunan sütunlar: stok kodu <b>${esc(C.map.sku || '—')}</b>${C.map.barcode ? `, barkod <b>${esc(C.map.barcode)}</b>` : ''}, fiyat <b>${esc(C.map.cost || '—')}</b>${C.map.stock ? `, stok <b>${esc(C.map.stock)}</b>` : ''}</p>
+      h += `<p class="muted small" style="margin:0">Okunan sütunlar: stok kodu <b>${esc(C.map.sku || '—')}</b>${C.map.barcode ? `, barkod <b>${esc(C.map.barcode)}</b>` : ''}, fiyat <b>${esc(C.map.cost || '—')}</b>${C.map.minQty ? ` (÷ <b>${esc(C.map.minQty)}</b>, birim maliyete çevrildi)` : ''}${C.map.stock ? `, stok <b>${esc(C.map.stock)}</b>` : ''}</p>
       ${C.map.stock ? `<label class="chk small"><input type="checkbox" id="cost-setstock" ${C.setStock?'checked':''} ${S.busy||C.done?'disabled':''}><span>Dosyadaki <b>${esc(C.map.stock)}</b> adetlerini depo stoğu olarak da yaz. Farklar sayım düzeltmesi olarak kaydedilir ve Trendyol'a gönderilir.</span></label>` : ''}
       <div class="stat-grid"><div class="stat"><b>${fmtN(s.updated)}</b><span>ürünün fiyatı ${C.done?'güncellendi':'güncellenecek'}</span></div><div class="stat"><b>${fmtN(s.unchanged)}</b><span>fiyatı zaten aynı</span></div><div class="stat"><b>${fmtN(s.notFound)}</b><span>stok kodu bulunamadı</span></div><div class="stat"><b>${fmtN(C.skipped)}</b><span>boş/geçersiz satır (atlandı)</span></div>${C.setStock ? `<div class="stat"><b>${fmtN(s.stockUpdated)}</b><span>ürünün stoğu ${C.done?'güncellendi':'değişecek'}</span></div><div class="stat"><b style="color:${s.stockDelta<0?'var(--bad)':'var(--good)'}">${s.stockDelta>0?'+':''}${fmtN(s.stockDelta)}</b><span>toplam adet farkı</span></div>` : ''}</div>`;
       if (s.notFoundList && s.notFoundList.length) h += `<p class="muted small" style="margin:0">Bulunamayanlar: <span class="mono">${s.notFoundList.map(esc).join(', ')}</span>${s.notFound > s.notFoundList.length ? ' …' : ''}</p>`;
@@ -742,12 +742,14 @@ function parseCostRows(f){
   const H = f.headers;
   const costH = H.filter(h => !/kar|marj|oran|yuzde|%/.test(norm(h).replace('karar','')) || /^(urun)?maliyet/.test(norm(h)));
   const map = {sku:findCol(H, COLS.sku) || findCol(H, COLS.model), barcode:findCol(H, COLS.barcode), cost:findCol(costH, COST_COLS), stock:findCol(H.filter(h => !/kod|min|satis|gun/.test(norm(h))), COLS.stock)};
+  // "Ürün maliyeti" bazı raporlarda "Min. adet" kadar ürünün toplamıdır → birim maliyete çevir
+  map.minQty = map.cost && /maliyet/.test(norm(map.cost)) ? (H.find(h => /^min(imum)?(siparis)?adet/.test(norm(h))) || null) : null;
   if (!map.cost && !map.stock) throw new Error(`Alış fiyatı sütunu bulunamadı. Sütun başlığı "Alış fiyatı" ya da "Birim alış fiyatı (TL)" olmalı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
   if (!map.sku && !map.barcode) throw new Error(`Stok kodu ya da barkod sütunu bulunamadı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
   const items = []; let skipped = 0;
   for (const r of f.rows) {
     const sku = map.sku ? String(r[map.sku] ?? '').trim() : '', barcode = map.barcode ? String(r[map.barcode] ?? '').trim() : '';
-    const raw = map.cost ? r[map.cost] : ''; const cost = num(raw);
+    const raw = map.cost ? r[map.cost] : ''; const minQ = map.minQty ? num(r[map.minQty]) : 1; const cost = num(raw) / (isFinite(minQ) && minQ > 1 ? minQ : 1);
     const sraw = map.stock ? r[map.stock] : ''; const stock = num(sraw);
     if (!sku && !barcode) continue;
     const okCost = !(raw === '' || raw === null || raw === undefined || !isFinite(cost) || cost < 0);
