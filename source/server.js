@@ -163,7 +163,7 @@ async function ingestOrders(env, channel, input, opts = {}) {
   const existing = new Map((await selectIn(env, 'SELECT * FROM orders', 'id', ids)).map(r => [r.id, r]));
   const pkeys = [...new Set(orders.flatMap(o => [...o.lines.values()].map(l => l.pkey)))];
   const known = new Map((await selectIn(env, 'SELECT key, sku, name, channels FROM products', 'key', pkeys)).map(r => [r.key, { ...r, channels: JSON.parse(r.channels || '[]') }]));
-  const stats = { orders: orders.length, created: 0, changed: 0, same: 0, baseline: 0, sold: 0, restored: 0, newReturns: 0, newProducts: 0, failed: 0 };
+  const stats = { orders: orders.length, created: 0, changed: 0, same: 0, baseline: 0, sold: 0, restored: 0, newReturns: 0, newProducts: 0, failed: 0, recon: [] };
   const newSet = new Set();
 
   const compute = (o, ex) => {
@@ -172,6 +172,10 @@ async function ingestOrders(env, channel, input, opts = {}) {
     const prevLines = new Map((ex ? JSON.parse(ex.lines || '[]') : []).map(l => [l.key, l]));
     const stmts = [], s = { sold: 0, restored: 0, newReturns: 0 };
     let changed = isNew || (!!ex && !!o.date && ex.date !== o.date); const ensured = new Set();
+    const pkOf = (k) => String(k).split('|')[0];
+    const prevActivePk = new Set([...prevLines.values()].filter(l => l.status !== 'cancelled' && (Number(l.applied) || 0) > 0 && pkOf(l.key)).map(l => pkOf(l.key)));
+    const inPk = new Set([...o.lines.values()].map(l => pkOf(l.key)).filter(Boolean));
+    const suspect = !isNew && [...inPk].some(p => !prevActivePk.has(p)) && [...prevActivePk].some(p => !inPk.has(p));
     for (const fl of o.lines.values()) {
       const prev = prevLines.get(fl.key);
       const desired = fl.status === 'cancelled' ? 0 : fl.qty;
@@ -195,7 +199,7 @@ async function ingestOrders(env, channel, input, opts = {}) {
       if (!prev || prev.qty !== line.qty || prev.status !== line.status || prev.applied !== line.applied || !!prev.ret !== line.ret || JSON.stringify(prev.fin || null) !== JSON.stringify(line.fin)) changed = true;
       prevLines.set(fl.key, line);
     }
-    if (!changed) return { changed: false, isNew, baseline, s };
+    if (!changed) return { changed: false, isNew, baseline, s, suspect };
     const lines = [...prevLines.values()];
     const date = o.date || (ex && ex.date) || iso();
     const now = iso();
@@ -204,7 +208,7 @@ async function ingestOrders(env, channel, input, opts = {}) {
         ON CONFLICT(id) DO UPDATE SET date=excluded.date, status=excluded.status, lines=excluded.lines, version=orders.version+1, updated_at=excluded.updated_at`)
         .bind(id, channel, o.orderNo, date, orderStatus(lines), ex ? (ex.source || source) : source, (ex ? ex.baseline : baseline) ? 1 : 0, JSON.stringify(lines), now),
       unguard(env), REV(env)];
-    return { changed: true, isNew, baseline, s, stmts: all };
+    return { changed: true, isNew, baseline, s, stmts: all, suspect };
   };
 
   for (const o of orders) {
@@ -221,6 +225,7 @@ async function ingestOrders(env, channel, input, opts = {}) {
       }
     }
     if (!r) continue;
+    if (r.suspect && !dry) stats.recon.push(o.orderNo);
     if (r.baseline) stats.baseline++;
     if (r.isNew) stats.created++; else if (r.changed) stats.changed++; else stats.same++;
     stats.sold += r.s.sold; stats.restored += r.s.restored; stats.newReturns += r.s.newReturns;
@@ -372,8 +377,50 @@ async function backfillTrendyolOrders(env) {
   const pkgs = await fetchOrderPackages(env, start, end);
   const latest = new Map(); for (const p of pkgs) { const k = String(p.shipmentPackageId || p.id); const o = latest.get(k); if (!o || (p.lastModifiedDate || 0) >= (o.lastModifiedDate || 0)) latest.set(k, p); }
   const stats = latest.size ? await ingestOrders(env, 'trendyol', tyPackagesToOrders([...latest.values()], shift), { source: 'trendyol' }) : null;
+  if (stats && stats.recon.length) await processReconQueue(env, stats.recon, 0);
   await setSetting(env, 'fin_backfill_day', day - 1 > 0 ? String(day - 1) : 'done');
   return { day, packages: latest.size, stats };
+}
+/* Trendyol bir paketi bozup yeni numarayla açtığında eski paket "aktif" kalabilir.
+   Siparişi numarasıyla Trendyol'a sorup güncel paket listesinde olmayan eski paketleri kapatır (stok geri eklenir). */
+async function fetchOrderByNumber(env, no, dateIso) {
+  const sid = env.TRENDYOL_SELLER_ID, base = Date.parse(dateIso) || Date.now();
+  const end = Math.min(base + TY_TZ + 12 * 86400000, Date.now() + TY_TZ + 10 * 60000), start = Math.max(end - 14 * 86400000 + 120000, base + TY_TZ - 2 * 86400000);
+  for (const path of [`order/sellers/${sid}/v2/orders`, `order/sellers/${sid}/orders`]) {
+    try { const r = await ty(env, path, { orderNumber: no, startDate: start, endDate: end, size: 50, page: 0 }); return r.content || []; }
+    catch (e) { if (e.status !== 404 && e.status !== 405) throw e; }
+  }
+  return null;
+}
+async function reconcileTrendyolOrder(env, no) {
+  const ord = await env.DB.prepare('SELECT * FROM orders WHERE id=?1').bind(orderId('trendyol', no)).first();
+  if (!ord) return null;
+  const pkgs = (await fetchOrderByNumber(env, no, ord.date) || []).filter(p => String(p.orderNumber) === String(no));
+  if (!pkgs.length) return { no, skipped: true };   // doğrulanamıyorsa dokunma
+  const cur = new Set(pkgs.map(p => String(p.shipmentPackageId || p.id)));
+  const conv = tyPackagesToOrders(pkgs, 0);
+  const lines = conv.flatMap(o => o.lines);
+  const stale = JSON.parse(ord.lines || '[]').filter(l => l.status !== 'cancelled' && String(l.key).split('|')[0] && !cur.has(String(l.key).split('|')[0]));
+  for (const l of stale) lines.push({ key: l.key, sku: l.sku, name: l.name, qty: l.qty, status: 'cancelled', fin: l.fin });
+  const st = await ingestOrders(env, 'trendyol', [{ orderNo: no, date: (conv[0] && conv[0].date) || ord.date, lines }], { source: 'trendyol' });
+  return { no, stale: stale.length, restored: st.restored };
+}
+async function processReconQueue(env, add, max = 6) {
+  let q = []; try { q = JSON.parse((await getSetting(env, 'recon_q')) || '[]'); } catch (e) {}
+  for (const n of (add || [])) if (!q.includes(n)) q.push(n);
+  const done = [];
+  for (const no of q.slice(0, max)) { try { done.push(await reconcileTrendyolOrder(env, no)); } catch (e) { if (e.status === 429) break; done.push({ no, error: String(e.message || e).slice(0, 80) }); } }
+  const rest = q.slice(done.length);
+  await setSetting(env, 'recon_q', JSON.stringify(rest.slice(0, 500)));
+  return done.length ? done : null;
+}
+async function queueSuspectOrders(env) {
+  // tek seferlik tarama: son 14 günde birden fazla aktif paketi olan Trendyol siparişleri
+  const since = iso(Date.now() - 14 * 86400000);
+  const { results } = await env.DB.prepare(`SELECT order_no, lines FROM orders WHERE channel='trendyol' AND date >= ?1`).bind(since).all();
+  const out = [];
+  for (const r of results) { const pk = new Set(JSON.parse(r.lines || '[]').filter(l => l.status !== 'cancelled' && (Number(l.applied) || 0) > 0).map(l => String(l.key).split('|')[0]).filter(Boolean)); if (pk.size > 1) out.push(r.order_no); }
+  return out;
 }
 const CLAIM_OPEN = new Set(['Created', 'WaitingInAction', 'WaitingFraudCheck', 'InAnalysis', 'Unresolved']);
 async function syncTrendyolClaims(env) {
@@ -572,6 +619,11 @@ async function pollOnce(env, full) {
       if (!result.products || !result.products.finished) { await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', '')]); return result; }
     }
     result.orders = await syncTrendyolOrders(env);
+    try {
+      let add = (result.orders && result.orders.stats && result.orders.stats.recon) || [];
+      if (!(await getSetting(env, 'mig_recon1'))) { try { await env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_recon1','1')`).run(); add = add.concat(await queueSuspectOrders(env)); } catch (e) {} }
+      result.recon = await processReconQueue(env, add);
+    } catch (e) { result.reconErr = String(e.message || e); }
     if (full) { result.claims = await syncTrendyolClaims(env); result.products = await syncTrendyolProducts(env); }
     try { result.backfill = await backfillTrendyolOrders(env); } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Geçmiş sipariş taraması: ' + String(e.message || e).slice(0, 200)); }
     if (full) { try { result.finance = await syncTrendyolFinance(env, false); if (result.finance) await setSetting(env, 'fin_err', ''); } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Cari hesap ekstresi: ' + String(e.message || e).slice(0, 200)); } }
