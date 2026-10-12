@@ -475,7 +475,7 @@ async function checkTrendyolPushBatch(env) {
 }
 const FIN_TYPES = 'Sale,Return,Discount,DiscountCancel,Coupon,CouponCancel,ManualRefund,ManualRefundCancel';
 async function syncTrendyolFinance(env, force) {
-  const s = await getSettings(env, ['fin_at', 'cargo_inv_done']);
+  const s = await getSettings(env, ['fin_at', 'cargo_inv_done', 'desi_learned']);
   if (!force && s.fin_at && Date.now() - Date.parse(s.fin_at) < 6 * 3600000) return null;
   const sid = env.TRENDYOL_SELLER_ID, end = Date.now(), start = end - 15 * 86400000 + 60000;
   const agg = new Map(); const get = (no) => { let a = agg.get(no); if (!a) { a = { revenue: 0, commission: 0, net: 0, cargo: null, service: null, sale: false }; agg.set(no, a); } return a; };
@@ -494,6 +494,7 @@ async function syncTrendyolFinance(env, force) {
   }
   // Kargo ve platform hizmet bedeli faturaları
   const done = new Set(JSON.parse(s.cargo_inv_done || '[]')); let cargoInv = 0;
+  const fees0 = await loadFees(env); const learned = {};
   try {
     for (let page = 0; page < 5; page++) {
       const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', startDate: start, endDate: end, page, size: 500, supplierId: sid });
@@ -502,7 +503,11 @@ async function syncTrendyolFinance(env, force) {
         if (/kargo/i.test(t) && x.id && !done.has(String(x.id))) {
           for (let p2 = 0; p2 < 20; p2++) {
             const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(x.id)}/items`, { page: p2, size: 500 });
-            for (const c of (it.content || [])) if (c.orderNumber) { const a = get(String(c.orderNumber)); a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
+            for (const c of (it.content || [])) {
+              if (c.orderNumber) { const a = get(String(c.orderNumber)); a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
+              const d = Math.ceil(Number(c.desi) || 0), amt = Number(c.amount) || 0;
+              if (d > 0 && amt > 0 && !String(c.shipmentPackageType || '').toLocaleLowerCase('tr-TR').includes('iade')) { (learned[d] = learned[d] || []).push(amt); }
+            }
             if (p2 + 1 >= (it.totalPages || 0)) break;
           }
           done.add(String(x.id)); cargoInv++;
@@ -517,6 +522,15 @@ async function syncTrendyolFinance(env, force) {
       cargo=CASE WHEN excluded.cargo IS NULL THEN order_fin.cargo ELSE COALESCE(order_fin.cargo,0)+excluded.cargo END,
       service=COALESCE(excluded.service, order_fin.service), updated_at=excluded.updated_at`)
     .bind(no, a.sale ? Math.round(a.revenue * 100) / 100 : null, a.sale ? Math.round(a.commission * 100) / 100 : null, a.sale ? Math.round(a.net * 100) / 100 : null, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.service, now, a.sale ? 1 : 0));
+  // Barem ücretlerine (46,48 / 84,50) eşit olmayan faturalar desiye göre ücretlenmiştir → desi tablosunu öğren
+  const prev = (() => { try { return JSON.parse((s.desi_learned) || '{}'); } catch (e) { return {}; } })();
+  for (const [d, arr] of Object.entries(learned)) {
+    const desiPriced = arr.filter(a => Math.abs(a - fees0.cargoT1) > 0.02 && Math.abs(a - fees0.cargoT2) > 0.02);
+    if (!desiPriced.length) continue;
+    const all = [...desiPriced, ...((prev[d] && prev[d].s) || [])].slice(0, 40).sort((a, b) => a - b);
+    prev[d] = { s: all, price: all[Math.floor(all.length / 2)], at: now };
+  }
+  st.push(setStmt(env, 'desi_learned', JSON.stringify(prev)));
   st.push(setStmt(env, 'fin_at', now), setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))), REV(env));
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   return { orders: agg.size, rows, cargoInvoices: cargoInv };
@@ -596,9 +610,17 @@ function tyCargo(fee, amount, desi) {
 }
 function minQtyFor(price) { return price < 25 ? 6 : price < 35 ? 4 : price < 50 ? 3 : price < 75 ? 2 : 1; }
 function parseDesiTable(v) { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a.filter(x => x.desi > 0 && x.price >= 0).sort((a, b) => a.desi - b.desi) : []; } catch (e) { return []; } }
+function learnedTable(v) {
+  try { const o = JSON.parse(v || '{}'); return Object.entries(o).map(([d, x]) => ({ desi: Number(d), price: Number(x.price) })).filter(x => x.desi > 0 && x.price > 0).sort((a, b) => a.desi - b.desi); } catch (e) { return []; }
+}
 async function loadFees(env) {
-  const s = await getSettings(env, ['fee_cargo_t1', 'fee_cargo_t2', 'desi_table', 'fee_service_ty', 'fee_cargo_sh', 'stopaj']);
-  return { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), desiTable: parseDesiTable(s.desi_table), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
+  const s = await getSettings(env, ['fee_cargo_t1', 'fee_cargo_t2', 'desi_table', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj']);
+  const manual = parseDesiTable(s.desi_table), learned = learnedTable(s.desi_learned);
+  // elle girilen satırlar öncelikli; eksik desiler faturalardan öğrenilenle tamamlanır
+  const merged = [...manual]; for (const x of learned) if (!merged.some(m => m.desi === x.desi)) merged.push(x);
+  merged.sort((a, b) => a.desi - b.desi);
+  if (merged.length && manual.length && manual[manual.length - 1].extra && merged[merged.length - 1] !== manual[manual.length - 1]) merged[merged.length - 1] = { ...merged[merged.length - 1], extra: manual[manual.length - 1].extra };
+  return { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), desiTable: merged, desiManual: manual, desiLearned: learned, serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
 }
 async function computeProfit(env, from, to) {
   const fee = await loadFees(env);
@@ -693,8 +715,8 @@ function mapReturn(r) { return { id: r.id, channel: r.channel, orderNo: r.order_
 function mapProduct(r) { return { id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'desi_table', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), desiTable: parseDesiTable(s.desi_table), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'desi_table', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day']);
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
 }
 async function api(req, env, path) {
   const method = req.method;
