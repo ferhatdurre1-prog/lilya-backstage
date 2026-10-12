@@ -656,7 +656,7 @@ async function returnDecision(id, accept){
 /* ============ Stok değeri ============ */
 function viewValue(){
   const ps = productsArr();
-  const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<button class="btn" data-act="export-value">Excel indir</button>` : ''}</div>`;
+  const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<div class="row"><button class="btn" data-act="export-value">Excel indir</button><button class="btn primary" data-act="open-costs">Excel'den fiyat yükle</button></div>` : ''}</div>`;
   if (!S.loaded.products) return head + loading();
   if (!ps.length) return head + `<div class="panel empty"><h4>Hesaplanacak ürün yok</h4><p>Önce ürünleri ekle ya da aktar, sonra alış fiyatlarını buradan gir.</p></div>`;
   const val = p => Math.max(0, p.qty) * (p.cost || 0);
@@ -699,6 +699,69 @@ async function exportValue(){
 function saveFile(filename, blob){
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); toast('Dosya hazırlandı.');
+}
+
+/* ---- Excel'den toplu alış fiyatı ---- */
+const COST_COLS = ['birimalisfiyatitl','birimalisfiyati','alisfiyatitl','alisfiyati','alisfiyat','maliyet','maliyetfiyati','costperitem','cost','birimmaliyet'];
+function sheetCosts(){
+  const C = S.costImp;
+  let body = `<div class="card"><h3>Nasıl çalışır</h3>
+    <ol class="howto"><li><b>Excel indir</b> ile güncel listeyi al; içinde stok kodu, ürün adı ve <b>Birim alış fiyatı (TL)</b> sütunu var.</li><li>Fiyat sütununu doldur ya da düzelt, kaydet.</li><li>Dosyayı aşağıya yükle; önce kontrol edip sonra kaydederim.</li></ol>
+    <p class="muted small" style="margin:0">Kendi Excel'in de olur: <b>stok kodu</b> (ya da barkod) ve <b>alış fiyatı</b> sütunu olması yeterli. Boş fiyat hücreleri atlanır, mevcut fiyat silinmez.</p>
+    <div class="row"><button class="btn sm" data-act="export-value">Güncel listeyi indir (şablon)</button></div></div>`;
+  if (!C) body += `<div class="card"><label class="drop" id="drop-cost" for="cost-file"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--brand)"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 002 2h12a2 2 0 002-2v-4"/></svg><b>Fiyat dosyasını seç</b><span class="muted small">Excel (.xlsx) veya CSV</span></label><input type="file" id="cost-file" accept=".xlsx,.xls,.csv,.txt" hidden></div>`;
+  else {
+    let h = `<div class="spread"><div style="min-width:0"><b style="overflow-wrap:anywhere">${esc(C.file)}</b><div class="muted small">${C.rows ? fmtN(C.rows) + ' satır' : ''}</div></div><button class="btn sm ghost" data-act="cost-reset" ${S.busy?'disabled':''}>Başka dosya</button></div>`;
+    if (C.error) h += `<div class="banner bad" style="margin:0"><div>${esc(C.error)}</div></div>`;
+    else if (C.computing) h += `<p class="muted small" style="margin:0">Ürünlerle eşleştiriliyor…</p><div class="progress"><i style="width:40%"></i></div>`;
+    else if (C.stats) {
+      const s = C.stats;
+      h += `<p class="muted small" style="margin:0">Okunan sütunlar: stok kodu <b>${esc(C.map.sku || '—')}</b>${C.map.barcode ? `, barkod <b>${esc(C.map.barcode)}</b>` : ''}, fiyat <b>${esc(C.map.cost)}</b></p>
+      <div class="stat-grid"><div class="stat"><b>${fmtN(s.updated)}</b><span>ürünün fiyatı ${C.done?'güncellendi':'güncellenecek'}</span></div><div class="stat"><b>${fmtN(s.unchanged)}</b><span>fiyatı zaten aynı</span></div><div class="stat"><b>${fmtN(s.notFound)}</b><span>stok kodu bulunamadı</span></div><div class="stat"><b>${fmtN(C.skipped)}</b><span>boş/geçersiz fiyat (atlandı)</span></div></div>`;
+      if (s.notFoundList && s.notFoundList.length) h += `<p class="muted small" style="margin:0">Bulunamayanlar: <span class="mono">${s.notFoundList.map(esc).join(', ')}</span>${s.notFound > s.notFoundList.length ? ' …' : ''}</p>`;
+      if (C.sample && C.sample.length) h += `<div class="preview-tbl"><table><thead><tr><th>Stok kodu</th><th>Ürün</th><th>Eski</th><th>Yeni</th></tr></thead><tbody>${C.sample.map(r => `<tr><td class="mono">${esc(r.sku)}</td><td>${esc(r.name)}</td><td>${r.old!=null?fmtTL(r.old):'—'}</td><td><b>${fmtTL(r.cost)}</b></td></tr>`).join('')}</tbody></table></div>`;
+      if (C.done) h += `<div class="banner" style="background:var(--good-soft);margin:0"><div><b>Fiyatlar kaydedildi.</b> Stok değeri yeniden hesaplandı.</div></div>`;
+      else h += `<div class="row"><button class="btn primary" data-act="cost-run" ${S.busy||!s.updated?'disabled':''}>${s.updated ? fmtN(s.updated) + ' ürünün fiyatını kaydet' : 'Güncellenecek fiyat yok'}</button></div>`;
+    }
+    body += `<div class="card">${h}</div>`;
+  }
+  return {title:'Excel ile alış fiyatı', body};
+}
+function parseCostRows(f){
+  const H = f.headers;
+  const map = {sku:findCol(H, COLS.sku) || findCol(H, COLS.model), barcode:findCol(H, COLS.barcode), cost:findCol(H, COST_COLS)};
+  if (!map.cost) throw new Error(`Alış fiyatı sütunu bulunamadı. Sütun başlığı "Alış fiyatı" ya da "Birim alış fiyatı (TL)" olmalı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
+  if (!map.sku && !map.barcode) throw new Error(`Stok kodu ya da barkod sütunu bulunamadı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
+  const items = []; let skipped = 0;
+  for (const r of f.rows) {
+    const sku = map.sku ? String(r[map.sku] ?? '').trim() : '', barcode = map.barcode ? String(r[map.barcode] ?? '').trim() : '';
+    const raw = r[map.cost]; const cost = num(raw);
+    if (!sku && !barcode) continue;
+    if (raw === '' || raw === null || raw === undefined || !isFinite(cost) || cost < 0) { skipped++; continue; }
+    items.push({sku, barcode, cost:Math.round(cost*100)/100});
+  }
+  return {map, items, skipped};
+}
+async function onCostFile(file){
+  if (!file) return;
+  S.costImp = {file:file.name, computing:true}; renderSheet(false);
+  try {
+    const f = await readFile(file);
+    if (f.json) throw new Error('Bu bir Excel ya da CSV dosyası değil.');
+    const {map, items, skipped} = parseCostRows(f);
+    if (!items.length) throw new Error('Dosyada fiyatı dolu satır bulunamadı.');
+    const r = await api('/api/costs', {items, dry:true});
+    S.costImp = {file:file.name, rows:f.rows.length, map, items, skipped, stats:r.stats, sample:r.sample};
+  } catch(e) { S.costImp = {file:file.name, error:errText(e)}; }
+  renderSheet(false);
+}
+async function runCosts(){
+  const C = S.costImp; if (!C || !C.items || S.busy) return;
+  await run(async () => {
+    const r = await api('/api/costs', {items:C.items});
+    C.stats = r.stats; C.done = true; await refresh(true); toast(`${fmtN(r.stats.updated)} ürünün alış fiyatı kaydedildi.`);
+  });
+  renderSheet(false);
 }
 
 /* ============ Hareketler ============ */
@@ -1003,7 +1066,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, import:sheetImport}[sh.type];
+  const fn = {product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -1056,6 +1119,9 @@ document.addEventListener('click', async e => {
     case 'imp-reset': S.imp = null; renderSheet(false); break;
     case 'imp-run': await runImport(); break;
     case 'export-value': await exportValue(); break;
+    case 'open-costs': S.costImp = null; openSheet('costs'); break;
+    case 'cost-reset': S.costImp = null; renderSheet(false); break;
+    case 'cost-run': await runCosts(); break;
     case 'sync-now': await syncNow(); break;
     case 'resync-products': await saveSetting({resyncProducts:true}, 'Ürün listesi bir sonraki eşitlemede yeniden taranacak.'); break;
     case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} closeSheetForce(); S.authed = false; S.rev = null; render(); break;
@@ -1088,6 +1154,7 @@ document.addEventListener('change', e => {
   const t = e.target;
   if (t.dataset && t.dataset.cost) saveCost(t);
   if (t.id === 'imp-file') onImportFile(t.files[0]);
+  if (t.id === 'cost-file') onCostFile(t.files[0]);
   if (t.id === 'imp-kind') { S.imp.kind = t.value; computePreview(); }
   if (t.id === 'imp-ch') { S.imp.channel = t.value; computePreview(); }
   if (t.id === 'imp-usestock') { S.imp.useStock = t.checked; computePreview(); }

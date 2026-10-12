@@ -577,6 +577,35 @@ async function api(req, env, path) {
     if (!body.dry && body.label) await setSetting(env, 'last_import', JSON.stringify({ at: iso(), label: String(body.label).slice(0, 160) }));
     return json({ ok: true, stats: st });
   }
+  if (path === '/api/costs') {
+    const items = Array.isArray(body.items) ? body.items : null;
+    if (!items || items.length > 5000) return bad('Fiyat listesi geçersiz.');
+    const bmap = await barcodeMap(env, items.filter(x => !String(x.sku || '').trim()).map(x => String(x.barcode || '').trim()));
+    const want = new Map();
+    for (const it of items) {
+      const cost = numOrNull(it.cost); if (cost === null || cost < 0) continue;
+      const r = resolveLine(it, bmap); if (!r) continue;
+      want.set(r.pkey, { cost: Math.round(cost * 100) / 100, label: String(it.sku || it.barcode || '').trim() });
+    }
+    const rows = await selectIn(env, 'SELECT key, sku, name, cost FROM products', 'key', [...want.keys()]);
+    const found = new Map(rows.map(r => [r.key, r]));
+    const stats = { updated: 0, unchanged: 0, notFound: 0, notFoundList: [] };
+    const changes = [];
+    for (const [key, w] of want) {
+      const p = found.get(key);
+      if (!p) { stats.notFound++; if (stats.notFoundList.length < 20) stats.notFoundList.push(w.label); continue; }
+      if (p.cost !== null && Math.abs(p.cost - w.cost) < 0.005) { stats.unchanged++; continue; }
+      stats.updated++; changes.push({ key, sku: p.sku, name: p.name, old: p.cost, cost: w.cost });
+    }
+    if (!body.dry && changes.length) {
+      const now = iso();
+      for (let i = 0; i < changes.length; i += 80) {
+        const part = changes.slice(i, i + 80).map(c => env.DB.prepare('UPDATE products SET cost=?1, updated_at=?2 WHERE key=?3').bind(c.cost, now, c.key));
+        part.push(REV(env)); await env.DB.batch(part);
+      }
+    }
+    return json({ ok: true, stats, sample: changes.slice(0, 8) });
+  }
   if (path === '/api/sync') {
     if (!tyConfigured(env)) return bad('Trendyol bilgileri girilmemiş.');
     if (!(await tryLock(env, 60000))) return json({ ok: true, busy: true });
