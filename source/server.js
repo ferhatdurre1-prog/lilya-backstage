@@ -62,6 +62,9 @@ async function init(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tydate_fix'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_tydate_fix','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_rescan2'`).first())) {
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_rescan2','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
 }
@@ -329,9 +332,11 @@ async function fetchOrderPackages(env, start, end) {
   }
   return out;
 }
+const TY_TZ = 3 * 3600000;
 function tyWindow(hwm, maxBackDays, now) {
-  const start = hwm ? hwm - 15 * 60000 : now - maxBackDays * 86400000;
-  const end = Math.min(start + 14 * 86400000 - 60000, now + 3 * 3600000);
+  const end = now + TY_TZ + 10 * 60000;                       // Trendyol saatine göre "şimdi" + pay
+  let start = hwm ? hwm - TY_TZ - 60 * 60000 : now - maxBackDays * 86400000; // 4 saat geriden başla
+  if (end - start > 14 * 86400000 - 120000) start = end - 14 * 86400000 + 120000;
   return { start, end };
 }
 async function syncTrendyolOrders(env) {
@@ -363,7 +368,7 @@ async function backfillTrendyolOrders(env) {
   const now = Date.now(), shift = Number(await getSetting(env, 'ty_shift')) || 0;
   let day = v === null ? 13 : Number(v);
   if (!(day > 0)) { await setSetting(env, 'fin_backfill_day', 'done'); return null; }
-  const start = now - day * 86400000 + shift, end = Math.min(now + shift, start + 86400000 + 60000);
+  const end = now + TY_TZ + 10 * 60000 - (day - 1) * 86400000, start = end - 86400000 - 3 * 3600000; // 27 saatlik, örtüşen günlük pencereler
   const pkgs = await fetchOrderPackages(env, start, end);
   const latest = new Map(); for (const p of pkgs) { const k = String(p.shipmentPackageId || p.id); const o = latest.get(k); if (!o || (p.lastModifiedDate || 0) >= (o.lastModifiedDate || 0)) latest.set(k, p); }
   const stats = latest.size ? await ingestOrders(env, 'trendyol', tyPackagesToOrders([...latest.values()], shift), { source: 'trendyol' }) : null;
