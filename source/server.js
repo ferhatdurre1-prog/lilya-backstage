@@ -52,9 +52,15 @@ async function init(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tydate'`).first())) {
     const sh = await env.DB.prepare(`SELECT v FROM settings WHERE k='ty_shift'`).first();
     const already = sh && Number(sh.v) >= 3 * 3600000;
-    await env.DB.batch([
-      ...(already ? [] : [env.DB.prepare(`UPDATE orders SET date=strftime('%Y-%m-%dT%H:%M:%fZ', date, '-3 hours') WHERE channel='trendyol' AND date IS NOT NULL AND date<>''`)]),
-      setStmt(env, 'mig_tydate', '1'), REV(env)]);
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_tydate','1')`),
+        ...(already ? [] : [env.DB.prepare(`UPDATE orders SET date=strftime('%Y-%m-%dT%H:%M:%fZ', date, '-3 hours') WHERE channel='trendyol' AND date IS NOT NULL AND date<>''`)]),
+        REV(env)]);
+    } catch (e) { /* başka bir kopya zaten çalıştırdı */ }
+  }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tydate_fix'`).first())) {
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_tydate_fix','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
@@ -162,7 +168,7 @@ async function ingestOrders(env, channel, input, opts = {}) {
     const isNew = !ex, baseline = isNew && !!start && !!o.date && o.date < start;
     const prevLines = new Map((ex ? JSON.parse(ex.lines || '[]') : []).map(l => [l.key, l]));
     const stmts = [], s = { sold: 0, restored: 0, newReturns: 0 };
-    let changed = isNew; const ensured = new Set();
+    let changed = isNew || (!!ex && !!o.date && ex.date !== o.date); const ensured = new Set();
     for (const fl of o.lines.values()) {
       const prev = prevLines.get(fl.key);
       const desired = fl.status === 'cancelled' ? 0 : fl.qty;
