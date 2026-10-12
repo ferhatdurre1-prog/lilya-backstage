@@ -789,7 +789,7 @@ async function runCosts(){
 }
 
 /* ============ Kâr analizi ============ */
-const PERIODS = [['today','Bugün'],['yesterday','Dün'],['week','Bu hafta'],['month','Bu ay'],['lastmonth','Geçen ay'],['d30','Son 30 gün'],['custom','Tarih seç']];
+const PERIODS = [['today','Bugün'],['yesterday','Dün'],['d7','Son 7 gün'],['week','Bu hafta (Pzt–)'],['month','Bu ay'],['lastmonth','Geçen ay'],['d30','Son 30 gün'],['custom','Tarih seç']];
 function periodRange(id, cf, ct){
   const d0 = new Date(); d0.setHours(0,0,0,0);
   const add = (d, n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
@@ -798,6 +798,7 @@ function periodRange(id, cf, ct){
   if (id === 'week') { const wd = (d0.getDay()+6)%7; return [add(d0,-wd), add(d0,1)]; }
   if (id === 'month') return [new Date(d0.getFullYear(), d0.getMonth(), 1), add(d0,1)];
   if (id === 'lastmonth') return [new Date(d0.getFullYear(), d0.getMonth()-1, 1), new Date(d0.getFullYear(), d0.getMonth(), 1)];
+  if (id === 'd7') return [add(d0,-6), add(d0,1)];
   if (id === 'd30') return [add(d0,-29), add(d0,1)];
   const f = cf ? new Date(cf+'T00:00') : add(d0,-6), t = ct ? add(new Date(ct+'T00:00'),1) : add(d0,1);
   return [f, t];
