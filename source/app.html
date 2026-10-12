@@ -702,7 +702,7 @@ function saveFile(filename, blob){
 }
 
 /* ---- Excel'den toplu alış fiyatı ---- */
-const COST_COLS = ['birimalisfiyatitl','birimalisfiyati','alisfiyatitl','alisfiyati','alisfiyat','maliyet','maliyetfiyati','costperitem','cost','birimmaliyet'];
+const COST_COLS = ['urunmaliyeti','urunmaliyetitl','birimalisfiyatitl','birimalisfiyati','alisfiyatitl','alisfiyati','alisfiyat','maliyet','maliyetfiyati','costperitem','cost','birimmaliyet'];
 function sheetCosts(){
   const C = S.costImp;
   let body = `<div class="card"><h3>Nasıl çalışır</h3>
@@ -729,7 +729,8 @@ function sheetCosts(){
 }
 function parseCostRows(f){
   const H = f.headers;
-  const map = {sku:findCol(H, COLS.sku) || findCol(H, COLS.model), barcode:findCol(H, COLS.barcode), cost:findCol(H, COST_COLS)};
+  const costH = H.filter(h => !/kar|marj|oran|yuzde|%/.test(norm(h).replace('karar','')) || /^(urun)?maliyet/.test(norm(h)));
+  const map = {sku:findCol(H, COLS.sku) || findCol(H, COLS.model), barcode:findCol(H, COLS.barcode), cost:findCol(costH, COST_COLS)};
   if (!map.cost) throw new Error(`Alış fiyatı sütunu bulunamadı. Sütun başlığı "Alış fiyatı" ya da "Birim alış fiyatı (TL)" olmalı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
   if (!map.sku && !map.barcode) throw new Error(`Stok kodu ya da barkod sütunu bulunamadı. Okunan sütunlar: ${H.slice(0,12).join(', ')}`);
   const items = []; let skipped = 0;
@@ -823,7 +824,7 @@ async function readFile(file){
   if (name.endsWith('.json')) return {json: JSON.parse(await file.text())};
   if (typeof XLSX === 'undefined') throw new Error('Excel okuyucu yüklenemedi. Sayfayı yenileyip tekrar dene.');
   let wb;
-  if (name.endsWith('.csv') || name.endsWith('.txt')) wb = XLSX.read(await file.text(), {type:'string', raw:true});
+  if (name.endsWith('.csv') || name.endsWith('.txt')) { const txt = (await file.text()).replace(/^\uFEFF/, ''); const first = txt.split(/\r?\n/, 1)[0] || ''; const cnt = c => first.split(c).length - 1; const FS = [';', '\t', ','].sort((a, b) => cnt(b) - cnt(a))[0]; wb = XLSX.read(txt, {type:'string', raw:true, FS}); }
   else wb = XLSX.read(await file.arrayBuffer(), {type:'array', cellDates:true});
   let best = null;
   for (const sn of wb.SheetNames) { const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], {defval:'', raw:true}); if (!best || rows.length > best.length) best = rows; }
