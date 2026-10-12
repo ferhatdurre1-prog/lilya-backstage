@@ -820,7 +820,7 @@ function profitCls(n){ return n > 0 ? 'color:var(--good)' : n < 0 ? 'color:var(-
 function viewProfit(){
   const P = profS(); setTimeout(() => loadProfit(false), 0);
   const D = P.data, s = D && D.summary;
-  const fees = (S.settings && S.settings.fees) || {cargoT1:46.48, cargoT2:84.5, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
+  const fees = (S.settings && S.settings.fees) || {cargoT1:46.48, cargoT2:84.5, cargoT3:98.35, desiMode:false, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
   let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti</p></div></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
@@ -892,7 +892,9 @@ function feesCard(fees){
     <form id="f-fees" class="grid2">
       <label class="f">Kargo: 0–199,99 TL paket<input class="input num" id="fe-ct1" inputmode="decimal" value="${esc(String(fees.cargoT1).replace('.',','))}"></label>
       <label class="f">Kargo: 200–349,99 TL paket<input class="input num" id="fe-ct2" inputmode="decimal" value="${esc(String(fees.cargoT2).replace('.',','))}"></label>
-      <label class="f" style="grid-column:1/-1">Kargo: 350 TL ve üzeri, desi tablosu
+      <label class="f">Kargo: 350 TL ve üzeri (1 desi)<input class="input num" id="fe-ct3" inputmode="decimal" value="${esc(String(fees.cargoT3 ?? 98.35).replace('.',','))}"></label>
+      <label class="chk small" style="grid-column:1/-1"><input type="checkbox" id="fe-desimode" ${fees.desiMode?'checked':''}><span>350 TL ve üzeri paketlerde sabit ücret yerine <b>siparişin desisine göre</b> desi tablosunu kullan</span></label>
+      <label class="f" style="grid-column:1/-1" ${fees.desiMode?'':'hidden'} id="fe-desi-wrap">Desi tablosu
         <textarea class="input mono" id="fe-desi" rows="5" placeholder="1: 59,90&#10;2: 64,90&#10;3: 69,90&#10;+: 5,00">${esc(desiText(fees.desiTable))}</textarea>
         ${fees.desiLearned && fees.desiLearned.length ? `<span class="small" style="font-weight:400;color:var(--good)">Trendyol kargo faturalarından öğrenilen: ${fees.desiLearned.map(x => `${x.desi} desi ${fmtTL(x.price)}`).join(' · ')}. Buraya yazmadığın desiler için bunlar kullanılır.</span>` : `<span class="small" style="font-weight:400;color:var(--ink-2)">Desi ücretleri Trendyol kargo faturalarından otomatik öğrenilir; ilk faturalar okununca burada görünür. İstersen kendin de yazabilirsin.</span>`}
         <span class="muted small" style="font-weight:400">Her satıra <b>desi: ücret</b> yaz. Son satıra <b>+: ücret</b> yazarsan tablodaki son desiden sonraki her desi için bu ücret eklenir. Desi siparişten okunur; yoksa 1 desi sayılır.${(fees.desiTable && fees.desiTable.length) || (fees.desiLearned && fees.desiLearned.length) ? '' : ' <b style="color:var(--warn)">Tablo boşken 350 TL üzeri paketlere 200–349,99 ücreti uygulanır.</b>'}</span></label>
@@ -1310,7 +1312,7 @@ document.addEventListener('submit', async e => {
   else if (id === 'f-order') submitNewOrder();
   else if (id === 'f-ret') submitReturn();
   else if (id === 'f-period') { const P = profS(); P.cf = $('#pf-from').value; P.ct = $('#pf-to').value; if (!P.cf || !P.ct) return toast('İki tarihi de seç.', true); P.data = null; P.key = ''; render(); }
-  else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeServiceTy:v('#fe-sty'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); try { body.desiTable = parseDesi($('#fe-desi').value); } catch(err) { return toast(err.message, true); } await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
+  else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeCargoT3:v('#fe-ct3'), feeServiceTy:v('#fe-sty'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); body.desiMode = $('#fe-desimode').checked; try { body.desiTable = parseDesi($('#fe-desi').value); } catch(err) { return toast(err.message, true); } await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
   else if (id === 'f-start') { const v = $('#st-date').value; if (!v) return toast('Bir tarih seç.', true); await saveSetting({startedAt:new Date(v).toISOString()}, 'Başlangıç tarihi kaydedildi.'); if (S.imp && S.imp.preview) computePreview(); }
 });
 let qTimer;
@@ -1325,6 +1327,7 @@ document.addEventListener('change', e => {
   if (t.id === 'imp-file') onImportFile(t.files[0]);
   if (t.id === 'cost-file') onCostFile(t.files[0]);
   if (t.id === 'cost-setstock') { S.costImp.setStock = t.checked; recomputeCosts(); }
+  if (t.id === 'fe-desimode') { const w = $('#fe-desi-wrap'); if (w) w.hidden = !t.checked; }
   if (t.id === 'set-push') saveSetting({pushStock:t.checked}, t.checked ? 'Stok değişiklikleri Trendyol\'a gönderilecek.' : 'Trendyol\'a stok gönderimi durduruldu.');
   if (t.id === 'imp-kind') { S.imp.kind = t.value; computePreview(); }
   if (t.id === 'imp-ch') { S.imp.channel = t.value; computePreview(); }
