@@ -92,6 +92,10 @@ async function init(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_und1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_und1','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_cust1'`).first())) {
+    // Eski siparişlerin alıcı/fatura bilgileri için son 13 gün yeniden taranır
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_cust1','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_svc1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_svc1','1')`), setStmt(env, 'fin_at', '')]); } catch (e) {}
   }
