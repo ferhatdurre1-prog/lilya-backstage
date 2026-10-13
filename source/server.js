@@ -78,6 +78,9 @@ async function init(env) {
     // Kargo faturaları gidiş / iade olarak ayrı okunsun diye baştan okunur (Trendyol 15 günlük pencere: Ekim'in tamamı)
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_retcargo1','1')`), env.DB.prepare('UPDATE order_fin SET cargo=NULL, ret_cargo=NULL'), setStmt(env, 'cargo_inv_done', '[]'), setStmt(env, 'fin_at', ''), REV(env)]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_fintype1'`).first())) {
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_fintype1','1')`), env.DB.prepare('UPDATE order_fin SET cargo=NULL, ret_cargo=NULL'), setStmt(env, 'cargo_inv_done', '[]'), setStmt(env, 'fin_at', '')]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
 }
@@ -622,10 +625,14 @@ async function syncTrendyolFinance(env, force) {
   if (!force && s.fin_at && Date.now() - Date.parse(s.fin_at) < 6 * 3600000) return null;
   const sid = env.TRENDYOL_SELLER_ID, end = Date.now(), start = end - 15 * 86400000 + 60000;
   const agg = new Map(); const get = (no) => { let a = agg.get(no); if (!a) { a = { revenue: 0, commission: 0, net: 0, cargo: null, retCargo: null, service: null, sale: false }; agg.set(no, a); } return a; };
-  let rows = 0;
+  let rows = 0; const stat = { at: iso(), types: {}, errors: [], cargoInvoices: 0, cargoItems: 0, retItems: 0 };
+  // Trendyol: transactionType tekil; her istekte yalnızca bir tür
+  for (const type of FIN_TYPES.split(',')) {
+  let typeRows = 0;
+  try {
   for (let page = 0; page < 20; page++) {
-    const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionTypes: FIN_TYPES, startDate: start, endDate: end, page, size: 1000, supplierId: sid });
-    for (const x of (r.content || [])) {
+    const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionType: type, startDate: start, endDate: end, page, size: 1000, supplierId: sid });
+    for (const x of (r.content || [])) { typeRows++;
       if (!x.orderNumber) continue; rows++;
       const a = get(String(x.orderNumber)); const credit = Number(x.credit) || 0, debt = Number(x.debt) || 0;
       a.revenue += credit - debt; if (x.transactionType === 'Sale') a.sale = true;
@@ -634,6 +641,9 @@ async function syncTrendyolFinance(env, force) {
       a.net += Number(x.sellerRevenue) || 0;
     }
     if (page + 1 >= (r.totalPages || 0)) break;
+  }
+  } catch (e) { if (type === 'Sale') throw e; stat.errors.push(type + ': ' + String(e.message || e).slice(0, 80)); }
+  stat.types[type] = typeRows;
   }
   // Kargo ve platform hizmet bedeli faturaları
   const done = new Set(JSON.parse(s.cargo_inv_done || '[]')); let cargoInv = 0;
@@ -648,6 +658,7 @@ async function syncTrendyolFinance(env, force) {
             const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(x.id)}/items`, { page: p2, size: 500 });
             for (const c of (it.content || [])) {
               const isRet = String(c.shipmentPackageType || '').toLocaleLowerCase('tr-TR').includes('iade');
+              stat.cargoItems++; if (isRet) stat.retItems++;
               if (c.orderNumber) { const a = get(String(c.orderNumber)); if (isRet) a.retCargo = (a.retCargo || 0) + (Number(c.amount) || 0); else a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
               const d = Math.ceil(Number(c.desi) || 0), amt = Number(c.amount) || 0;
               if (d > 0 && amt > 0 && !isRet) { (learned[d] = learned[d] || []).push(amt); }
@@ -659,7 +670,8 @@ async function syncTrendyolFinance(env, force) {
       }
       if (page + 1 >= (r.totalPages || 0)) break;
     }
-  } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Kargo faturaları okunamadı: ' + String(e.message || e).slice(0, 200)); }
+  } catch (e) { stat.errors.push('Kargo faturaları: ' + String(e.message || e).slice(0, 150)); await setSetting(env, 'fin_err', iso() + ' · Kargo faturaları okunamadı: ' + String(e.message || e).slice(0, 200)); }
+  stat.cargoInvoices = cargoInv; stat.orders = agg.size;
   const now = iso(); const st = [];
   for (const [no, a] of agg) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,revenue,commission,net,cargo,service,updated_at,ret_cargo) VALUES(?1,?2,?3,?4,?5,?6,?7,?9)
     ON CONFLICT(order_no) DO UPDATE SET revenue=CASE WHEN ?8 THEN excluded.revenue ELSE order_fin.revenue END, commission=CASE WHEN ?8 THEN excluded.commission ELSE order_fin.commission END, net=CASE WHEN ?8 THEN excluded.net ELSE order_fin.net END,
@@ -676,9 +688,9 @@ async function syncTrendyolFinance(env, force) {
     prev[d] = { s: all, price: all[Math.floor(all.length / 2)], at: now };
   }
   st.push(setStmt(env, 'desi_learned', JSON.stringify(prev)));
-  st.push(setStmt(env, 'fin_at', now), setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))), REV(env));
+  st.push(setStmt(env, 'fin_stat', JSON.stringify(stat)), setStmt(env, 'fin_at', now), setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))), REV(env));
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
-  return { orders: agg.size, rows, cargoInvoices: cargoInv };
+  return { orders: agg.size, rows, cargoInvoices: cargoInv, stat };
 }
 async function tryLock(env, ms) {
   const now = Date.now();
@@ -893,8 +905,8 @@ function mapReturn(r) { return { id: r.id, channel: r.channel, orderNo: r.order_
 function mapProduct(r) { return { id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat']);
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
 }
 async function api(req, env, path) {
   const method = req.method;
