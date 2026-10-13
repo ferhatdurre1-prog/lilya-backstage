@@ -75,6 +75,7 @@ async function init(env) {
   }
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_misc1'`).first())) {
     // Kesinti faturalarının hepsi (ceza vb.) okunsun diye 15 günlük pencere yeniden taranır
@@ -848,6 +849,9 @@ async function computeProfit(env, from, to) {
   const miscByOrder = new Map();
   for (const m of await selectIn(env, 'SELECT order_no, type, amount FROM fin_misc', 'order_no', orderNos)) { const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
   const { results: miscFree } = await env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE order_no IS NULL AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to).all();
+  // Reklam: harcandığı günün gideri (elle ya da Trendyol reklam raporundan girilen günlük harcama)
+  const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
+  const { results: adRows } = await env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo).all();
   const R2 = (n) => Math.round(n * 100) / 100;
   const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
@@ -934,12 +938,17 @@ async function computeProfit(env, from, to) {
       add(bp, res); bp.orders++;
     }
   }
-  const otherFees = miscFree.map(x => ({ type: x.type, amount: R2(x.amount || 0), n: x.n }));
-  sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.profit -= sum.otherFees;
+  const isAd = (t) => /reklam|ads/i.test(String(t || ''));
+  sum.ads = adRows.reduce((a, x) => a + (x.amount || 0), 0); sum.adDays = adRows.length;
+  // Günlük reklam girişi varsa reklam faturaları ayrıca düşülmez (çift sayılmasın); yoksa faturalar fatura tarihine göre düşülür
+  const adInvoices = miscFree.filter(x => isAd(x.type)).reduce((a, x) => a + (x.amount || 0), 0);
+  const otherFees = miscFree.filter(x => !(adRows.length && isAd(x.type))).map(x => ({ type: x.type, amount: R2(x.amount || 0), n: x.n }));
+  sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices);
+  sum.profit -= sum.otherFees + sum.ads;
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
-  return { from, to, fees: fee, summary: sum, report: rep, otherFees, products, orders: byOrder.slice(0, 500), missingCostSkus: [...missingCostSkus].slice(0, 30) };
+  return { from, to, fees: fee, summary: sum, report: rep, otherFees, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder.slice(0, 500), missingCostSkus: [...missingCostSkus].slice(0, 30) };
 }
 
 async function computePricing(env) {
@@ -1090,6 +1099,20 @@ async function api(req, env, path) {
     return json(await computeProfit(env, iso(from), iso(to)));
   }
   if (path === '/api/pricing') return json(await computePricing(env));
+  if (path === '/api/ads') {
+    const items = Array.isArray(body.items) ? body.items : null; if (!items || items.length > 1000) return bad('Reklam listesi geçersiz.');
+    const ch = ['trendyol', 'shopify', 'hepsiburada', 'temu', 'diger'].includes(body.channel) ? body.channel : 'trendyol';
+    const st = []; let n = 0;
+    for (const it of items) {
+      const day = String(it.day || ''); const amt = Number(it.amount);
+      if (!/^20\d\d-\d\d-\d\d$/.test(day) || !Number.isFinite(amt) || amt < 0) return bad('Geçersiz satır: ' + day + ' · ' + it.amount);
+      if (amt === 0) st.push(env.DB.prepare('DELETE FROM ad_spend WHERE day=?1 AND channel=?2').bind(day, ch));
+      else st.push(env.DB.prepare('INSERT INTO ad_spend(day,channel,amount,source,updated_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(day,channel) DO UPDATE SET amount=excluded.amount, source=excluded.source, updated_at=excluded.updated_at').bind(day, ch, Math.round(amt * 100) / 100, String(body.source || 'manuel').slice(0, 20), iso()));
+      n++;
+    }
+    st.push(REV(env)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    return json({ ok: true, saved: n });
+  }
   if (path === '/api/audit') {
     const s = await getSettings(env, ['audit_state', 'audit_at', 'audit_started', 'audit_found', 'fin_backfill_day', 'recon_q']);
     let q = 0; try { q = JSON.parse(s.recon_q || '[]').length; } catch (e) {}

@@ -842,7 +842,7 @@ function viewProfit(){
   if (!D) return h + loading();
   if (P.sub === 'audit') return h + viewAudit() + feesCard(fees);
   if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + feesCard(fees);
-  const rows = [['Satış (ciro)', s.revenue, false], ['Komisyon', s.commission, true], ['Kargo', s.cargo, true], ...(s.retCargo ? [['İade kargosu', s.retCargo, true]] : []), ...(s.penalty ? [['Ceza ve müşteri kuponu', s.penalty, true]] : []), ['Hizmet bedeli', s.service, true], ['Stopaj', s.stopaj, true], ['Ürün maliyeti', s.cost, true], ...(s.otherFees ? [['Diğer Trendyol kesintileri', s.otherFees, true]] : [])];
+  const rows = [['Satış (ciro)', s.revenue, false], ['Komisyon', s.commission, true], ['Kargo', s.cargo, true], ...(s.retCargo ? [['İade kargosu', s.retCargo, true]] : []), ...(s.penalty ? [['Ceza ve müşteri kuponu', s.penalty, true]] : []), ['Hizmet bedeli', s.service, true], ['Stopaj', s.stopaj, true], ['Ürün maliyeti', s.cost, true], ...(s.ads ? [['Reklam', s.ads, true]] : []), ...(s.otherFees ? [['Diğer Trendyol kesintileri', s.otherFees, true]] : [])];
   const maxV = Math.max(1, s.revenue);
   h += `<div class="hero-val"><div><div class="muted small">Net kâr</div><div class="big" style="${profitCls(s.profit)}">${tlS(s.profit)}</div>
       <div class="row small" style="margin-top:8px;gap:8px"><span class="pill ${s.profit>=0?'p-good':'p-bad'}">Marj ${pct(s.margin)}</span><span class="muted">${fmtN(s.orders)} sipariş · ${fmtN(s.units)} adet</span></div></div>
@@ -884,7 +884,45 @@ function viewProfit(){
         <td class="r num">${fmtN(x.units)}</td><td class="r num">${fmtTL(x.revenue)}</td><td class="r num" style="${profitCls(x.profit)}"><b>${tlS(x.profit)}</b></td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
       <p class="muted small">Sipariş başı kargo, iade kargosu ve hizmet bedeli ürünlere sipariş içindeki paylarına göre dağıtılır. İadesi onaylanan adetler satıştan düşülür; kargo ve hizmet bedeli zararı iade edilen ürüne yazılır.</p>`;
   }
-  return h + feesCard(fees);
+  return h + adsCard(D) + feesCard(fees);
+}
+function todayTR(){ return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10); }
+function adsCard(D){
+  const s = D.summary || {}, ads = D.ads || [];
+  return `<div class="card" style="margin-top:18px"><div class="spread"><h3 style="margin:0">Reklam giderleri</h3><span class="muted small">Harcandığı günün gideri olarak yazılır</span></div>
+    <p class="muted small" style="margin:0">Trendyol reklam harcaması API ile alınamıyor; günlük harcamayı buraya yaz ya da Trendyol reklam panelinden indirdiğin günlük raporu (Excel/CSV) yükle. Aynı güne tekrar girersen üzerine yazılır, 0 girersen silinir.${s.adInvoices && s.adDays ? ` Bu dönemde ${fmtTL(s.adInvoices)} reklam faturası var; günlük giriş yapıldığı için ayrıca düşülmedi.` : s.adInvoices ? ` Günlük giriş olmadığı için bu dönemdeki ${fmtTL(s.adInvoices)} reklam faturası fatura tarihine göre "Diğer Trendyol kesintileri"nde düşüldü.` : ''}</p>
+    <form id="f-ad" class="row" style="flex-wrap:wrap;gap:8px"><input class="input" type="date" id="ad-day" value="${todayTR()}" style="max-width:170px" aria-label="Gün"><input class="input num" id="ad-amt" inputmode="decimal" placeholder="Harcama (TL)" style="max-width:150px" aria-label="Harcama"><button class="btn primary" type="submit">Kaydet</button>
+      <label class="btn ghost" style="cursor:pointer">Rapor yükle<input type="file" id="ad-file" accept=".xlsx,.xls,.csv,.txt" hidden></label>
+      <label class="chk small"><input type="checkbox" id="ad-kdv">Rapordaki tutarlara %20 KDV ekle</label></form>
+    ${ads.length ? `<div class="tbl-wrap"><table class="t"><thead><tr><th>Gün</th><th>Kaynak</th><th class="r">Harcama</th><th></th></tr></thead><tbody>${ads.map(a => `<tr><td class="num">${esc(new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td><td class="muted small">${esc(a.source==='rapor'?'Rapor':'Elle')}</td><td class="r num">${fmtTL(a.amount)}</td><td class="r"><button class="btn sm ghost" data-act="ad-del" data-id="${esc(a.day)}">Sil</button></td></tr>`).join('')}</tbody></table></div><div class="spread small"><span class="muted">${fmtN(ads.length)} gün</span><b class="num">${fmtTL(s.ads||0)}</b></div>` : '<p class="muted small" style="margin:0">Bu dönem için reklam girişi yok.</p>'}
+  </div>`;
+}
+async function saveAds(items, source, msg){
+  await run(async () => { await api('/api/ads', {items, channel:'trendyol', source}); profS().key = ''; await refresh(true); toast(msg); });
+}
+function adDate(v){
+  if (v instanceof Date && !isNaN(v)) return new Date(v.getTime() - v.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  if (typeof v === 'number' && v > 30000 && v < 80000) { const d = new Date(Date.UTC(1899, 11, 30) + v * 86400000); return d.toISOString().slice(0, 10); }
+  const t = String(v || '').trim(); let m;
+  if ((m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  if ((m = t.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/))) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  return null;
+}
+async function importAds(file){
+  try {
+    const f = await readFile(file); if (!f.rows) throw new Error('Excel ya da CSV dosyası seç.');
+    const nk = h => searchNorm(h).replace(/ı/g,'i').replace(/ğ/g,'g').replace(/ü/g,'u').replace(/ş/g,'s').replace(/ö/g,'o').replace(/ç/g,'c');
+    const dateCol = f.headers.find(h => /tarih|date/.test(nk(h))) || f.headers.find(h => /^gun$|^day$|gun\b/.test(nk(h)) && !/butce|budget|gunluk/.test(nk(h)));
+    const amtCol = f.headers.find(h => /harca|maliyet|spend|cost|gider|tuketilen/.test(nk(h)) && !/butce|budget|birim|tiklama basi|cpc/.test(nk(h))) || f.headers.find(h => /tutar|amount/.test(nk(h)));
+    if (!dateCol || !amtCol) throw new Error('Dosyada tarih ve harcama sütunu bulunamadı. Bulunan sütunlar: ' + f.headers.slice(0, 12).join(', '));
+    const kdv = $('#ad-kdv') && $('#ad-kdv').checked; const byDay = new Map(); let skipped = 0;
+    for (const r of f.rows) { const d = adDate(r[dateCol]); const a = num(r[amtCol]); if (!d || !isFinite(a)) { skipped++; continue; } byDay.set(d, (byDay.get(d) || 0) + a * (kdv ? 1.2 : 1)); }
+    if (!byDay.size) throw new Error('Okunabilir satır bulunamadı.');
+    const items = [...byDay].map(([day, amount]) => ({day, amount: Math.round(amount * 100) / 100})).sort((a, b) => a.day < b.day ? -1 : 1);
+    const total = items.reduce((a, x) => a + x.amount, 0);
+    if (!(await confirmBox(`<b>${esc(dateCol)}</b> ve <b>${esc(amtCol)}</b> sütunlarından <b>${fmtN(items.length)} gün</b> (${esc(items[0].day)} – ${esc(items[items.length-1].day)}), toplam <b>${fmtTL(total)}</b> reklam harcaması okundu${skipped ? `; ${fmtN(skipped)} satır atlandı` : ''}. Bu günlerin mevcut kayıtlarının üzerine yazılsın mı?`, 'Kaydet'))) return;
+    await saveAds(items, 'rapor', `${fmtN(items.length)} günün reklam harcaması kaydedildi.`);
+  } catch(e) { toast(errText(e), true); }
 }
 async function loadPricing(){
   const P = profS(); if (P.pricingLoading) return; P.pricingLoading = true;
@@ -1346,6 +1384,7 @@ document.addEventListener('click', async e => {
     case 'audit-fix': try { const r = await api('/api/audit/fix', {}); toast(`${fmtN(r.queued)} sipariş onarım sırasına alındı.`); } catch(e) { toast(errText(e), true); } profS().auditAt = 0; render(); break;
     case 'psort': profS().sort = id; render(); break;
     case 'goto-missing-cost': S.vfilter = 'missing'; setTab('value'); break;
+    case 'ad-del': { if (await confirmBox(`${esc(id)} günündeki reklam kaydı silinsin mi?`, 'Sil', true)) await saveAds([{day:id, amount:0}], 'manuel', 'Reklam kaydı silindi.'); break; }
     case 'fin-sync': { S.syncing = true; render(); try { const r = await api('/api/finance/sync', {}); toast(`Trendyol kesintileri okundu: ${fmtN(r.result.orders)} sipariş.`); } catch(e) { toast(errText(e), true); } S.syncing = false; await refresh(true); profS().key = ''; render(); break; }
     case 'open-costs': S.costImp = null; openSheet('costs'); break;
     case 'cost-reset': S.costImp = null; renderSheet(false); break;
@@ -1371,6 +1410,7 @@ document.addEventListener('submit', async e => {
   else if (id === 'f-order') submitNewOrder();
   else if (id === 'f-ret') submitReturn();
   else if (id === 'f-period') { const P = profS(); P.cf = $('#pf-from').value; P.ct = $('#pf-to').value; if (!P.cf || !P.ct) return toast('İki tarihi de seç.', true); P.data = null; P.key = ''; render(); }
+  else if (id === 'f-ad') { const day = $('#ad-day').value, amount = num($('#ad-amt').value); if (!day) return toast('Gün seç.', true); if (!isFinite(amount) || amount < 0) return toast('Harcamayı sayı olarak yaz. Örn. 350,50', true); await saveAds([{day, amount}], 'manuel', amount ? `${day} için ${fmtTL(amount)} reklam gideri kaydedildi.` : `${day} reklam kaydı silindi.`); }
   else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeCargoT3:v('#fe-ct3'), feeServiceTy:v('#fe-sty'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); body.desiMode = $('#fe-desimode').checked; try { body.desiTables = {tex: parseDesi($('#fe-desi-tex').value), ptt: parseDesi($('#fe-desi-ptt').value)}; } catch(err) { return toast(err.message, true); } if (!body.desiTables.tex.length || !body.desiTables.ptt.length) return toast('İki desi tablosu da dolu olmalı.', true); await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
   else if (id === 'f-start') { const v = $('#st-date').value; if (!v) return toast('Bir tarih seç.', true); await saveSetting({startedAt:new Date(v).toISOString()}, 'Başlangıç tarihi kaydedildi.'); if (S.imp && S.imp.preview) computePreview(); }
 });
@@ -1384,6 +1424,7 @@ document.addEventListener('change', e => {
   const t = e.target;
   if (t.dataset && t.dataset.cost) saveCost(t);
   if (t.id === 'imp-file') onImportFile(t.files[0]);
+  if (t.id === 'ad-file' && t.files[0]) { importAds(t.files[0]); t.value = ''; }
   if (t.id === 'cost-file') onCostFile(t.files[0]);
   if (t.id === 'cost-setstock') { S.costImp.setStock = t.checked; recomputeCosts(); }
   if (t.id === 'fe-desimode') { const w = $('#fe-desi-wrap'); if (w) w.hidden = !t.checked; }
