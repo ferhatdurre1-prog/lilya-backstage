@@ -483,7 +483,19 @@ function viewLogin(){
       <label class="f">Kullanıcı adı<input class="input" id="lg-user" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required></label>
       <label class="f">Şifre<input class="input" id="lg-pass" type="password" autocomplete="current-password" required></label>
       <button class="btn ${fid ? '' : 'primary'}" type="submit">Giriş yap</button>
-    </form></div>`;
+    </form>
+    ${first ? '' : `<button class="btn ghost sm" data-act="forgot" style="justify-self:center">Şifremi ya da kullanıcı adımı unuttum</button>`}
+    ${S.forgot ? `<div class="card" style="box-shadow:none;background:var(--surface-2);gap:10px">
+      <b>Şifreni sıfırla</b>
+      <p class="small" style="margin:0">Şifre, Cloudflare hesabında saklanır. Sıfırlamak için:</p>
+      <ol class="small" style="margin:0;padding-left:18px;display:grid;gap:6px">
+        <li><a href="https://dash.cloudflare.com" target="_blank" rel="noopener">dash.cloudflare.com</a> adresine Cloudflare hesabınla gir.</li>
+        <li><b>Workers ve Pages</b> (Workers &amp; Pages) → <b>lilya-backstage</b> → <b>Ayarlar</b> (Settings) → <b>Değişkenler ve Gizli Bilgiler</b> (Variables and Secrets).</li>
+        <li><b>APP_PASSWORD</b> satırında <b>Düzenle</b>'ye bas, yeni şifreni yaz ve kaydet (Deploy).</li>
+        <li>Buraya dön: "İlk giriş" ekranı gelir. Yeni kullanıcı adını belirleyip yeni şifrenle gir.</li>
+      </ol>
+      <p class="small muted" style="margin:0">Şifre değişince kullanıcı adı da sıfırlanır, yani kullanıcı adını unuttuysan da aynı yol geçerli.${I && I.passkeys ? ' Face ID kuruluysa şifreye gerek kalmadan yüzünle de girebilirsin.' : ''}</p>
+    </div>` : ''}</div>`;
 }
 async function loadAuthInfo(){
   if (S.authInfoLoading) return; S.authInfoLoading = true;
@@ -1822,6 +1834,7 @@ document.addEventListener('click', async e => {
     case 'home-stock': S.filter = id; setTab('stock'); break;
     case 'wx-geo': if (!navigator.geolocation) { toast('Bu cihaz konum vermiyor.', true); break; }
       navigator.geolocation.getCurrentPosition(pos => { try { localStorage.setItem('lb_geo', JSON.stringify({lat: Math.round(pos.coords.latitude*100)/100, lon: Math.round(pos.coords.longitude*100)/100})); } catch(e) {} loadWeather(true); }, () => toast('Konum izni verilmedi; yaklaşık konum kullanılıyor.', true), {timeout: 10000, maximumAge: 3600000}); break;
+    case 'forgot': S.forgot = !S.forgot; render(); break;
     case 'faceid': try { await faceIdLogin(); } catch(e) { if (e.name !== 'NotAllowedError') toast(errText(e), true); } break;
     case 'wa-add': try { await faceIdRegister(); toast('Face ID kuruldu.'); if (S.sheet) { S.sheet.list = null; renderSheet(false); } } catch(e) { toast(e.name === 'NotAllowedError' ? 'İptal edildi.' : e.name === 'InvalidStateError' ? 'Bu cihazda Face ID zaten kurulu.' : errText(e), true); } break;
     case 'wa-del': if (await confirmBox('Bu cihazın Face ID girişi kaldırılsın mı?', 'Kaldır', true)) { await run(async () => { await api('/api/passkey/delete', {id}); try { localStorage.removeItem('lb_wa'); } catch(e) {} S.sheet.list = null; renderSheet(false); }); } break;

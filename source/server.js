@@ -955,7 +955,13 @@ function parseAuthData(ad) {
   if (out.at) { const l = (ad[53] << 8) | ad[54]; out.credId = ad.slice(55, 55 + l); out.cose = cborDecode(ad.slice(55 + l)).value; }
   return out;
 }
-async function authUser(env) { return (await getSetting(env, 'auth_user')) || ''; }
+// Kullanıcı adı, belirlendiği andaki uygulama şifresine bağlıdır: Cloudflare'de APP_PASSWORD değiştirilirse
+// (şifremi unuttum) kullanıcı adı da sıfırlanır ve bir sonraki girişte yeniden belirlenir.
+async function authUser(env) {
+  const g = await getSettings(env, ['auth_user', 'auth_user_tag']); if (!g.auth_user) return '';
+  if (g.auth_user_tag && g.auth_user_tag !== await hmac(env.APP_PASSWORD, 'user-tag')) return '';
+  return g.auth_user;
+}
 
 /* ---------- kâr hesabı ---------- */
 const MARKETPLACES = new Set(['trendyol', 'hepsiburada', 'temu']);
@@ -1582,6 +1588,7 @@ export default {
         if (!name) return bad('Kullanıcı adını yaz.');
         if (!passOk || (user && user !== name)) { await sleep(900); return bad('Kullanıcı adı ya da şifre hatalı.', 401); }
         if (!user) { if (!/^[a-z0-9çğıöşü._-]{3,32}$/.test(name)) return bad('Kullanıcı adı 3-32 karakter olmalı; harf, rakam, nokta, tire kullanılabilir.'); await setSetting(env, 'auth_user', name); }
+        await setSetting(env, 'auth_user_tag', await hmac(env.APP_PASSWORD, 'user-tag'));
         return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
       }
       if (path === '/api/passkey/login-options' && req.method === 'POST') {
