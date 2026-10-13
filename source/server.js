@@ -1492,7 +1492,7 @@ export default {
       if (!path.startsWith('/api/') && path !== '/perf' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png')
         return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
       if (path.startsWith('/api/') && path !== '/api/login' && path !== '/api/logout' || path === '/perf') await init(env);
-      if (path === '/manifest.webmanifest') return new Response(JSON.stringify({ name: 'Lilya Backstage', short_name: 'Backstage', start_url: '/', display: 'standalone', background_color: '#edf0ea', theme_color: '#1f3a30', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] }), { headers: { 'content-type': 'application/manifest+json' } });
+      if (path === '/manifest.webmanifest') return new Response(JSON.stringify({ name: 'Lilya Backstage', short_name: 'Backstage', start_url: '/', display: 'standalone', background_color: '#f5f6f8', theme_color: '#0a0b10', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] }), { headers: { 'content-type': 'application/manifest+json' } });
       if (path === '/icon.svg' || path === '/apple-touch-icon.png') return new Response(ICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
       if (path === '/api/login' && req.method === 'POST') {
         const b = await req.json().catch(() => ({}));
@@ -1519,4 +1519,4 @@ export default {
   async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); }
 };
 
-const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180"><rect width="180" height="180" rx="40" fill="#1f3a30"/><text x="90" y="128" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="112" fill="#f1eedf">L</text></svg>`;
+const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a1e2d"/><stop offset="1" stop-color="#0a0b10"/></linearGradient></defs><rect width="180" height="180" rx="40" fill="url(#g)"/><circle cx="150" cy="30" r="70" fill="#6366f1" opacity=".35"/><text x="90" y="124" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-weight="800" font-size="104" fill="#ffffff">L</text></svg>`;
