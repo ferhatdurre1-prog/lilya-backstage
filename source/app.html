@@ -302,6 +302,7 @@ function tyState(){
   if (errAt && errAt >= okAt) return {cls:'err', text:'Trendyol hatası', err:t.err.slice(27)};
   if (!okAt) return {cls:'', text:'Trendyol ilk eşitleme bekleniyor'};
   const stale = Date.now() + S.skew - okAt > 3 * 60000;
+  if (Date.now() + S.skew - okAt > 15 * 60000) return {cls:'err', text:'Trendyol eşitlemesi durdu · son: ' + ago(t.ok), err:'Son 15 dakikadır Trendyol\'dan veri alınamadı. Cloudflare günlük limiti dolmuş olabilir.'};
   return {cls: stale ? 'warn' : 'ok', text:'Trendyol · ' + ago(t.ok)};
 }
 function renderSync(){

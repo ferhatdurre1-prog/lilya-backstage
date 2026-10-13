@@ -78,7 +78,7 @@ async function init(env) {
 }
 async function getSetting(env, k) { const r = await env.DB.prepare('SELECT v FROM settings WHERE k=?1').bind(k).first(); return r ? r.v : null; }
 async function getSettings(env, keys) { const out = {}; const { results } = await env.DB.prepare(`SELECT k,v FROM settings WHERE k IN (${keys.map((_, i) => '?' + (i + 1)).join(',')})`).bind(...keys).all(); for (const r of results) out[r.k] = r.v; return out; }
-const setStmt = (env, k, v) => env.DB.prepare('INSERT INTO settings(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=excluded.v').bind(k, String(v));
+const setStmt = (env, k, v) => env.DB.prepare('INSERT INTO settings(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=excluded.v WHERE settings.v IS NOT excluded.v').bind(k, String(v));
 async function setSetting(env, k, v) { await setStmt(env, k, v).run(); }
 const REV = (env) => env.DB.prepare(`UPDATE settings SET v=CAST(CAST(v AS INTEGER)+1 AS TEXT) WHERE k='rev'`);
 const guardStmt = (env, sql, ...b) => env.DB.prepare(`INSERT INTO guard(x) SELECT CASE WHEN ${sql} THEN 1 ELSE NULL END`).bind(...b);
@@ -306,7 +306,9 @@ async function recordAuditPkgs(env, pkgs) {
       units += Number(l.quantity) || 0; const f = tyLineFin(l); if (f) { revenue += f.revenue; paid += f.paid; }
     }
     const day = p.orderDate ? trDay(Number(p.orderDate) - TY_ORDER_DATE_SHIFT) : null;
-    st.push(env.DB.prepare('INSERT OR REPLACE INTO audit_pkg(pkg_id,order_no,day,units,revenue,paid,status,seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)')
+    st.push(env.DB.prepare(`INSERT INTO audit_pkg(pkg_id,order_no,day,units,revenue,paid,status,seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+      ON CONFLICT(pkg_id) DO UPDATE SET order_no=excluded.order_no, day=excluded.day, units=excluded.units, revenue=excluded.revenue, paid=excluded.paid, status=excluded.status, seen_at=excluded.seen_at
+      WHERE audit_pkg.order_no IS NOT excluded.order_no OR audit_pkg.day IS NOT excluded.day OR audit_pkg.units IS NOT excluded.units OR audit_pkg.revenue IS NOT excluded.revenue OR audit_pkg.paid IS NOT excluded.paid OR audit_pkg.status IS NOT excluded.status`)
       .bind(String(p.shipmentPackageId || p.id), String(p.orderNumber), day, units, Math.round(revenue * 100) / 100, Math.round(paid * 100) / 100, status, now));
   }
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
@@ -387,7 +389,7 @@ async function syncTrendyolOrders(env) {
   let stats = null;
   if (list.length) { stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' }); await recordAuditPkgs(env, list); }
   const desiSt = [];
-  for (const p of list) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const ls = p.lines || []; if (d > 0 && ls.length === 1 && ls[0].stockCode) desiSt.push(env.DB.prepare('UPDATE products SET desi=?1 WHERE key=?2').bind(Math.round(d / Math.max(1, Number(ls[0].quantity) || 1) * 100) / 100, skuKey(ls[0].stockCode))); }
+  for (const p of list) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const ls = p.lines || []; if (d > 0 && ls.length === 1 && ls[0].stockCode) desiSt.push(env.DB.prepare('UPDATE products SET desi=?1 WHERE key=?2 AND desi IS NOT ?1').bind(Math.round(d / Math.max(1, Number(ls[0].quantity) || 1) * 100) / 100, skuKey(ls[0].stockCode))); }
   for (let i = 0; i < desiSt.length; i += 90) await env.DB.batch(desiSt.slice(i, i + 90));
   await setSetting(env, 'ty_orders_hwm', String(list.length ? maxMod : (hwm || Math.min(end, now))));
   return { packages: list.length, stats };
@@ -698,7 +700,8 @@ async function pollOnce(env, full) {
     if (full) { try { result.finance = await syncTrendyolFinance(env, false); if (result.finance) await setSetting(env, 'fin_err', ''); } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Cari hesap ekstresi: ' + String(e.message || e).slice(0, 200)); } }
     try { result.push = await pushTrendyolStock(env); if (full) result.pushCheck = await checkTrendyolPushBatch(env); }
     catch (e) { await setSetting(env, 'ty_push_err', iso() + ' · ' + String(e.message || e).slice(0, 250)); }
-    await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', ''), setStmt(env, 'ty_ms', Date.now() - t)]);
+    if (full) await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', ''), setStmt(env, 'ty_ms', Date.now() - t)]);
+    else await setSetting(env, 'ty_err', '');
   } catch (e) {
     await setSetting(env, 'ty_err', iso() + ' · ' + String(e.message || e).slice(0, 300));
     result.error = String(e.message || e);
@@ -709,14 +712,13 @@ async function cronRun(env) {
   await init(env);
   if (!tyConfigured(env)) return;
   const t0 = Date.now();
-  if (!(await tryLock(env, 70000))) return;
+  if (!(await tryLock(env, 90000))) return;
   try {
     for (let i = 0; i < 6; i++) {
       const wait = t0 + i * 10000 - Date.now();
       if (wait > 0) await sleep(wait);
       if (Date.now() - t0 > 55000) break;
       await pollOnce(env, i === 0);
-      await env.DB.prepare(`UPDATE settings SET v=?1 WHERE k='lock_sync'`).bind(String(Date.now() + 30000)).run();
     }
   } finally { await unlock(env); }
 }
