@@ -70,6 +70,9 @@ async function init(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_audit1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_audit1','1')`), setStmt(env, 'fin_backfill_day', '13'), setStmt(env, 'audit_state', 'running'), setStmt(env, 'audit_started', iso())]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_gross1'`).first())) {
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_gross1','1')`), setStmt(env, 'fin_backfill_day', '13'), setStmt(env, 'audit_state', 'running'), setStmt(env, 'audit_started', iso())]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
 }
@@ -143,7 +146,7 @@ function resolveLine(l, bmap) {
 /* orders: [{orderNo, date, lines:[{key, sku, barcode, name, image, qty, status:'active'|'cancelled'|'returned'}]}] */
 function cleanFin(fin, price, qty) {
   const nn = (v) => v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
-  if (fin && typeof fin === 'object' && Number.isFinite(Number(fin.revenue))) return { revenue: Number(fin.revenue), rate: nn(fin.rate), vat: nn(fin.vat), paid: nn(fin.paid), desi: nn(fin.desi), carrier: fin.carrier ? String(fin.carrier).slice(0, 60) : null };
+  if (fin && typeof fin === 'object' && Number.isFinite(Number(fin.revenue))) return { revenue: Number(fin.revenue), gross: nn(fin.gross), rate: nn(fin.rate), vat: nn(fin.vat), paid: nn(fin.paid), desi: nn(fin.desi), carrier: fin.carrier ? String(fin.carrier).slice(0, 60) : null };
   const p = numOrNull(price);
   return p !== null && p >= 0 ? { revenue: Math.round(p * qty * 100) / 100, rate: null, vat: null } : null;
 }
@@ -318,7 +321,7 @@ function tyLineFin(l) {
   const grossTotal = Number.isFinite(gross) ? (perUnit ? gross * q : gross) : unit * q;
   const discTotal = perUnit ? sd * q : sd;
   const td = Number(l.lineTotalDiscount) || 0, tdTotal = perUnit ? td * q : td;
-  return { paid: Math.round((grossTotal - tdTotal) * 100) / 100, revenue: Math.round((grossTotal - discTotal) * 100) / 100, rate: Number.isFinite(Number(l.commission)) ? Number(l.commission) : null, vat: Number.isFinite(Number(l.vatRate)) ? Number(l.vatRate) : null };
+  return { gross: Math.round(grossTotal * 100) / 100, paid: Math.round((grossTotal - tdTotal) * 100) / 100, revenue: Math.round((grossTotal - discTotal) * 100) / 100, rate: Number.isFinite(Number(l.commission)) ? Number(l.commission) : null, vat: Number.isFinite(Number(l.vatRate)) ? Number(l.vatRate) : null };
 }
 function tyPackagesToOrders(pkgs, shift) {
   return pkgs.map(p => ({
@@ -773,15 +776,27 @@ async function computeProfit(env, from, to) {
   const [o, p, r] = await env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare('SELECT key, sku, name, image, cost, barcode FROM products'),
-    env.DB.prepare(`SELECT order_id, pkey, SUM(qty) q FROM returns WHERE status='accepted' AND order_id<>'' GROUP BY order_id, pkey`)]);
+    env.DB.prepare(`SELECT order_id, pkey, SUM(CASE WHEN status='accepted' THEN qty ELSE 0 END) q, SUM(CASE WHEN status='requested' THEN qty ELSE 0 END) pq FROM returns WHERE order_id<>'' GROUP BY order_id, pkey`)]);
   const prods = new Map(p.results.map(x => [x.key, x]));
-  const rets = new Map(r.results.map(x => [x.order_id + '|' + x.pkey, x.q]));
+  const rets = new Map(r.results.map(x => [x.order_id + '|' + x.pkey, x.q])), pend = new Map(r.results.map(x => [x.order_id + '|' + x.pkey, x.pq]));
   const orderNos = o.results.filter(x => x.channel === 'trendyol').map(x => x.order_no);
   const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x]));
   const R2 = (n) => Math.round(n * 100) / 100;
   const blank = () => ({ revenue: 0, commission: 0, cargo: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
   const sum = { ...blank(), orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
+  const rep = { grossU: 0, grossTL: 0, cancelU: 0, cancelTL: 0, retU: 0, retTL: 0, pendU: 0, pendTL: 0, discTL: 0, netU: 0, netTL: 0, noGross: 0 };
+  for (const ord of o.results) for (const l of JSON.parse(ord.lines || '[]')) {
+    if (!l.qty) continue; const f = l.fin || {}; const unitG = (f.gross ?? f.revenue ?? 0) / l.qty, unitR = (f.revenue ?? 0) / l.qty;
+    if (f.gross === null || f.gross === undefined) rep.noGross++;
+    rep.grossU += l.qty; rep.grossTL += unitG * l.qty;
+    if (l.status === 'cancelled') { rep.cancelU += l.qty; rep.cancelTL += unitG * l.qty; continue; }
+    const rq = Math.min(l.qty, rets.get(ord.id + '|' + l.pkey) || 0), pq = Math.min(l.qty - rq, pend.get(ord.id + '|' + l.pkey) || 0);
+    rep.retU += rq; rep.retTL += unitG * rq; rep.pendU += pq; rep.pendTL += unitG * pq;
+    rep.discTL += (unitG - unitR) * (l.qty - rq);
+    rep.netU += l.qty - rq; rep.netTL += unitR * (l.qty - rq);
+  }
+  for (const k in rep) rep[k] = Math.round(rep[k] * 100) / 100;
   const byProduct = new Map(), byOrder = [], missingCostSkus = new Set();
   for (const ord of o.results) {
     const lines = JSON.parse(ord.lines || '[]').filter(l => l.status !== 'cancelled');
@@ -836,7 +851,7 @@ async function computeProfit(env, from, to) {
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
-  return { from, to, fees: fee, summary: sum, products, orders: byOrder.slice(0, 500), missingCostSkus: [...missingCostSkus].slice(0, 30) };
+  return { from, to, fees: fee, summary: sum, report: rep, products, orders: byOrder.slice(0, 500), missingCostSkus: [...missingCostSkus].slice(0, 30) };
 }
 
 async function computePricing(env) {
