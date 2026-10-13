@@ -147,6 +147,9 @@ label.f{display:grid;gap:5px;font-size:13px;color:var(--ink-2);font-weight:500;m
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media (max-width:520px){.grid2{grid-template-columns:1fr}}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
+.sortsel{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:0 4px 0 12px;color:var(--ink-2);font-size:13px;position:relative}
+.sortsel svg{width:15px;height:15px;color:var(--brand);flex:none}
+.sortsel select{border:0;background:none;font:inherit;font-size:13px;font-weight:600;color:var(--ink);padding:7px 8px 7px 0;outline:none;cursor:pointer;-webkit-appearance:none;appearance:none}
 .chip{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--ink-2)}
 .chip[aria-pressed="true"]{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
 .pill{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 8px;font-size:11.5px;font-weight:600;white-space:nowrap}
@@ -333,7 +336,7 @@ const S = {
   conn:'wait', authed:(() => { try { return localStorage.getItem('lb_seen') === '1' ? true : null; } catch(e) { return null; } })(), rev:null, skew:0,
   loaded:{products:false, orders:false, returns:false, moves:false, settings:false},
   products:new Map(), orders:[], returns:[], moves:[], settings:{}, sync:{trendyol:{configured:false}},
-  tab: initialTab(), q:'', filter:'active', ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
+  tab: initialTab(), q:'', filter:'active', psort:(() => { try { return localStorage.getItem('lb_psort') || 'name_asc'; } catch(e) { return 'name_asc'; } })(), ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
   sheet:null, imp:null, busy:false, syncing:false
 };
 function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=localStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'home'; }
@@ -710,13 +713,23 @@ function viewStock(){
   const usedCh = [...new Set(ps.flatMap(p => p.channels))].filter(c => CHANNELS[c]);
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="q" type="search" placeholder="Ürün adı, stok kodu veya barkod" value="${esc(S.q)}" aria-label="Ürün ara" autocomplete="off"></div></div>
     <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
+    <label class="sortsel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 8l4-4 4 4"/><path d="M17 20V4M13 16l4 4 4-4"/></svg><select id="psort" aria-label="Sırala">${[['name_asc','İsim: A → Z'],['name_desc','İsim: Z → A'],['qty_desc','Stok: çoktan aza'],['qty_asc','Stok: azdan çoğa'],['value_desc','Stok değeri: yüksekten düşüğe'],['new','En yeni eklenen'],['updated','Son güncellenen']].map(([v,l]) => `<option value="${v}"${S.psort===v?' selected':''}>${l}</option>`).join('')}</select></label>
     ${usedCh.length > 1 ? `<div class="chips"><button class="chip" data-act="chf" data-id="" aria-pressed="${!S.ch}">Tüm kanallar</button>${usedCh.map(c => `<button class="chip" data-act="chf" data-id="${c}" aria-pressed="${S.ch===c}">${esc(CHANNELS[c].name)}</button>`).join('')}</div>` : ''}</div>`;
   return head + tools + `<div id="plist">${productList()}</div>`;
 }
 function filteredProducts(){
   const q = searchNorm(S.q.trim());
   let ps = productsArr().filter(p => (!q || searchNorm(`${p.name} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0)) && (!S.ch || p.channels.includes(S.ch)));
-  ps.sort((a,b) => a.name.localeCompare(b.name, 'tr'));
+  const byName = (a,b) => a.name.localeCompare(b.name, 'tr');
+  const val = p => Math.max(0, p.qty) * (p.cost || 0);
+  const SORTS = {
+    name_asc: byName, name_desc: (a,b) => -byName(a,b),
+    qty_desc: (a,b) => b.qty - a.qty || byName(a,b), qty_asc: (a,b) => a.qty - b.qty || byName(a,b),
+    value_desc: (a,b) => val(b) - val(a) || byName(a,b),
+    new: (a,b) => String(b.createdAt||'').localeCompare(String(a.createdAt||'')) || byName(a,b),
+    updated: (a,b) => String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')) || byName(a,b)
+  };
+  ps.sort(SORTS[S.psort] || byName);
   return ps;
 }
 function productList(){
@@ -1825,6 +1838,7 @@ document.addEventListener('change', e => {
   if (t.id === 'imp-ch') { S.imp.channel = t.value; computePreview(); }
   if (t.id === 'imp-usestock') { S.imp.useStock = t.checked; computePreview(); }
   if (t.id === 'imp-overwrite') { S.imp.overwrite = t.checked; computePreview(); }
+  if (t.id === 'psort') { S.psort = t.value; try { localStorage.setItem('lb_psort', t.value); } catch(e) {} const pl = $('#plist'); if (pl) pl.innerHTML = productList(); else render(); }
   if (t.id === 'set-auto') saveSetting({autoAccept:t.checked}, t.checked ? 'Onaylanan iadeler otomatik stoğa eklenecek.' : 'İadeleri depoya ulaşınca elle onaylayacaksın.');
   if (t.id === 'set-prodinit') saveSetting({prodInitial:t.checked}, 'Kaydedildi.');
 });
