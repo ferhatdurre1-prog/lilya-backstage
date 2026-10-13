@@ -90,6 +90,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE order_cust ADD COLUMN sname TEXT').run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_misc1'`).first())) {
@@ -892,16 +893,69 @@ async function hmac(secret, msg) {
   const sig = await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(msg));
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
+// Oturum: kullanılmadan 30 dakika geçerse kapanır; kullandıkça kendiliğinden uzar
+const SESSION_MS = 30 * 60000;
 async function authed(req, env) {
   const c = req.headers.get('cookie') || ''; const m = c.match(/(?:^|;\s*)lb=([^;]+)/); if (!m) return false;
   const [exp, sig] = decodeURIComponent(m[1]).split('.'); if (!exp || !sig || Number(exp) < Date.now()) return false;
-  return sig === await hmac(env.APP_PASSWORD, 'lb:' + exp);
+  return sig === await hmac(env.APP_PASSWORD, 'lb2:' + exp) ? Number(exp) : false;
 }
 async function loginCookie(env) {
-  const exp = Date.now() + 120 * 86400000;
-  const v = exp + '.' + await hmac(env.APP_PASSWORD, 'lb:' + exp);
-  return `lb=${encodeURIComponent(v)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${120 * 86400}`;
+  const exp = Date.now() + SESSION_MS;
+  const v = exp + '.' + await hmac(env.APP_PASSWORD, 'lb2:' + exp);
+  return `lb=${encodeURIComponent(v)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${Math.round(SESSION_MS / 1000)}`;
 }
+/* ---------- Face ID / Touch ID: WebAuthn (passkey) ---------- */
+const b64u = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: (str) => { const s2 = String(str).replace(/-/g, '+').replace(/_/g, '/'); const bin = atob(s2 + '==='.slice((s2.length + 3) % 4)); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+};
+function cborDecode(bytes) {
+  let pos = 0; const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const len = (ai) => { if (ai < 24) return ai; if (ai === 24) return dv.getUint8(pos++); if (ai === 25) { const v = dv.getUint16(pos); pos += 2; return v; } if (ai === 26) { const v = dv.getUint32(pos); pos += 4; return v; } if (ai === 27) { const v = Number(dv.getBigUint64(pos)); pos += 8; return v; } throw new Error('CBOR'); };
+  const item = () => {
+    const ib = dv.getUint8(pos++), mt = ib >> 5, ai = ib & 31;
+    if (mt === 0) return len(ai); if (mt === 1) return -1 - len(ai);
+    if (mt === 2) { const n = len(ai); const v = bytes.slice(pos, pos + n); pos += n; return v; }
+    if (mt === 3) { const n = len(ai); const v = new TextDecoder().decode(bytes.slice(pos, pos + n)); pos += n; return v; }
+    if (mt === 4) { const n = len(ai), a = []; for (let i = 0; i < n; i++) a.push(item()); return a; }
+    if (mt === 5) { const n = len(ai), o = new Map(); for (let i = 0; i < n; i++) { const k = item(); o.set(k, item()); } return o; }
+    if (mt === 7) return ai === 20 ? false : ai === 21 ? true : null;
+    throw new Error('CBOR');
+  };
+  const v = item(); return { value: v, end: pos };
+}
+const sha256 = async (data) => new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+function derToRaw(der) {
+  let p = 2; if (der[1] & 0x80) p = 2 + (der[1] & 0x7f);
+  const part = () => { p++; const l = der[p++]; let v = der.slice(p, p + l); p += l; while (v.length > 32 && v[0] === 0) v = v.slice(1); const o = new Uint8Array(32); o.set(v, 32 - v.length); return o; };
+  const r = part(), sg = part(); const out = new Uint8Array(64); out.set(r); out.set(sg, 32); return out;
+}
+async function waChallenge(env, kind) {
+  const ch = b64u.enc(crypto.getRandomValues(new Uint8Array(32)));
+  await setSetting(env, 'wa_ch_' + kind, JSON.stringify({ ch, exp: Date.now() + 120000 }));
+  return ch;
+}
+async function waTakeChallenge(env, kind, got) {
+  const c = JSON.parse((await getSetting(env, 'wa_ch_' + kind)) || 'null');
+  await setSetting(env, 'wa_ch_' + kind, '');
+  return !!(c && c.exp > Date.now() && c.ch === got);
+}
+async function waCheckClient(env, url, cdjB64, type, kind) {
+  const cdjBytes = b64u.dec(cdjB64); const cd = JSON.parse(new TextDecoder().decode(cdjBytes));
+  if (cd.type !== type) throw new Error('Geçersiz istek türü');
+  if (cd.origin !== url.origin) throw new Error('Geçersiz kaynak');
+  if (!(await waTakeChallenge(env, kind, cd.challenge))) throw new Error('Süre doldu, tekrar dene');
+  return cdjBytes;
+}
+function parseAuthData(ad) {
+  const flags = ad[32], counter = new DataView(ad.buffer, ad.byteOffset + 33, 4).getUint32(0);
+  const out = { rpIdHash: ad.slice(0, 32), up: !!(flags & 1), uv: !!(flags & 4), at: !!(flags & 0x40), counter };
+  if (out.at) { const l = (ad[53] << 8) | ad[54]; out.credId = ad.slice(55, 55 + l); out.cose = cborDecode(ad.slice(55 + l)).value; }
+  return out;
+}
+async function authUser(env) { return (await getSetting(env, 'auth_user')) || ''; }
 
 /* ---------- kâr hesabı ---------- */
 const MARKETPLACES = new Set(['trendyol', 'hepsiburada', 'temu']);
@@ -1227,6 +1281,27 @@ async function api(req, env, path, ctx) {
       env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600')]);
     return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove) });
   }
+  if (path === '/api/passkey/register-options') {
+    const user = await authUser(env) || 'lilya';
+    return json({ challenge: await waChallenge(env, 'reg'), rp: { name: 'Lilya Backstage', id: new URL(req.url).hostname }, user: { id: b64u.enc(new TextEncoder().encode('lb-' + user)), name: user, displayName: user }, exclude: (await env.DB.prepare('SELECT id FROM wa_creds').all()).results.map(r => r.id) });
+  }
+  if (path === '/api/passkey/register') {
+    try {
+      const url = new URL(req.url);
+      await waCheckClient(env, url, body.clientDataJSON, 'webauthn.create', 'reg');
+      const att = cborDecode(b64u.dec(body.attestationObject)).value; const ad = att.get('authData'); const info = parseAuthData(ad);
+      if (!sameBytes(info.rpIdHash, await sha256(new TextEncoder().encode(url.hostname)))) throw new Error('Geçersiz alan adı');
+      if (!info.uv || !info.at || !info.cose) throw new Error('Cihaz kilidi doğrulanmadı');
+      const k = info.cose; if (k.get(1) !== 2 || k.get(3) !== -7 || k.get(-1) !== 1) throw new Error('Bu cihazın anahtar türü desteklenmiyor');
+      const jwk = { kty: 'EC', crv: 'P-256', x: b64u.enc(k.get(-2)), y: b64u.enc(k.get(-3)), ext: true };
+      await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+      const id = b64u.enc(info.credId);
+      await env.DB.prepare('INSERT OR REPLACE INTO wa_creds(id, jwk, counter, created_at, used_at, label) VALUES(?1,?2,?3,?4,NULL,?5)').bind(id, JSON.stringify(jwk), info.counter, iso(), String(body.label || 'iPhone').slice(0, 60)).run();
+      return json({ ok: true, id });
+    } catch (e) { return bad('Face ID kurulamadı: ' + (e.message || e)); }
+  }
+  if (path === '/api/passkey/list') return json({ user: await authUser(env), items: (await env.DB.prepare('SELECT id, label, created_at, used_at FROM wa_creds ORDER BY created_at DESC').all()).results });
+  if (path === '/api/passkey/delete') { if (body.all) await env.DB.prepare('DELETE FROM wa_creds').run(); else await env.DB.prepare('DELETE FROM wa_creds WHERE id=?1').bind(String(body.id || '')).run(); return json({ ok: true }); }
   if (path === '/api/home') return json(await homeData(env, ctx, !!body.force));
   if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
@@ -1491,14 +1566,46 @@ export default {
       // Sayfa ve simgeler veritabanını beklemeden hemen gönderilir
       if (!path.startsWith('/api/') && path !== '/perf' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png')
         return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
-      if (path.startsWith('/api/') && path !== '/api/login' && path !== '/api/logout' || path === '/perf') await init(env);
+      if (path.startsWith('/api/') && path !== '/api/logout' || path === '/perf') await init(env);
       if (path === '/manifest.webmanifest') return new Response(JSON.stringify({ name: 'Lilya Backstage', short_name: 'Backstage', start_url: '/', display: 'standalone', background_color: '#f5f6f8', theme_color: '#0a0b10', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] }), { headers: { 'content-type': 'application/manifest+json' } });
       if (path === '/icon.svg' || path === '/apple-touch-icon.png') return new Response(ICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
+      // Giriş ekranı bilgisi: kullanıcı adı belirlenmiş mi, Face ID kurulu mu
+      if (path === '/api/auth/info') {
+        const user = await authUser(env); const n = await env.DB.prepare('SELECT COUNT(*) n FROM wa_creds').first();
+        return json({ hasUser: !!user, passkeys: (n && n.n) || 0, authed: !!(await authed(req, env)) });
+      }
       if (path === '/api/login' && req.method === 'POST') {
         const b = await req.json().catch(() => ({}));
-        const ok = typeof b.password === 'string' && (await hmac('cmp', b.password)) === (await hmac('cmp', env.APP_PASSWORD));
-        if (!ok) { await sleep(900); return bad('Şifre hatalı.', 401); }
+        const name = String(b.username || '').trim().toLocaleLowerCase('tr-TR');
+        const passOk = typeof b.password === 'string' && (await hmac('cmp', b.password)) === (await hmac('cmp', env.APP_PASSWORD));
+        const user = await authUser(env);
+        if (!name) return bad('Kullanıcı adını yaz.');
+        if (!passOk || (user && user !== name)) { await sleep(900); return bad('Kullanıcı adı ya da şifre hatalı.', 401); }
+        if (!user) { if (!/^[a-z0-9çğıöşü._-]{3,32}$/.test(name)) return bad('Kullanıcı adı 3-32 karakter olmalı; harf, rakam, nokta, tire kullanılabilir.'); await setSetting(env, 'auth_user', name); }
         return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
+      }
+      if (path === '/api/passkey/login-options' && req.method === 'POST') {
+        const { results } = await env.DB.prepare('SELECT id FROM wa_creds').all();
+        if (!results.length) return bad('Face ID kurulu değil.', 404);
+        return json({ challenge: await waChallenge(env, 'login'), rpId: url.hostname, allow: results.map(r => r.id) });
+      }
+      if (path === '/api/passkey/login' && req.method === 'POST') {
+        const b = await req.json().catch(() => ({}));
+        try {
+          const cred = await env.DB.prepare('SELECT * FROM wa_creds WHERE id=?1').bind(String(b.id || '')).first();
+          if (!cred) throw new Error('Bu cihazın Face ID kaydı bulunamadı');
+          const cdj = await waCheckClient(env, url, b.clientDataJSON, 'webauthn.get', 'login');
+          const ad = b64u.dec(b.authenticatorData), info = parseAuthData(ad);
+          if (!sameBytes(info.rpIdHash, await sha256(new TextEncoder().encode(url.hostname)))) throw new Error('Geçersiz alan adı');
+          if (!info.up || !info.uv) throw new Error('Kimlik doğrulanmadı');
+          const key = await crypto.subtle.importKey('jwk', JSON.parse(cred.jwk), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+          const signed = new Uint8Array(ad.length + 32); signed.set(ad); signed.set(await sha256(cdj), ad.length);
+          const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, derToRaw(b64u.dec(b.signature)), signed);
+          if (!ok) throw new Error('İmza doğrulanamadı');
+          if (info.counter && cred.counter && info.counter <= cred.counter) throw new Error('Kayıt kopyalanmış olabilir');
+          await env.DB.prepare('UPDATE wa_creds SET counter=?2, used_at=?3 WHERE id=?1').bind(cred.id, info.counter, iso()).run();
+          return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
+        } catch (e) { await sleep(600); return bad('Face ID girişi olmadı: ' + (e.message || e), 401); }
       }
       if (path === '/perf') {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
@@ -1508,8 +1615,12 @@ export default {
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
-        if (!(await authed(req, env))) return bad('Oturum gerekli.', 401);
-        return await api(req, env, path, ctx);
+        const exp = await authed(req, env);
+        if (!exp) return bad('Oturum gerekli.', 401);
+        const res = await api(req, env, path, ctx);
+        // Kullandıkça oturum uzar
+        if (exp - Date.now() < SESSION_MS - 60000) { try { res.headers.append('set-cookie', await loginCookie(env)); } catch (e) {} }
+        return res;
       }
       return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
     } catch (e) {

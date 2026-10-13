@@ -336,7 +336,7 @@ const TAB_SHORT = {home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'�
 
 /* ============ Durum ============ */
 const S = {
-  conn:'wait', authed:(() => { try { return localStorage.getItem('lb_seen') === '1' ? true : null; } catch(e) { return null; } })(), rev:null, skew:0,
+  conn:'wait', authed:(() => { try { return sessionStorage.getItem('lb_live') === '1' && localStorage.getItem('lb_seen') === '1' ? true : false; } catch(e) { return false; } })(), rev:null, skew:0,
   loaded:{products:false, orders:false, returns:false, moves:false, settings:false},
   products:new Map(), orders:[], returns:[], moves:[], settings:{}, sync:{trendyol:{configured:false}},
   tab: initialTab(), q:'', filter:'active', psort:(() => { try { return localStorage.getItem('lb_psort') || 'name_asc'; } catch(e) { return 'name_asc'; } })(), ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
@@ -349,7 +349,7 @@ async function api(path, body){
   const opt = body === undefined ? {method:'GET', credentials:'same-origin'} : {method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body:JSON.stringify(body)};
   let r;
   try { r = await fetch(path, opt); } catch(e) { throw new Error('Sunucuya ulaşılamadı. İnternet bağlantını kontrol et.'); }
-  if (r.status === 401 && path !== '/api/login') { try { localStorage.removeItem('lb_seen'); } catch(e) {} S.authed = false; render(); throw new Error('Oturum süresi doldu. Tekrar giriş yap.'); }
+  if (r.status === 401 && path !== '/api/login' && !path.startsWith('/api/passkey/login')) { try { sessionStorage.removeItem('lb_live'); } catch(e) {} S.authed = false; render(); throw new Error('Oturum süresi doldu. Tekrar giriş yap.'); }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || ('Sunucu hatası (' + r.status + ')'));
   return data;
@@ -359,7 +359,7 @@ const CLIENT_BUILD = '__BUILD__';
 async function refresh(force){
   try {
     const d = await api('/api/state' + (S.rev && !force ? '?rev=' + encodeURIComponent(S.rev) : ''));
-    S.authed = true; S.conn = 'ok'; try { localStorage.setItem('lb_seen', '1'); } catch(e) {} if (!mktAt) setTimeout(loadMarket, 0); if (!wxAt) setTimeout(loadWeather, 0);
+    S.authed = true; S.conn = 'ok'; try { localStorage.setItem('lb_seen', '1'); sessionStorage.setItem('lb_live', '1'); } catch(e) {} if (!mktAt) setTimeout(loadMarket, 0); if (!wxAt) setTimeout(loadWeather, 0);
     // Yeni sürüm yayına alındıysa uygulama kendini yeniler (ana ekrana eklenmiş uygulama açık kalsa bile)
     if (d.build && d.build !== CLIENT_BUILD && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) {
       let last = null; try { last = JSON.parse(sessionStorage.getItem('lb_reload') || 'null'); } catch(e) {}
@@ -378,7 +378,7 @@ async function refresh(force){
 }
 let pollTimer = null;
 function startPolling(){
-  refresh(true);
+  if (S.authed !== false) refresh(true);
   if (pollTimer) return;
   pollTimer = setInterval(() => { if (document.visibilityState === 'visible' && S.authed) refresh(false); }, 10000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.authed) refresh(false); });
@@ -447,7 +447,12 @@ document.addEventListener('visibilitychange', loadMarket);
 let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
-  if (hiddenAt && Date.now() - hiddenAt > 5 * 60000 && S.authed && S.tab !== 'home' && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) { S.drawer = false; renderDrawer(); setTab('home'); }
+  // 5 dakikadan uzun arka planda kaldıysa kilitlenir: tekrar giriş (Face ID) istenir, ana ekranla açılır
+  if (hiddenAt && Date.now() - hiddenAt > 5 * 60000 && S.authed) {
+    S.logoutP = fetch('/api/logout', {method:'POST', credentials:'same-origin'}).catch(() => {});
+    try { sessionStorage.removeItem('lb_live'); } catch(e) {}
+    S.authed = false; S.sheet = null; $('#sheet-root').innerHTML = ''; S.drawer = false; renderDrawer(); S.tab = 'home'; S.authInfo = null; S.faceTried = false; render();
+  }
   hiddenAt = 0;
 });
 
@@ -469,10 +474,69 @@ function closeSheet(){ if (S.busy) return; S.sheet = null; $('#sheet-root').inne
 function setTab(t){ S.tab = t; try{ sessionStorage.setItem('lb-tab', t); localStorage.removeItem('lb-tab'); }catch(e){} render(); window.scrollTo(0,0); }
 
 function viewLogin(){
-  return `<form id="f-login" class="panel" style="max-width:420px;margin:8vh auto 0;padding:22px;display:grid;gap:14px">
-    <div><h2 class="sec">Giriş</h2><p class="lead small">Cloudflare kurulumunda belirlediğin uygulama şifresini yaz.</p></div>
-    <label class="f">Şifre<input class="input" id="lg-pass" type="password" autocomplete="current-password" required></label>
-    <button class="btn primary" type="submit">Giriş yap</button></form>`;
+  const I = S.authInfo; if (!I) loadAuthInfo();
+  const first = I && !I.hasUser, fid = I && I.passkeys > 0 && S.waOk;
+  return `<div class="card" style="max-width:420px;margin:6vh auto 0;padding:22px;gap:16px">
+    <div><h2 class="sec">${first ? 'İlk giriş' : 'Giriş'}</h2><p class="lead small">${first ? 'Kendine bir kullanıcı adı belirle. Şifre, Cloudflare kurulumunda belirlediğin uygulama şifresi.' : 'Devam etmek için giriş yap.'}</p></div>
+    ${fid ? `<button class="btn primary" data-act="faceid" style="padding:14px;font-size:15px;gap:10px"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 012-2h2M16 4h2a2 2 0 012 2v2M20 16v2a2 2 0 01-2 2h-2M8 20H6a2 2 0 01-2-2v-2"/><path d="M9 9v1M15 9v1M12 9v4h-1M9 16c1.7 1.3 4.3 1.3 6 0"/></svg>Face ID ile giriş</button><div class="row small muted" style="justify-content:center">ya da kullanıcı adı ve şifreyle</div>` : ''}
+    <form id="f-login" style="display:grid;gap:12px">
+      <label class="f">Kullanıcı adı<input class="input" id="lg-user" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required></label>
+      <label class="f">Şifre<input class="input" id="lg-pass" type="password" autocomplete="current-password" required></label>
+      <button class="btn ${fid ? '' : 'primary'}" type="submit">Giriş yap</button>
+    </form></div>`;
+}
+async function loadAuthInfo(){
+  if (S.authInfoLoading) return; S.authInfoLoading = true;
+  try {
+    S.waOk = !!(window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+    const r = await fetch('/api/auth/info', {credentials:'same-origin'}); S.authInfo = await r.json();
+  } catch(e) { S.authInfo = {hasUser:true, passkeys:0}; }
+  S.authInfoLoading = false; if (S.authed === false) { render(); setTimeout(() => { const u = $('#lg-user'); if (u && !S.authInfo.passkeys) u.focus(); }, 30);
+    // Face ID kuruluysa açılışta kendiliğinden sorulur (tarayıcı izin vermezse düğmeye dokunmak yeter)
+    if (S.authInfo.passkeys && S.waOk && !S.faceTried) { S.faceTried = true; faceIdLogin().catch(() => {}); } }
+}
+const bufB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const b64Buf = (s) => { s = s.replace(/-/g,'+').replace(/_/g,'/'); const b = atob(s + '==='.slice((s.length + 3) % 4)); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u.buffer; };
+async function faceIdLogin(){
+  if (S.logoutP) await S.logoutP;
+  const o = await api('/api/passkey/login-options', {});
+  const cred = await navigator.credentials.get({publicKey: {challenge: b64Buf(o.challenge), rpId: o.rpId, allowCredentials: o.allow.map(id => ({type:'public-key', id: b64Buf(id)})), userVerification: 'required', timeout: 60000}});
+  const r = cred.response;
+  await api('/api/passkey/login', {id: bufB64(cred.rawId), clientDataJSON: bufB64(r.clientDataJSON), authenticatorData: bufB64(r.authenticatorData), signature: bufB64(r.signature)});
+  try { localStorage.setItem('lb_wa', '1'); } catch(e) {}
+  await afterLogin();
+}
+async function faceIdRegister(){
+  const o = await api('/api/passkey/register-options', {});
+  const cred = await navigator.credentials.create({publicKey: {challenge: b64Buf(o.challenge), rp: o.rp, user: {id: b64Buf(o.user.id), name: o.user.name, displayName: o.user.displayName},
+    pubKeyCredParams: [{type:'public-key', alg:-7}], authenticatorSelection: {authenticatorAttachment:'platform', userVerification:'required', residentKey:'preferred'},
+    excludeCredentials: o.exclude.map(id => ({type:'public-key', id: b64Buf(id)})), attestation: 'none', timeout: 60000}});
+  const label = /iPhone/.test(navigator.userAgent) ? 'iPhone' : /iPad/.test(navigator.userAgent) ? 'iPad' : /Mac/.test(navigator.userAgent) ? 'Mac' : /Android/.test(navigator.userAgent) ? 'Android' : 'Cihaz';
+  await api('/api/passkey/register', {clientDataJSON: bufB64(cred.response.clientDataJSON), attestationObject: bufB64(cred.response.attestationObject), label});
+  try { localStorage.setItem('lb_wa', '1'); } catch(e) {}
+  S.authInfo = null;
+}
+async function afterLogin(){
+  S.authed = true; S.rev = null; try { sessionStorage.setItem('lb_live', '1'); } catch(e) {}
+  if (S.tab !== 'home') setTab('home');
+  await refresh(true); render();
+}
+async function offerFaceId(){
+  let has = false; try { has = localStorage.getItem('lb_wa') === '1' || localStorage.getItem('lb_wa_skip') === '1'; } catch(e) {}
+  if (has || !S.waOk) return;
+  if (await confirmBox('Bir dahaki girişlerde <b>Face ID</b> kullanılsın mı? Şifre yazmadan yüzünle girersin.', 'Face ID\'yi aç')) {
+    try { await faceIdRegister(); toast('Face ID açıldı. Bir dahaki girişte yüzünle girebilirsin.'); } catch(e) { toast(e.name === 'NotAllowedError' ? 'Face ID kurulumu iptal edildi.' : errText(e), true); }
+  } else { try { localStorage.setItem('lb_wa_skip', '1'); } catch(e) {} }
+}
+function sheetSecurity(){
+  const L = S.sheet.list;
+  if (!L) { api('/api/passkey/list', {}).then(d => { if (S.sheet && S.sheet.type === 'security') { S.sheet.list = d; renderSheet(false); } }).catch(() => {}); return {title:'Güvenlik', body: loading()}; }
+  const fmt = (t) => t ? new Date(t).toLocaleString('tr-TR', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) : '—';
+  return {title:'Güvenlik', body: `<div class="card"><div class="spread"><div><div class="small muted">Kullanıcı adı</div><b>${esc(L.user || '—')}</b></div></div>
+    <p class="muted small" style="margin:0">Şifre, Cloudflare'deki uygulama şifresidir. Uygulama her açılışta ve 30 dakika kullanılmayınca kilitlenir.</p></div>
+    <div class="card"><h3 style="margin:0">Face ID</h3>
+    ${L.items.length ? `<div class="list" style="box-shadow:none">${L.items.map(x => `<div class="item" style="cursor:default"><div class="ki" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)">🔐</div><div class="main"><div class="ttl">${esc(x.label || 'Cihaz')}</div><div class="meta"><span>Kuruldu ${esc(fmt(x.created_at))}</span><span>· Son giriş ${esc(fmt(x.used_at))}</span></div></div><div class="end"><button class="btn sm ghost" data-act="wa-del" data-id="${esc(x.id)}">Kaldır</button></div></div>`).join('')}</div>` : `<p class="muted small" style="margin:0">Henüz Face ID kurulmadı.</p>`}
+    ${S.waOk ? `<button class="btn primary" data-act="wa-add">Bu cihazda Face ID'yi kur</button>` : `<p class="muted small" style="margin:0">Bu cihaz ya da tarayıcı Face ID / parmak izi girişini desteklemiyor.</p>`}</div>`};
 }
 /* ============ Tablo sıralama: her tablonun sütun başlığına dokununca büyükten küçüğe / küçükten büyüğe ============ */
 const TSORT = (() => { try { return JSON.parse(localStorage.getItem('lb_tsort') || '{}'); } catch(e) { return {}; } })();
@@ -544,6 +608,7 @@ function renderDrawer(){
     ${TABS.map(([id, label]) => item(id, label, id, id === 'returns' ? pending : 0)).join('')}
     <div class="sep"></div>
     <button class="di" data-act="dnav" data-id="__conn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg>Bağlantılar & yedek</button>
+    <button class="di" data-act="security"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Güvenlik & Face ID</button>
     <button class="di" data-act="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.out}</svg>Çıkış</button>
   </nav>`;
 }
@@ -1721,7 +1786,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -1757,6 +1822,10 @@ document.addEventListener('click', async e => {
     case 'home-stock': S.filter = id; setTab('stock'); break;
     case 'wx-geo': if (!navigator.geolocation) { toast('Bu cihaz konum vermiyor.', true); break; }
       navigator.geolocation.getCurrentPosition(pos => { try { localStorage.setItem('lb_geo', JSON.stringify({lat: Math.round(pos.coords.latitude*100)/100, lon: Math.round(pos.coords.longitude*100)/100})); } catch(e) {} loadWeather(true); }, () => toast('Konum izni verilmedi; yaklaşık konum kullanılıyor.', true), {timeout: 10000, maximumAge: 3600000}); break;
+    case 'faceid': try { await faceIdLogin(); } catch(e) { if (e.name !== 'NotAllowedError') toast(errText(e), true); } break;
+    case 'wa-add': try { await faceIdRegister(); toast('Face ID kuruldu.'); if (S.sheet) { S.sheet.list = null; renderSheet(false); } } catch(e) { toast(e.name === 'NotAllowedError' ? 'İptal edildi.' : e.name === 'InvalidStateError' ? 'Bu cihazda Face ID zaten kurulu.' : errText(e), true); } break;
+    case 'wa-del': if (await confirmBox('Bu cihazın Face ID girişi kaldırılsın mı?', 'Kaldır', true)) { await run(async () => { await api('/api/passkey/delete', {id}); try { localStorage.removeItem('lb_wa'); } catch(e) {} S.sheet.list = null; renderSheet(false); }); } break;
+    case 'security': S.drawer = false; renderDrawer(); openSheet('security'); break;
     case 'home-retry': homeMaybeLoad(true); render(); break;
     case 'home-losers': profS().sub = 'losers'; setTab('profit'); break;
     case 'filter': S.filter = id; if (S.tab !== 'stock') setTab('stock'); else render(); break;
@@ -1803,7 +1872,7 @@ document.addEventListener('click', async e => {
     case 'cost-run': await runCosts(); break;
     case 'sync-now': await syncNow(); break;
     case 'resync-products': await saveSetting({resyncProducts:true}, 'Ürün listesi bir sonraki eşitlemede yeniden taranacak.'); break;
-    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); } catch(e) {} closeSheetForce(); S.authed = false; S.rev = null; render(); break;
+    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
     case 'close': closeSheet(); break;
   }
 });
@@ -1812,7 +1881,7 @@ document.addEventListener('submit', async e => {
   const id = e.target.id;
   if (id === 'f-login') {
     const btn = e.target.querySelector('button'); btn.disabled = true;
-    try { await api('/api/login', {password:$('#lg-pass').value}); S.authed = true; S.rev = null; await refresh(true); render(); }
+    try { if (S.logoutP) await S.logoutP; await api('/api/login', {username:$('#lg-user').value, password:$('#lg-pass').value}); S.authInfo = null; await afterLogin(); setTimeout(offerFaceId, 400); }
     catch(err) { toast(errText(err), true); }
     btn.disabled = false; return;
   }
@@ -1859,6 +1928,8 @@ document.addEventListener('error', e => { const t = e.target; if (t && t.tagName
   if (ev === 'dragover') d.classList.add('over'); else d.classList.remove('over');
   if (ev === 'drop' && e.dataTransfer.files[0]) onImportFile(e.dataTransfer.files[0]);
 }));
+// Her açılışta giriş istenir: yeni açılışta sunucudaki oturum da kapatılır
+if (S.authed === false) { S.logoutP = fetch('/api/logout', {method:'POST', credentials:'same-origin'}).catch(() => {}); }
 // Son görülen bant ve hava durumu açılışta hemen gösterilir
 try { if (S.authed) { const m = JSON.parse(localStorage.getItem('lb_mkt') || 'null'); if (m) renderTicker(m); const w = JSON.parse(localStorage.getItem('lb_wx') || 'null'); if (w) renderWeather(w, !!wxCoords()); } } catch(e) {}
 render();
