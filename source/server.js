@@ -1148,22 +1148,35 @@ async function marketData(env) {
   else if (cached) return cached;
   return out;
 }
+/* ---------- hava durumu (Open-Meteo, anahtar gerektirmez) ---------- */
+async function weatherData(req, body) {
+  const cf = req.cf || {}; let lat = Number(body.lat), lon = Number(body.lon), city = '';
+  const precise = isFinite(lat) && isFinite(lon) && body.lat !== undefined && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+  if (!precise) { lat = Number(cf.latitude); lon = Number(cf.longitude); city = cf.city || ''; }
+  if (!isFinite(lat) || !isFinite(lon)) { lat = 41.01; lon = 28.98; city = 'İstanbul'; }
+  lat = Math.round(lat * 100) / 100; lon = Math.round(lon * 100) / 100;
+  const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1`;
+  const [w, g] = await Promise.all([
+    fetch(u, { cf: { cacheTtl: 600 } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    precise ? fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=10&accept-language=tr&lat=${lat}&lon=${lon}`, { headers: { 'user-agent': 'LilyaBackstage/1.0' }, cf: { cacheTtl: 86400 } }).then(r => r.ok ? r.json() : null).catch(() => null) : null]);
+  if (g && g.address) { const a = g.address; city = [a.town || a.city_district || a.district || a.county || a.suburb, a.province || a.city || a.state].filter(Boolean).filter((x, i, l) => l.indexOf(x) === i).join(', '); }
+  if (!w || !w.current) return { temp: null };
+  return { city, temp: w.current.temperature_2m, code: w.current.weather_code, wind: w.current.wind_speed_10m, max: w.daily.temperature_2m_max[0], min: w.daily.temperature_2m_min[0], rain: (w.daily.precipitation_probability_max || [null])[0] };
+}
 async function api(req, env, path) {
   const method = req.method;
   const body = method === 'POST' ? await req.json().catch(() => ({})) : {};
   if (path === '/api/state') {
     const info = await syncInfo(env);
     if (new URL(req.url).searchParams.get('rev') === info.rev) return json({ ...info, same: true });
-    const [p, o, r, m, pd] = await env.DB.batch([
+    const [p, o, r, m] = await env.DB.batch([
       env.DB.prepare('SELECT * FROM products ORDER BY name'),
       env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ORDER BY o.date DESC LIMIT 300`),
       env.DB.prepare('SELECT * FROM returns ORDER BY created_at DESC LIMIT 400'),
-      env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600'),
-      env.DB.prepare(`SELECT o.*, a.status pstatus, json_extract(c.data,'$.name') cname FROM audit_pkg a JOIN orders o ON o.order_no=a.order_no AND o.channel='trendyol' LEFT JOIN order_cust c ON c.order_no=a.order_no
-        WHERE a.status IN ('Created','Picking','Invoiced','ReadyToShip','Awaiting') AND a.day >= ?1 GROUP BY o.id ORDER BY o.date ASC LIMIT 200`).bind(trDay(Date.now() - 30 * 86400000))]);
-    const pending = (pd.results || []).map(x => ({ ...mapOrder(x), pstatus: x.pstatus }));
-    return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove), pending });
+      env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600')]);
+    return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove) });
   }
+  if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
   if (method !== 'POST' && path !== '/api/export') return bad('Yöntem desteklenmiyor', 405);
 

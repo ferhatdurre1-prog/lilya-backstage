@@ -238,6 +238,12 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .ticker .ti span{color:var(--ink-3);font-size:12px}
 .ticker .ti b{font-variant-numeric:tabular-nums;font-weight:600}
 .ticker .ti em{font-style:normal;font-size:11.5px;font-variant-numeric:tabular-nums}
+.wx{display:flex;align-items:center;gap:10px;margin:-4px 0 14px;font-size:13px;color:var(--ink-2)}
+.wx .tx{flex:1;min-width:0;line-height:1.35}
+.wx .ic{font-size:22px;line-height:1}
+.wx b{font-size:17px;color:var(--ink);font-variant-numeric:tabular-nums}
+.wx .city{font-weight:600;color:var(--ink)}
+.wx .loc{flex:none;align-self:flex-start;border:0;background:none;padding:2px 0;color:var(--ink-3);font:inherit;font-size:12px;cursor:pointer;text-decoration:underline}
 .ticker .up{color:var(--good)} .ticker .dn{color:var(--bad)}
 @keyframes tick{to{transform:translateX(-50%)}}
 @media (prefers-reduced-motion:reduce){.ticker{overflow-x:auto}.ticker .rail{animation:none}.ticker .rail .dup{display:none}}
@@ -255,6 +261,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
     </div>
   </header>
   <div class="ticker" id="ticker" hidden aria-label="Piyasalar"></div>
+  <div class="wx" id="wx" hidden></div>
   <nav class="tabs" id="tabs" aria-label="Bölümler"></nav>
   <main id="view"></main>
 </div>
@@ -315,7 +322,7 @@ const CLIENT_BUILD = '__BUILD__';
 async function refresh(force){
   try {
     const d = await api('/api/state' + (S.rev && !force ? '?rev=' + encodeURIComponent(S.rev) : ''));
-    S.authed = true; S.conn = 'ok'; if (!mktAt) setTimeout(loadMarket, 0);
+    S.authed = true; S.conn = 'ok'; if (!mktAt) setTimeout(loadMarket, 0); if (!wxAt) setTimeout(loadWeather, 0);
     // Yeni sürüm yayına alındıysa uygulama kendini yeniler (ana ekrana eklenmiş uygulama açık kalsa bile)
     if (d.build && d.build !== CLIENT_BUILD && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) {
       let last = null; try { last = JSON.parse(sessionStorage.getItem('lb_reload') || 'null'); } catch(e) {}
@@ -323,7 +330,7 @@ async function refresh(force){
     }
     S.settings = d.settings || {}; S.sync = d.sync || S.sync; S.skew = Date.parse(d.now) - Date.now();
     if (!d.same) {
-      S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); S.orders = d.orders; S.pending = d.pending || []; S.returns = d.returns; S.moves = d.moves;
+      S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
       for (const k in S.loaded) S.loaded[k] = true;
       render();
     } else renderSync();
@@ -381,6 +388,23 @@ function renderTicker(items){
   el.hidden = false;
 }
 setInterval(loadMarket, 30000);
+/* Hava durumu: konum IP'den (izin istemez); istenirse cihaz konumu kullanılır */
+let wxAt = 0;
+const WX = {0:['☀️','Açık'],1:['🌤️','Az bulutlu'],2:['⛅','Parçalı bulutlu'],3:['☁️','Kapalı'],45:['🌫️','Sisli'],48:['🌫️','Kırağılı sis'],51:['🌦️','Hafif çisenti'],53:['🌦️','Çisenti'],55:['🌦️','Yoğun çisenti'],56:['🌧️','Dondurucu çisenti'],57:['🌧️','Dondurucu çisenti'],61:['🌧️','Hafif yağmur'],63:['🌧️','Yağmurlu'],65:['🌧️','Kuvvetli yağmur'],66:['🌧️','Dondurucu yağmur'],67:['🌧️','Dondurucu yağmur'],71:['🌨️','Hafif kar'],73:['🌨️','Karlı'],75:['❄️','Yoğun kar'],77:['🌨️','Kar taneleri'],80:['🌦️','Sağanak'],81:['🌧️','Sağanak'],82:['⛈️','Kuvvetli sağanak'],85:['🌨️','Kar sağanağı'],86:['❄️','Yoğun kar sağanağı'],95:['⛈️','Gök gürültülü'],96:['⛈️','Dolu ihtimali'],99:['⛈️','Dolulu fırtına']};
+function wxCoords(){ try { return JSON.parse(localStorage.getItem('lb_geo') || 'null'); } catch(e) { return null; } }
+async function loadWeather(force){
+  if (!S.authed || document.visibilityState !== 'visible' || (!force && Date.now() - wxAt < 15 * 60000)) return; wxAt = Date.now();
+  try { const g = wxCoords(); const d = await api('/api/weather', g ? {lat: g.lat, lon: g.lon} : {}); renderWeather(d, !!g); } catch(e) { wxAt = Date.now() - 13 * 60000; }
+}
+function renderWeather(d, precise){
+  const el = $('#wx'); if (!el || !d || d.temp === undefined || d.temp === null) { if (el) el.hidden = true; return; }
+  const [ic, txt] = WX[d.code] || ['🌡️', ''];
+  const day = new Date().toLocaleDateString('tr-TR', {weekday:'long', day:'numeric', month:'long'});
+  el.innerHTML = `<span class="ic" aria-hidden="true">${ic}</span><b>${Math.round(d.temp)}°</b><div class="tx"><div><span class="city">${esc(d.city || 'Konum')}</span> · ${esc(txt)}</div><div class="small muted">${esc(day)} · En yüksek ${Math.round(d.max)}° / en düşük ${Math.round(d.min)}°${d.rain !== null && d.rain !== undefined ? ` · Yağış %${Math.round(d.rain)}` : ''}${d.wind !== undefined ? ` · Rüzgâr ${Math.round(d.wind)} km/sa` : ''}</div></div>${precise ? '' : `<button class="loc" data-act="wx-geo" aria-label="Cihaz konumunu kullan">📍 Konum</button>`}`;
+  el.hidden = false;
+}
+setInterval(loadWeather, 60000);
+document.addEventListener('visibilitychange', () => loadWeather());
 document.addEventListener('visibilitychange', loadMarket);
 
 /* ============ Arayüz kabuğu ============ */
@@ -483,8 +507,7 @@ function viewHome(){
   const P = profS(); // Kâr ekranıyla aynı veri: bu ayın siparişleri
   homeMaybeLoad();
   const H = S.home && S.home.data;
-  const hr = new Date().getHours(), hello = hr < 6 ? 'İyi geceler' : hr < 12 ? 'Günaydın' : hr < 18 ? 'İyi günler' : 'İyi akşamlar';
-  let h = `<div style="margin:4px 0 16px"><h2 class="sec" style="margin:0">${hello}</h2><p class="lead small" style="margin:4px 0 0">${esc(new Date().toLocaleDateString('tr-TR',{weekday:'long', day:'numeric', month:'long'}))}</p></div>`;
+  let h = '';
   if (!H) return h + (S.home && S.home.err ? `<div class="card"><b>Ana ekran verisi alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>` : loading());
   const t0 = new Date(); t0.setHours(0,0,0,0); const y0 = new Date(t0); y0.setDate(y0.getDate()-1);
   const pick = (a, b) => H.orders.filter(o => { const d = Date.parse(o.date); return d >= a && d < b; });
@@ -499,7 +522,7 @@ function viewHome(){
     ${kpi('Bugün sipariş', fmtN(T.n), `${fmtN(T.u)} adet`)}
     ${kpi('Bu ay net kâr', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit))}
   </div>`;
-  h += homePending() + homeChart(W, agg, pickW, t0);
+  h += homeChart(W, agg, pickW, t0);
   // Dikkat gerektirenler
   const ps = [...S.products.values()];
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
@@ -515,22 +538,7 @@ function viewHome(){
   if (low) rowsA.push(`<button class="alert-row" data-act="home-stock" data-id="low">${ic('stock','var(--warn-soft)','var(--warn)')}<div class="tx"><b>${fmtN(low)} üründe stok azaldı</b><span>Düşük stok sınırının altında</span></div></button>`);
   if (losers) rowsA.push(`<button class="alert-row" data-act="home-losers">${ic('profit','var(--bad-soft)','var(--bad)')}<div class="tx"><b>Bu ay ${fmtN(losers)} ürün zarar ettiriyor</b><span>Kâr › Zarar edenler</span></div></button>`);
   h += `<div class="card"><h3>Dikkat</h3>${rowsA.length ? rowsA.join('') : `<p class="muted small" style="margin:0">Her şey yolunda. Bekleyen iade, tükenen ürün ya da bağlantı sorunu yok.</p>`}</div>`;
-  // Son siparişler
-  const last = S.orders.slice(0, 6);
-  if (last.length) h += `<div class="card" style="padding-bottom:6px"><div class="spread"><h3 style="margin:0">Son siparişler</h3><button class="btn sm ghost" data-act="tab" data-id="orders">Tümü ›</button></div><div class="list" style="margin:0 -14px">${last.map(o => { const st2 = OST[orderStatus(o)]; const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0); return `<button class="item" data-act="order" data-id="${esc(o.id)}">${orderThumb((o.lines||[]).map(l => l.pkey), (o.lines||[]).map(l => l.name))}<div class="main"><div class="ttl">${o.cname ? esc(o.cname) : `<span class="mono">#${esc(o.orderNo)}</span>`}</div><div class="meta"><span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(units)} adet</span></div></div><div class="end"><span class="pill ${st2[1]}">${st2[0]}</span></div></button>`; }).join('')}</div></div>`;
   return h;
-}
-const PST = {Created:['Yeni','p-warn'], Awaiting:['Bekliyor','p-warn'], Picking:['Hazırlanıyor','p-warn'], Invoiced:['Faturalandı','p-good'], ReadyToShip:['Kargoya hazır','p-good']};
-function homePending(){
-  const L = S.pending || [];
-  if (!L.length) return `<div class="card"><div class="spread"><h3 style="margin:0">Kargoya verilecek</h3><span class="pill p-good">0</span></div><p class="muted small" style="margin:8px 0 0">Bekleyen sipariş yok, hepsi kargoda.</p></div>`;
-  const now = Date.now(), late = L.filter(o => now - Date.parse(o.date) > 24*3600000).length;
-  const age = (d) => { const m = Math.max(0, Math.round((now - Date.parse(d)) / 60000)); return m < 60 ? `${m} dk önce` : m < 1440 ? `${Math.floor(m/60)} sa önce` : `${Math.floor(m/1440)} gün önce`; };
-  const show = S.homePendAll ? L : L.slice(0, 5);
-  return `<div class="card" style="padding-bottom:6px"><div class="spread"><h3 style="margin:0">Kargoya verilecek · ${fmtN(L.length)}</h3>${late ? `<span class="pill p-bad">${fmtN(late)} gecikmede</span>` : ''}</div>
-  <div class="list" style="margin:0 -14px">${show.map(o => { const st = PST[o.pstatus] || [o.pstatus, 'p-warn']; const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0); const isLate = now - Date.parse(o.date) > 24*3600000;
-    return `<button class="item" data-act="order" data-id="${esc(o.id)}">${orderThumb((o.lines||[]).map(l => l.pkey), (o.lines||[]).map(l => l.name))}<div class="main"><div class="ttl">${o.cname ? esc(o.cname) : `<span class="mono">#${esc(o.orderNo)}</span>`}</div><div class="meta"><span${isLate?' style="color:var(--bad);font-weight:600"':''}>${esc(age(o.date))}</span><span>· ${fmtN(units)} adet</span></div></div><div class="end"><span class="pill ${st[1]}">${esc(st[0])}</span></div></button>`; }).join('')}</div>
-  ${L.length > 5 ? `<button class="btn sm ghost" style="width:100%;margin:4px 0" data-act="home-pend">${S.homePendAll ? 'Daha az göster' : `Tümünü göster (${fmtN(L.length)})`}</button>` : ''}</div>`;
 }
 function homeChart(W, agg, pickW, t0){
   const days = []; for (let i = 6; i >= 0; i--) { const a = new Date(t0); a.setDate(a.getDate() - i); const b = new Date(a); b.setDate(b.getDate() + 1); days.push({d: a, ...agg(pickW(a.getTime(), b.getTime()))}); }
@@ -1679,8 +1687,9 @@ document.addEventListener('click', async e => {
     case 'menu-close': S.drawer = false; renderDrawer(); break;
     case 'dnav': S.drawer = false; renderDrawer(); if (id === '__conn') { S.imp = null; openSheet('import'); } else setTab(id); break;
     case 'home-stock': S.filter = id; setTab('stock'); break;
+    case 'wx-geo': if (!navigator.geolocation) { toast('Bu cihaz konum vermiyor.', true); break; }
+      navigator.geolocation.getCurrentPosition(pos => { try { localStorage.setItem('lb_geo', JSON.stringify({lat: Math.round(pos.coords.latitude*100)/100, lon: Math.round(pos.coords.longitude*100)/100})); } catch(e) {} loadWeather(true); }, () => toast('Konum izni verilmedi; yaklaşık konum kullanılıyor.', true), {timeout: 10000, maximumAge: 3600000}); break;
     case 'home-retry': homeMaybeLoad(true); render(); break;
-    case 'home-pend': S.homePendAll = !S.homePendAll; render(); break;
     case 'home-losers': profS().sub = 'losers'; setTab('profit'); break;
     case 'filter': S.filter = id; if (S.tab !== 'stock') setTab('stock'); else render(); break;
     case 'chf': S.ch = id; render(); break;
