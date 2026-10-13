@@ -46,7 +46,14 @@ const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slic
 let COLD_MS = null;
 async function init(env) {
   if (READY) return;
-  const ti0 = Date.now(); try { await init0(env); } finally { COLD_MS = Date.now() - ti0; }
+  const ti0 = Date.now();
+  try {
+    // Kurulum/geçiş kontrolleri bu sürüm için bir kez yapıldıysa tek sorguyla geçilir
+    let done = false;
+    try { const r = await env.DB.prepare(`SELECT v FROM settings WHERE k='schema_build'`).first(); done = !!(r && r.v === APP_BUILD); } catch (e) {}
+    if (!done) { await init0(env); await env.DB.prepare(`INSERT INTO settings(k,v) VALUES('schema_build',?1) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(APP_BUILD).run(); }
+    READY = true;
+  } finally { COLD_MS = Date.now() - ti0; }
 }
 async function init0(env) {
   if (!env.DB) throw new Error('D1 veritabanı bağlanmamış (DB).');
@@ -934,11 +941,18 @@ async function loadFees(env) {
 }
 async function computeProfit(env, from, to) {
   const T0 = Date.now(), TM = {}; const mark = (k) => { TM[k] = Date.now() - T0; };
-  const fee = await loadFees(env); mark('fees');
-  const [o, p, r] = await env.DB.batch([
+  // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
+  const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
+  const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
+  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare('SELECT key, sku, name, image, cost, barcode, same_day FROM products'),
-    env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note FROM returns WHERE order_id<>'' AND status<>'rejected'`)]);
+    env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note FROM returns WHERE order_id<>'' AND status<>'rejected'`),
+    env.DB.prepare(`SELECT * FROM order_fin WHERE order_no IN (${SUBQ})`).bind(from, to),
+    env.DB.prepare(`SELECT order_no, json_extract(data,'$.name') n FROM order_cust WHERE order_no IN (${SUBQ})`).bind(from, to),
+    env.DB.prepare(`SELECT order_no, type, amount FROM fin_misc WHERE order_no IN (${SUBQ})`).bind(from, to),
+    env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%'),
+    env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo)])]);
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const rets = new Map(), pend = new Map(), defQ = new Map(), undOrders = new Set();
@@ -952,19 +966,17 @@ async function computeProfit(env, from, to) {
       if (UNDELIVERED_RE.test(note)) undOrders.add(x.order_id);
     } else if (x.status === 'requested') pend.set(k, (pend.get(k) || 0) + (x.qty || 0));
   }
-  const orderNos = o.results.filter(x => x.channel === 'trendyol').map(x => x.order_no);
-  const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x])); mark('fin');
-  const cnames = new Map((await selectIn(env, "SELECT order_no, json_extract(data,'$.name') n FROM order_cust", 'order_no', orderNos)).map(x => [x.order_no, x.n || '']));
+  const fin = new Map(finR.results.map(x => [x.order_no, x]));
+  const cnames = new Map(custR.results.map(x => [x.order_no, x.n || '']));
   // Trendyol'un ceza vb. kesinti faturaları: siparişe bağlı olanlar siparişe, bağlanamayanlar fatura tarihine göre döneme yazılır
   mark('cust'); const miscByOrder = new Map();
-  for (const m of await selectIn(env, 'SELECT order_no, type, amount FROM fin_misc', 'order_no', orderNos)) { if (isCompensation(m.type)) continue; const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
-  const { results: miscAll } = await env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%').all();
+  for (const m of miscR.results) { if (isCompensation(m.type)) continue; const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
+  const miscAll = miscAllR.results;
   // Kayıp kargo tazmini fatura tarihine göre gelir olarak eklenir; ceza türleri siparişe bağlıysa siparişte sayılır
   const miscFree = miscAll.filter(x => !isCompensation(x.type));
   const compensation = miscAll.filter(x => isCompensation(x.type)).reduce((a, x) => a + Math.abs(x.amount || 0), 0);
   // Reklam: harcandığı günün gideri (elle ya da Trendyol reklam raporundan girilen günlük harcama)
-  const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
-  const { results: adRows } = await env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo).all();
+  const adRows = adR.results;
   mark('misc'); const R2 = (n) => Math.round(n * 100) / 100;
   const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
