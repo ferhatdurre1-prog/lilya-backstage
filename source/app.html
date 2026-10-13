@@ -342,7 +342,7 @@ const S = {
   tab: initialTab(), q:'', filter:'active', psort:(() => { try { return localStorage.getItem('lb_psort') || 'name_asc'; } catch(e) { return 'name_asc'; } })(), ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
   sheet:null, imp:null, busy:false, syncing:false
 };
-function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=localStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'home'; }
+function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=sessionStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'home'; }
 
 /* ============ Sunucu ============ */
 async function api(path, body){
@@ -443,6 +443,13 @@ function renderWeather(d, precise){
 setInterval(loadWeather, 60000);
 document.addEventListener('visibilitychange', () => loadWeather());
 document.addEventListener('visibilitychange', loadMarket);
+// Uygulama uzun süre arka planda kaldıysa geri dönünce ana ekranla açılır
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (hiddenAt && Date.now() - hiddenAt > 5 * 60000 && S.authed && S.tab !== 'home' && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) { S.drawer = false; renderDrawer(); setTab('home'); }
+  hiddenAt = 0;
+});
 
 /* ============ Arayüz kabuğu ============ */
 function toast(msg, bad=false){
@@ -459,7 +466,7 @@ function confirmBox(text, ok='Onayla', danger=false){
 }
 function openSheet(type, data={}){ S.sheet = {type, ...data}; renderSheet(true); }
 function closeSheet(){ if (S.busy) return; S.sheet = null; $('#sheet-root').innerHTML = ''; document.body.style.overflow = ''; }
-function setTab(t){ S.tab = t; try{ localStorage.setItem('lb-tab', t); }catch(e){} render(); window.scrollTo(0,0); }
+function setTab(t){ S.tab = t; try{ sessionStorage.setItem('lb-tab', t); localStorage.removeItem('lb-tab'); }catch(e){} render(); window.scrollTo(0,0); }
 
 function viewLogin(){
   return `<form id="f-login" class="panel" style="max-width:420px;margin:8vh auto 0;padding:22px;display:grid;gap:14px">
