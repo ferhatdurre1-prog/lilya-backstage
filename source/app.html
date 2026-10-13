@@ -333,7 +333,7 @@ const S = {
   conn:'wait', authed:(() => { try { return localStorage.getItem('lb_seen') === '1' ? true : null; } catch(e) { return null; } })(), rev:null, skew:0,
   loaded:{products:false, orders:false, returns:false, moves:false, settings:false},
   products:new Map(), orders:[], returns:[], moves:[], settings:{}, sync:{trendyol:{configured:false}},
-  tab: initialTab(), q:'', filter:'all', ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
+  tab: initialTab(), q:'', filter:'active', ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
   sheet:null, imp:null, busy:false, syncing:false
 };
 function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=localStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'home'; }
@@ -1727,10 +1727,10 @@ document.addEventListener('click', async e => {
   const act = b.dataset.act, id = b.dataset.id;
   if (act === 'scrim') { if (e.target === b) closeSheet(); return; }
   switch (act) {
-    case 'tab': S.drawer = false; renderDrawer(); setTab(id); break;
+    case 'tab': S.drawer = false; renderDrawer(); if (id === 'stock' && S.tab !== 'stock') S.filter = 'active'; setTab(id); break;
     case 'menu': S.drawer = true; renderDrawer(); break;
     case 'menu-close': S.drawer = false; renderDrawer(); break;
-    case 'dnav': S.drawer = false; renderDrawer(); if (id === '__conn') { S.imp = null; openSheet('import'); } else setTab(id); break;
+    case 'dnav': S.drawer = false; renderDrawer(); if (id === '__conn') { S.imp = null; openSheet('import'); } else { if (id === 'stock' && S.tab !== 'stock') S.filter = 'active'; setTab(id); } break;
     case 'home-stock': S.filter = id; setTab('stock'); break;
     case 'wx-geo': if (!navigator.geolocation) { toast('Bu cihaz konum vermiyor.', true); break; }
       navigator.geolocation.getCurrentPosition(pos => { try { localStorage.setItem('lb_geo', JSON.stringify({lat: Math.round(pos.coords.latitude*100)/100, lon: Math.round(pos.coords.longitude*100)/100})); } catch(e) {} loadWeather(true); }, () => toast('Konum izni verilmedi; yaklaşık konum kullanılıyor.', true), {timeout: 10000, maximumAge: 3600000}); break;
