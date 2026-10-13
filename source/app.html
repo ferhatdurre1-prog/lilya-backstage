@@ -519,7 +519,7 @@ function viewHome(){
       ${kpi('Bu ay net kâr', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit))}
     </div>` + homeChart(D);
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
-  else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div>`;
+  else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
   const ps = [...S.products.values()];
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
@@ -564,12 +564,18 @@ function homeMaybeLoad(force){
   const H = S.home, now = Date.now();
   if (!force && H && H.data && H.data.day === todayTR() && (H.rev === S.rev || now - H.at < 60000)) return;
   if (!force && H && H.err && now - H.at < 60000) return;
+  if (!force && H && H.pending && now - H.at < 3500) return;
   setTimeout(() => loadHome(force), 0);
 }
 async function loadHome(force){
   if (S.homeLoading) return; S.homeLoading = true;
   const rev = S.rev;
   try { const data = await api('/api/home', force ? {force: true} : {});
+    if (data.pending) {
+      // Sunucu arka planda hesaplıyor; birkaç saniye sonra tekrar sor
+      S.home = S.home && S.home.data ? {...S.home, at: Date.now() - 55000} : {rev, at: Date.now(), pending: true, perr: data.err || ''};
+      S.homeLoading = false; setTimeout(() => { if (S.tab === 'home') homeMaybeLoad(); }, 4000); if (S.tab === 'home') render(); return;
+    }
     S.home = {rev, at: Date.now(), data};
     try { localStorage.setItem('lb_home', JSON.stringify({rev, data})); } catch(e) {}
   } catch(e) { S.home = S.home && S.home.data ? {...S.home, at: Date.now()} : {rev, at: Date.now(), err: errText(e)}; }

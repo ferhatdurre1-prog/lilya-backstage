@@ -1149,10 +1149,20 @@ async function marketData(env) {
   return out;
 }
 /* ---------- ana ekran özeti: küçük cevap, 90 sn önbellek ---------- */
-async function homeData(env, force) {
+// Hesap arka planda yapılır; istek hiç beklemez, varsa son hesaplanan değer hemen döner.
+async function homeData(env, ctx, force) {
   const today = trDay(Date.now());
   const cached = JSON.parse((await getSetting(env, 'home_cache')) || 'null');
-  if (!force && cached && cached.day === today && Date.now() - cached.at < 90000) return cached;
+  const fresh = cached && cached.day === today && Date.now() - cached.at < 90000;
+  if (!fresh || force) {
+    const busy = Number(await getSetting(env, 'home_busy')) || 0;
+    if (Date.now() - busy > 180000) { await setSetting(env, 'home_busy', String(Date.now())); const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {})); if (ctx && ctx.waitUntil) ctx.waitUntil(job); }
+  }
+  if (cached && cached.day === today) return cached;
+  return { pending: true, err: (await getSetting(env, 'home_err')) || '' };
+}
+async function computeHome(env) {
+  const t00 = Date.now(), today = trDay(t00);
   const dayStart = (d) => Date.parse(d + 'T00:00:00+03:00');
   const t0 = dayStart(today), to = t0 + 86400000, w0 = t0 - 6 * 86400000, m0 = dayStart(today.slice(0, 8) + '01');
   const from = Math.min(w0, m0);
@@ -1163,8 +1173,8 @@ async function homeData(env, force) {
   const idx = new Map(days.map((x, i) => [x.d, i]));
   for (const o of P.orders) { const i = idx.get(trDay(Date.parse(o.date))); if (i === undefined) continue; const x = days[i]; x.rev += o.revenue || 0; x.prof += o.profit || 0; x.n++; x.u += o.units || 0; }
   for (const x of days) { x.rev = Math.round(x.rev * 100) / 100; x.prof = Math.round(x.prof * 100) / 100; }
-  const out = { day: today, at: Date.now(), days, month: { revenue: M.summary.revenue, profit: M.summary.profit, margin: M.summary.margin }, losers: M.products.filter(x => x.profit < 0).length };
-  try { await setSetting(env, 'home_cache', JSON.stringify(out)); } catch (e) {}
+  const out = { day: today, at: Date.now(), ms: Date.now() - t00, days, month: { revenue: M.summary.revenue, profit: M.summary.profit, margin: M.summary.margin }, losers: M.products.filter(x => x.profit < 0).length };
+  await setSetting(env, 'home_cache', JSON.stringify(out)); await setSetting(env, 'home_err', '');
   return out;
 }
 /* ---------- hava durumu (Open-Meteo, anahtar gerektirmez) ---------- */
@@ -1182,7 +1192,7 @@ async function weatherData(req, body) {
   if (!w || !w.current) return { temp: null };
   return { city, temp: w.current.temperature_2m, code: w.current.weather_code, wind: w.current.wind_speed_10m, max: w.daily.temperature_2m_max[0], min: w.daily.temperature_2m_min[0], rain: (w.daily.precipitation_probability_max || [null])[0] };
 }
-async function api(req, env, path) {
+async function api(req, env, path, ctx) {
   const method = req.method;
   const body = method === 'POST' ? await req.json().catch(() => ({})) : {};
   if (path === '/api/state') {
@@ -1195,7 +1205,7 @@ async function api(req, env, path) {
       env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600')]);
     return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove) });
   }
-  if (path === '/api/home') return json(await homeData(env, !!body.force));
+  if (path === '/api/home') return json(await homeData(env, ctx, !!body.force));
   if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
   if (method !== 'POST' && path !== '/api/export') return bad('Yöntem desteklenmiyor', 405);
@@ -1464,7 +1474,7 @@ export default {
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
         if (!(await authed(req, env))) return bad('Oturum gerekli.', 401);
-        return await api(req, env, path);
+        return await api(req, env, path, ctx);
       }
       return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
     } catch (e) {
