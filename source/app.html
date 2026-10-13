@@ -328,11 +328,12 @@ const ICONS = {
   profit:'<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
   home:'<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
   link:'<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
+  reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
-const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['value','Stok değeri'],['profit','Kâr'],['moves','Hareketler']];
+const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
 const NAV_MAIN = ['stock','profit']; // alt çubukta görünenler; diğerleri sol menüde
-const TAB_SHORT = {home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
+const TAB_SHORT = {reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
 
 /* ============ Durum ============ */
 const S = {
@@ -603,7 +604,7 @@ function render(){
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
-  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves}[S.tab])();
+  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports}[S.tab])();
   enhanceTables(v);
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
@@ -624,6 +625,97 @@ function renderDrawer(){
     <button class="di" data-act="security"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Güvenlik & Face ID</button>
     <button class="di" data-act="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.out}</svg>Çıkış</button>
   </nav>`;
+}
+/* ============ Raporlar: günlük kesin sonuçlardan dönem toplamları ============ */
+const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+const RKEYS = ['revenue','commission','cargo','retCargo','penalty','service','stopaj','cost','ads','expenses','otherFees','compensation','profit','orders','units','retUnits','retOrders'];
+function repS(){ if (!S.rep) { let g = 'month'; try { g = localStorage.getItem('lb_rgran') || 'month'; } catch(e) {} S.rep = {gran: g, year: Number(todayTR().slice(0,4)), data: null, at: 0, loading: false, prod: {}}; } return S.rep; }
+async function loadReports(force){
+  const R = repS(); if (R.loading || (!force && R.data && Date.now() - R.at < 60000)) return;
+  R.loading = true; try { R.data = await api('/api/reports', {}); R.at = Date.now(); R.err = ''; } catch(e) { R.err = errText(e); }
+  R.loading = false; if (S.tab === 'reports') render();
+}
+async function loadRepProducts(from, to){
+  const R = repS(), k = from + '|' + to; if (R.prod[k] && Date.now() - R.prod[k].at < 60000) return;
+  R.prod[k] = {at: Date.now(), data: R.prod[k] && R.prod[k].data};
+  try { R.prod[k] = {at: Date.now(), data: await api('/api/reports/products', {from, to})}; } catch(e) {}
+  if (S.tab === 'reports') render();
+}
+const isoWeekStart = (d) => { const x = new Date(d + 'T12:00:00'); const wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); return x.toISOString().slice(0,10); };
+function repGroup(days, gran){
+  const map = new Map();
+  for (const d of days) {
+    const y = d.day.slice(0,4), m = Number(d.day.slice(5,7));
+    const key = gran === 'day' ? d.day : gran === 'week' ? isoWeekStart(d.day) : gran === 'month' ? d.day.slice(0,7) : gran === 'quarter' ? y + '-Q' + Math.ceil(m / 3) : y;
+    let g = map.get(key); if (!g) { g = {key, from: d.day, to: d.day, n: 0}; for (const k of RKEYS) g[k] = 0; map.set(key, g); }
+    for (const k of RKEYS) g[k] += Number(d[k]) || 0; g.n++; if (d.day < g.from) g.from = d.day; if (d.day > g.to) g.to = d.day;
+  }
+  return [...map.values()].sort((a, b) => a.key < b.key ? -1 : 1);
+}
+function repLabel(g, gran){
+  const dd = (d) => new Date(d + 'T12:00:00');
+  if (gran === 'day') return dd(g.key).toLocaleDateString('tr-TR', {day:'numeric', month:'short', weekday:'short'});
+  if (gran === 'week') { const a = dd(g.key), b = new Date(a); b.setDate(b.getDate() + 6); return `${a.getDate()} ${MONTHS_TR[a.getMonth()].slice(0,3)} – ${b.getDate()} ${MONTHS_TR[b.getMonth()].slice(0,3)}`; }
+  if (gran === 'month') return MONTHS_TR[Number(g.key.slice(5,7)) - 1] + ' ' + g.key.slice(0,4);
+  if (gran === 'quarter') { const q = Number(g.key.slice(-1)); return `${q}. Çeyrek (${MONTHS_TR[(q-1)*3].slice(0,3)}–${MONTHS_TR[(q-1)*3+2].slice(0,3)})`; }
+  return g.key + ' yılı';
+}
+function viewReports(){
+  const R = repS(); loadReports(false);
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Raporlar</h2><p class="lead small">Her günün kesin sonucu kalıcı olarak saklanır. Günlük, haftalık, aylık, çeyreklik ve yıllık toplamlar buradan.</p></div>`;
+  if (R.err && !R.data) return h + `<div class="banner bad"><div>${esc(R.err)}</div></div>`;
+  if (!R.data) return h + loading();
+  const all = R.data.days || [];
+  if (!all.length) return h + `<div class="panel empty"><h4>Rapor hazırlanıyor</h4><p>Günlük sonuçlar arka planda hesaplanıyor; birkaç dakika içinde burada görünür.</p></div>`;
+  const years = [...new Set(all.map(d => Number(d.day.slice(0,4))))].sort(); if (!years.includes(R.year)) R.year = years[years.length - 1];
+  const yd = all.filter(d => Number(d.day.slice(0,4)) === R.year);
+  const T = repGroup(yd, 'year')[0] || {}; const margin = T.revenue ? T.profit / T.revenue * 100 : null;
+  const grans = [['day','Günlük'],['week','Haftalık'],['month','Aylık'],['quarter','Çeyreklik'],['year','Yıllık']];
+  h += `<div class="filters" style="margin-bottom:10px"><div class="chips">${years.map(y => `<button class="chip" data-act="rep-year" data-id="${y}" aria-pressed="${R.year===y}">${y}</button>`).join('')}</div></div>`;
+  const kpi = (k, v, sub, c, cs, icon, vstyle) => `<div class="kpi" style="--c:${c};--cs:${cs}"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle||''}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
+  h += `<div class="home-grid">
+    ${kpi(R.year + ' ciro', fmtTL(T.revenue || 0), `${fmtN(T.n || 0)} gün kayıtlı`, 'var(--blue)', 'var(--blue-soft)', 'value', 'color:var(--blue)')}
+    ${kpi(R.year + ' net kâr', tlS(T.profit || 0), `marj ${pct(margin)}`, (T.profit||0) < 0 ? 'var(--bad)' : 'var(--good)', (T.profit||0) < 0 ? 'var(--bad-soft)' : 'var(--good-soft)', 'profit', profitCls(T.profit || 0))}
+    ${kpi('Sipariş', fmtN(T.orders || 0), `${fmtN(T.units || 0)} adet satıldı`, 'var(--orange)', 'var(--warn-soft)', 'orders', 'color:var(--orange)')}
+    ${kpi('İade', fmtN(T.retUnits || 0) + ' adet', `${fmtN(T.retOrders || 0)} siparişte`, 'var(--violet)', 'var(--violet-soft)', 'returns', 'color:var(--violet)')}
+  </div>`;
+  // Yılın kesinti dökümü
+  const parts = [['Komisyon', T.commission], ['Kargo', T.cargo], ['İade kargosu', T.retCargo], ['Ceza ve kupon', T.penalty], ['Hizmet bedeli', T.service], ['Stopaj', T.stopaj], ['Ürün maliyeti', T.cost], ['Reklam', T.ads], ['Giderler (elle)', T.expenses], ['Diğer Trendyol kesintileri', T.otherFees]].filter(x => x[1]);
+  if (T.revenue) h += `<div class="card"><h3 style="margin:0">${R.year} ciro nereye gitti</h3>${[['Satış (ciro)', T.revenue, false], ...parts.map(x => [x[0], x[1], true]), ...(T.compensation ? [['+ Kargo tazmini', T.compensation, false]] : []), ['= Net kâr', T.profit, null]].map(([l, v, neg]) => { const w = Math.min(100, Math.abs(v) / T.revenue * 100); return `<div><div class="spread small"><span>${neg ? '− ' : ''}${esc(l)}</span><span><b class="num" style="${neg===null?profitCls(v):''}">${neg===null?tlS(v):fmtTL(v)}</b> <span class="muted">%${(Math.abs(v) / T.revenue * 100).toFixed(1).replace('.',',')}</span></span></div><div style="height:6px;border-radius:4px;background:var(--surface-2);margin-top:4px;overflow:hidden"><div style="height:100%;width:${w}%;background:${neg===false?'var(--blue)':neg===null?(v<0?'var(--bad)':'var(--good)'):'var(--bad)'};opacity:${neg?'.75':'1'}"></div></div></div>`; }).join('')}</div>`;
+  // Dönem tablosu + grafik
+  h += `<div class="filters" style="margin:4px 0 10px"><div class="chips">${grans.map(([id,l]) => `<button class="chip" data-act="rep-gran" data-id="${id}" aria-pressed="${R.gran===id}">${l}</button>`).join('')}</div></div>`;
+  let rows = repGroup(R.gran === 'year' ? all : yd, R.gran);
+  const chartRows = R.gran === 'day' ? rows.slice(-31) : rows;
+  if (chartRows.length > 1) h += repChart(chartRows, R.gran);
+  const linkable = R.gran === 'day' || R.gran === 'week' || R.gran === 'month';
+  h += `<div class="card" style="padding:0;overflow:hidden"><div class="tbl-wrap" style="border:0;margin:0"><table class="t"><thead><tr><th>Dönem</th><th class="r">Sipariş</th><th class="r">Adet</th><th class="r">Ciro</th><th class="r">Net kâr</th><th class="r">Marj</th></tr></thead><tbody>
+    ${rows.slice().reverse().map(g => `<tr${linkable ? ` data-act="rep-open" data-id="${g.from}|${g.to}" style="cursor:pointer"` : ''}><td data-v="${esc(g.key)}"><b>${esc(repLabel(g, R.gran))}</b>${g.n && R.gran !== 'day' ? `<div class="muted small">${fmtN(g.n)} gün</div>` : ''}</td><td class="r num">${fmtN(g.orders)}</td><td class="r num">${fmtN(g.units)}</td><td class="r num">${fmtTL(g.revenue)}</td><td class="r num" style="${profitCls(g.profit)};font-weight:700">${tlS(g.profit)}</td><td class="r num">${pct(g.revenue ? g.profit / g.revenue * 100 : null)}</td></tr>`).join('')}
+    <tr style="background:var(--surface-2)"><td><b>Toplam</b></td>${(() => { const t = repGroup(R.gran === 'year' ? all : yd, 'year').reduce((a, g) => { for (const k of RKEYS) a[k] = (a[k] || 0) + g[k]; return a; }, {}); return `<td class="r num"><b>${fmtN(t.orders||0)}</b></td><td class="r num"><b>${fmtN(t.units||0)}</b></td><td class="r num"><b>${fmtTL(t.revenue||0)}</b></td><td class="r num" style="${profitCls(t.profit||0)}"><b>${tlS(t.profit||0)}</b></td><td class="r num"><b>${pct(t.revenue ? t.profit / t.revenue * 100 : null)}</b></td>`; })()}</tr>
+  </tbody></table></div></div>`;
+  if (linkable) h += `<p class="muted small" style="margin:-6px 0 14px">Bir satıra dokununca o dönemin sipariş ve ürün ayrıntısı Kâr ekranında açılır.</p>`;
+  // Yılın ürünleri
+  const pf = yd[0] ? yd[0].day : R.year + '-01-01', pt = yd.length ? yd[yd.length - 1].day : R.year + '-12-31';
+  loadRepProducts(pf, pt); const PD = (R.prod[pf + '|' + pt] || {}).data;
+  const plist = (title, L, emptyMsg) => `<div class="card"><h3 style="margin:0">${title}</h3>${L && L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<div class="item" style="cursor:default">${thumb({image: x.image, name: x.name})}<div class="main"><div class="ttl">${esc(x.name || x.sku)}</div><div class="meta"><span class="mono">${esc(x.sku)}</span><span>· ${fmtN(x.units)} adet${x.ret ? ` · ${fmtN(x.ret)} iade` : ''}</span></div></div><div class="end" style="text-align:right"><b class="num" style="${profitCls(x.profit)}">${tlS(x.profit)}</b><div class="muted small num">${fmtTL(x.revenue)} ciro</div></div></div>`).join('')}</div>` : `<p class="muted small" style="margin:0">${PD ? emptyMsg : 'Yükleniyor…'}</p>`}</div>`;
+  h += plist(R.year + ' en kârlı ürünler', PD && PD.best, 'Henüz veri yok.');
+  h += plist(R.year + ' en çok satanlar', PD && PD.top, 'Henüz veri yok.');
+  h += plist(R.year + ' zarar ettirenler', PD && PD.worst, 'Bu yıl zarar ettiren ürün yok.');
+  const lastAt = all.reduce((a, d) => d.at > a ? d.at : a, '');
+  h += `<p class="muted small">Kayıt başlangıcı: ${esc(new Date((R.data.first || all[0].day) + 'T12:00:00').toLocaleDateString('tr-TR', {day:'numeric', month:'long', year:'numeric'}))}. Son 70 gün, geç gelen iade ve faturalar için sürekli yeniden hesaplanır; daha eski günler kesinleşmiş kabul edilir. Son güncelleme ${esc(fmtDate(lastAt))}. <button class="btn sm ghost" data-act="rep-rebuild">Tümünü yeniden hesapla</button></p>`;
+  return h;
+}
+function repChart(rows, gran){
+  const Wd = 340, top = 16, base = 112, n = rows.length, gw = Wd / n, bw = Math.max(2, Math.min(16, gw * 0.36));
+  const max = Math.max(1, ...rows.map(x => Math.max(x.revenue, x.profit))), min = Math.min(0, ...rows.map(x => x.profit));
+  const scale = (base - top) / (max - min), zero = top + max * scale;
+  let g = `<defs><linearGradient id="rgRev" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b8cff"/><stop offset="1" stop-color="#2f6ff2"/></linearGradient><linearGradient id="rgProf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#11935a"/></linearGradient></defs>`;
+  for (const f of [0.5, 1]) { const y = zero - max * f * scale; g += `<line x1="0" x2="${Wd}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-dasharray="3 4"/>`; }
+  g += `<line x1="0" x2="${Wd}" y1="${zero}" y2="${zero}" stroke="var(--line-strong)"/>`;
+  const every = Math.ceil(n / 8);
+  rows.forEach((x, i) => { const cx = gw * i + gw / 2, rh = x.revenue * scale, ph = Math.abs(x.profit) * scale;
+    g += `<g><title>${esc(repLabel(x, gran))}: ciro ${esc(fmtTL(x.revenue))}, net kâr ${esc(fmtTL(x.profit))}</title><rect x="${cx - bw - .5}" y="${zero - rh}" width="${bw}" height="${Math.max(rh, x.revenue ? 1 : 0)}" rx="${Math.min(3, bw/3)}" fill="url(#rgRev)"/><rect x="${cx + .5}" y="${x.profit >= 0 ? zero - ph : zero}" width="${bw}" height="${Math.max(ph, x.profit ? 1 : 0)}" rx="${Math.min(3, bw/3)}" fill="${x.profit < 0 ? 'var(--bad)' : 'url(#rgProf)'}"/>
+      ${i % every === 0 || i === n - 1 ? `<text x="${cx}" y="${base + 18}" text-anchor="middle" font-size="9.5" fill="var(--ink-3)">${esc(gran === 'month' ? MONTHS_TR[Number(x.key.slice(5,7)) - 1].slice(0,3) : gran === 'quarter' ? x.key.slice(-2) : gran === 'year' ? x.key : new Date(x.from + 'T12:00:00').toLocaleDateString('tr-TR', {day:'numeric', month:'short'}))}</text>` : ''}</g>`; });
+  return `<div class="card chart7"><div class="lg"><span><i style="background:var(--blue)"></i>Ciro</span><span><i style="background:var(--good)"></i>Net kâr</span><span><i style="background:var(--bad)"></i>Zarar</span></div><svg viewBox="0 0 ${Wd} ${base + 26}" role="img" aria-label="Dönemlere göre ciro ve net kâr">${g}</svg></div>`;
 }
 /* ============ Ana ekran ============ */
 function viewHome(){
@@ -1892,6 +1984,10 @@ document.addEventListener('click', async e => {
     case 'exp-edit': { const x = ((profS().data || {}).expenses || []).find(e => String(e.id) === String(id)); if (!x) break; S.expEdit = {...x}; if (S.sheet && S.sheet.type === 'breakdown') { closeSheet(); profS().sub = 'expenses'; } render(); setTimeout(() => { const f = $('#exp-form'); if (f) f.scrollIntoView({behavior:'smooth', block:'center'}); }, 50); break; }
     case 'exp-cancel': S.expEdit = null; render(); break;
     case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
+    case 'rep-year': repS().year = Number(id); render(); break;
+    case 'rep-gran': repS().gran = id; try { localStorage.setItem('lb_rgran', id); } catch(e) {} render(); break;
+    case 'rep-open': { const [f, t] = id.split('|'); const P = profS(); P.period = 'custom'; P.cf = f; P.ct = t; P.sub = 'products'; P.data = null; P.key = ''; setTab('profit'); break; }
+    case 'rep-rebuild': if (await confirmBox('Tüm günlerin raporu baştan hesaplansın mı? Birkaç dakika sürebilir; bu sırada rakamlar kademeli dolar.', 'Yeniden hesapla')) await run(async () => { await api('/api/reports/rebuild', {}); repS().data = null; repS().at = 0; repS().prod = {}; await loadReports(true); toast('Yeniden hesaplama başladı.'); }); break;
     case 'psub': profS().sub = id; profS().opage = 1; render(); break;
     case 'ppage': profS().opage = Math.max(1, Number(id) || 1); render(); window.scrollTo(0, 0); break;
     case 'pfilter': profS().pfilter = id; render(); break;

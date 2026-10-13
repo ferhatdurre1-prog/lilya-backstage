@@ -90,6 +90,9 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE order_cust ADD COLUMN sname TEXT').run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS daily_stats(day TEXT PRIMARY KEY, data TEXT, computed_at TEXT)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS product_daily(day TEXT, pkey TEXT, sku TEXT, name TEXT, units INTEGER, ret_units INTEGER, revenue REAL, profit REAL, PRIMARY KEY(day, pkey))').run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, name TEXT, amount REAL, created_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
@@ -852,6 +855,7 @@ async function pollOnce(env, full, budget) {
     if (left() > 30000 && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env)); }
     if (left() > 35000 && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
     if (left() > 25000 && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
+    if (left() > 20000) await step('stats', () => refreshStats(env, Date.now() + Math.min(12000, left() - 15000)));
   }
   result.ms = Date.now() - t;
   return result;
@@ -1237,6 +1241,36 @@ async function marketData(env) {
   else if (cached) return cached;
   return out;
 }
+/* ---------- raporlar: her günün kesin sonucu ayrı tabloda saklanır (yıl sonu toplamları için) ---------- */
+const STAT_KEYS = ['revenue', 'commission', 'cargo', 'retCargo', 'penalty', 'service', 'stopaj', 'cost', 'ads', 'expenses', 'otherFees', 'compensation', 'profit', 'orders', 'units', 'retUnits', 'retOrders'];
+const dayStartTR = (d) => Date.parse(d + 'T00:00:00+03:00');
+const addDay = (d, n) => trDay(dayStartTR(d) + n * 86400000 + 12 * 3600000);
+async function snapshotDay(env, day) {
+  const a = dayStartTR(day); const r = await computeProfit(env, iso(a), iso(a + 86400000));
+  const data = {}; for (const k of STAT_KEYS) data[k] = Math.round((Number(r.summary[k]) || 0) * 100) / 100;
+  const st = [env.DB.prepare('INSERT INTO daily_stats(day, data, computed_at) VALUES(?1,?2,?3) ON CONFLICT(day) DO UPDATE SET data=excluded.data, computed_at=excluded.computed_at').bind(day, JSON.stringify(data), iso()),
+    env.DB.prepare('DELETE FROM product_daily WHERE day=?1').bind(day)];
+  for (const x of r.products) if (x.units || x.retUnits || x.revenue || x.profit) st.push(env.DB.prepare('INSERT INTO product_daily(day, pkey, sku, name, units, ret_units, revenue, profit) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)').bind(day, x.key, x.sku || '', x.name || '', x.units || 0, x.retUnits || 0, x.revenue || 0, x.profit || 0));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+}
+// Her dakika: bugün + dün; son 70 gün sırayla yeniden (geç gelen iade/fatura için); daha eski eksik günler bir kez
+async function refreshStats(env, deadline) {
+  const today = trDay(Date.now()); const g = await getSettings(env, ['stats_cursor', 'stats_first']);
+  let first = g.stats_first;
+  if (!first) { const r = await env.DB.prepare('SELECT MIN(date) d FROM orders').first(); if (!r || !r.d) return { n: 0 }; first = trDay(Date.parse(r.d)); await setSetting(env, 'stats_first', first); }
+  const todo = [today, addDay(today, -1)];
+  // eksik günler (veri başlangıcından bugüne)
+  const { results } = await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1').bind(first).all(); const have = new Set(results.map(x => x.day));
+  for (let d = first; d <= today && todo.length < 12; d = addDay(d, 1)) if (!have.has(d) && !todo.includes(d)) todo.push(d);
+  // son 70 gün dönüşümlü
+  let cur = g.stats_cursor && g.stats_cursor >= addDay(today, -70) && g.stats_cursor < today ? g.stats_cursor : addDay(today, -70);
+  if (cur < first) cur = first;
+  while (todo.length < 12 && cur < today) { if (!todo.includes(cur)) todo.push(cur); cur = addDay(cur, 1); }
+  let n = 0;
+  for (const d of todo) { if (deadline && Date.now() > deadline) break; await snapshotDay(env, d); n++; }
+  await setSetting(env, 'stats_cursor', cur >= today ? addDay(today, -70) : cur);
+  return { n };
+}
 /* ---------- ana ekran özeti: küçük cevap, 90 sn önbellek ---------- */
 // Hesap arka planda yapılır; istek hiç beklemez, varsa son hesaplanan değer hemen döner.
 async function homeData(env, ctx, force) {
@@ -1325,6 +1359,19 @@ async function api(req, env, path, ctx) {
     return json({ ok: true });
   }
   if (path === '/api/expenses/delete') { await env.DB.batch([env.DB.prepare('DELETE FROM expenses WHERE id=?1').bind(Number(body.id) || 0), setStmt(env, 'home_cache', ''), REV(env)]); return json({ ok: true }); }
+  if (path === '/api/reports') {
+    const { results } = await env.DB.prepare('SELECT day, data, computed_at FROM daily_stats ORDER BY day').all();
+    const first = await getSetting(env, 'stats_first');
+    return json({ first, days: results.map(x => ({ day: x.day, at: x.computed_at, ...JSON.parse(x.data || '{}') })) });
+  }
+  if (path === '/api/reports/products') {
+    const from = String(body.from || ''), to = String(body.to || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return bad('Tarih geçersiz.');
+    const q = `SELECT pd.pkey, MAX(pd.sku) sku, MAX(pd.name) name, MAX(p.image) image, SUM(pd.units) units, SUM(pd.ret_units) ret, SUM(pd.revenue) revenue, SUM(pd.profit) profit FROM product_daily pd LEFT JOIN products p ON p.key=pd.pkey WHERE pd.day >= ?1 AND pd.day <= ?2 GROUP BY pd.pkey`;
+    const [best, worst, top] = await env.DB.batch([env.DB.prepare(q + ' ORDER BY profit DESC LIMIT 10').bind(from, to), env.DB.prepare(q + ' HAVING SUM(pd.profit) < 0 ORDER BY profit ASC LIMIT 10').bind(from, to), env.DB.prepare(q + ' ORDER BY units DESC LIMIT 10').bind(from, to)]);
+    return json({ best: best.results, worst: worst.results, top: top.results });
+  }
+  if (path === '/api/reports/rebuild') { await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'stats_first', ''), setStmt(env, 'stats_cursor', '')]); try { await refreshStats(env, Date.now() + 15000); } catch (e) {} return json({ ok: true }); }
   if (path === '/api/home') return json(await homeData(env, ctx, !!body.force));
   if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
