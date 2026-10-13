@@ -266,10 +266,16 @@ async function api(path, body){
   return data;
 }
 function errText(e){ return (e && e.message) ? e.message : 'Beklenmeyen bir hata oldu. Tekrar dene.'; }
+const CLIENT_BUILD = '__BUILD__';
 async function refresh(force){
   try {
     const d = await api('/api/state' + (S.rev && !force ? '?rev=' + encodeURIComponent(S.rev) : ''));
     S.authed = true; S.conn = 'ok';
+    // Yeni sürüm yayına alındıysa uygulama kendini yeniler (ana ekrana eklenmiş uygulama açık kalsa bile)
+    if (d.build && d.build !== CLIENT_BUILD && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) {
+      let last = null; try { last = JSON.parse(sessionStorage.getItem('lb_reload') || 'null'); } catch(e) {}
+      if (!last || last.b !== d.build || Date.now() - last.t > 120000) { try { sessionStorage.setItem('lb_reload', JSON.stringify({b: d.build, t: Date.now()})); } catch(e) {} location.reload(); return; }
+    }
     S.settings = d.settings || {}; S.sync = d.sync || S.sync; S.skew = Date.parse(d.now) - Date.now();
     if (!d.same) {
       S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;

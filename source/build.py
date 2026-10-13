@@ -11,5 +11,8 @@ assert a in srv
 srv=srv.replace(a,"if (path === '/apple-touch-icon.png') return new Response(Uint8Array.from(atob(ICON_PNG), c => c.charCodeAt(0)), { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' } });\n      if (path === '/icon.svg') return new Response(ICON_SVG,")
 srv=srv.replace("icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }]","icons: [{ src: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }, { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }]")
 html=open('source/app.html').read()
+import hashlib
+build=hashlib.sha1((html+srv).encode()).hexdigest()[:10]
+html=html.replace('__BUILD__', build); srv=srv.replace('__BUILD__', build)
 open('src/worker.js','w').write(srv+"\nconst ICON_PNG = '"+b64+"';\nconst APP_HTML = "+json.dumps(html, ensure_ascii=False)+";\n")
 print('built', len(srv))
