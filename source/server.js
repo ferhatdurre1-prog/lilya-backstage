@@ -7,6 +7,7 @@ const APP_VERSION = '1.0.0';
 const APP_BUILD = '__BUILD__';
 const TY_BASE = 'https://apigw.trendyol.com/integration/';
 let READY = false;
+let PERF_LAST = null;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS products(key TEXT PRIMARY KEY, sku TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', barcode TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', channels TEXT NOT NULL DEFAULT '[]', qty INTEGER NOT NULL DEFAULT 0, cost REAL, min INTEGER NOT NULL DEFAULT 5, created_at TEXT, updated_at TEXT)`,
@@ -42,8 +43,12 @@ function safeSeg(s) { let o = ''; for (const c of String(s)) o += /[A-Za-z0-9_\-
 const orderId = (channel, no) => 'o-' + channel + '-' + safeSeg(String(no).trim());
 const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+let COLD_MS = null;
 async function init(env) {
   if (READY) return;
+  const ti0 = Date.now(); try { await init0(env); } finally { COLD_MS = Date.now() - ti0; }
+}
+async function init0(env) {
   if (!env.DB) throw new Error('D1 veritabanı bağlanmamış (DB).');
   await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s)));
   await env.DB.prepare(`INSERT OR IGNORE INTO settings(k,v) VALUES('started_at',?1)`).bind(iso()).run();
@@ -928,12 +933,13 @@ async function loadFees(env) {
   return { serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: merged, desiManual: manual, desiLearned: learned, serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
 }
 async function computeProfit(env, from, to) {
-  const fee = await loadFees(env);
+  const T0 = Date.now(), TM = {}; const mark = (k) => { TM[k] = Date.now() - T0; };
+  const fee = await loadFees(env); mark('fees');
   const [o, p, r] = await env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare('SELECT key, sku, name, image, cost, barcode, same_day FROM products'),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note FROM returns WHERE order_id<>'' AND status<>'rejected'`)]);
-  const prods = new Map(p.results.map(x => [x.key, x]));
+  mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const rets = new Map(), pend = new Map(), defQ = new Map(), undOrders = new Set();
   for (const x of r.results) {
@@ -947,10 +953,10 @@ async function computeProfit(env, from, to) {
     } else if (x.status === 'requested') pend.set(k, (pend.get(k) || 0) + (x.qty || 0));
   }
   const orderNos = o.results.filter(x => x.channel === 'trendyol').map(x => x.order_no);
-  const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x]));
+  const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x])); mark('fin');
   const cnames = new Map((await selectIn(env, "SELECT order_no, json_extract(data,'$.name') n FROM order_cust", 'order_no', orderNos)).map(x => [x.order_no, x.n || '']));
   // Trendyol'un ceza vb. kesinti faturaları: siparişe bağlı olanlar siparişe, bağlanamayanlar fatura tarihine göre döneme yazılır
-  const miscByOrder = new Map();
+  mark('cust'); const miscByOrder = new Map();
   for (const m of await selectIn(env, 'SELECT order_no, type, amount FROM fin_misc', 'order_no', orderNos)) { if (isCompensation(m.type)) continue; const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
   const { results: miscAll } = await env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%').all();
   // Kayıp kargo tazmini fatura tarihine göre gelir olarak eklenir; ceza türleri siparişe bağlıysa siparişte sayılır
@@ -959,7 +965,7 @@ async function computeProfit(env, from, to) {
   // Reklam: harcandığı günün gideri (elle ya da Trendyol reklam raporundan girilen günlük harcama)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const { results: adRows } = await env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo).all();
-  const R2 = (n) => Math.round(n * 100) / 100;
+  mark('misc'); const R2 = (n) => Math.round(n * 100) / 100;
   const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
   const sum = { ...blank(), retOrders: 0, retCargoEst: 0, undOrders: 0, unsOrders: 0, defOrders: 0, penaltyEst: 0, penaltyActual: 0, otherFees: 0, orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
@@ -1083,6 +1089,7 @@ async function computeProfit(env, from, to) {
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
+  mark('cpu'); PERF_LAST = { ...TM, orders: o.results.length };
   return { from, to, fees: fee, summary: sum, report: rep, otherFees, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, missingCostSkus: [...missingCostSkus].slice(0, 30) };
 }
 
@@ -1321,7 +1328,7 @@ async function api(req, env, path, ctx) {
     // Hız ölçümü: veritabanı bekleme süresi (ping) ve toplam süre Bağlantılar'da görünür
     const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
     const out = await computeProfit(env, iso(from), iso(to)); const ms = Date.now() - t0;
-    try { await setSetting(env, 'perf_profit', JSON.stringify({ at: iso(), days: Math.round((to - from) / 86400000), orders: out.orders.length, ms, ping })); } catch (e) {}
+    try { await setSetting(env, 'perf_profit', JSON.stringify({ at: iso(), days: Math.round((to - from) / 86400000), orders: out.orders.length, ms, ping, ph: PERF_LAST, cold: COLD_MS })); } catch (e) {}
     return json(out);
   }
   if (path === '/api/pricing') return json(await computePricing(env));
@@ -1477,6 +1484,12 @@ export default {
         const ok = typeof b.password === 'string' && (await hmac('cmp', b.password)) === (await hmac('cmp', env.APP_PASSWORD));
         if (!ok) { await sleep(900); return bad('Şifre hatalı.', 401); }
         return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
+      }
+      if (path === '/perf') {
+        const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
+        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at']);
+        const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
