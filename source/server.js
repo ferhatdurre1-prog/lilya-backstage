@@ -1247,14 +1247,10 @@ async function computeHome(env) {
   const t00 = Date.now(), today = trDay(t00);
   const dayStart = (d) => Date.parse(d + 'T00:00:00+03:00');
   const t0 = dayStart(today), to = t0 + 86400000, w0 = t0 - 6 * 86400000, m0 = dayStart(today.slice(0, 8) + '01');
-  const from = Math.min(w0, m0);
-  const P = await computeProfit(env, iso(from), iso(to));
-  const M = from === m0 ? P : await computeProfit(env, iso(m0), iso(to));
-  const days = [];
-  for (let i = 6; i >= 0; i--) { const d = trDay(t0 - i * 86400000); days.push({ d, rev: 0, prof: 0, n: 0, u: 0 }); }
-  const idx = new Map(days.map((x, i) => [x.d, i]));
-  for (const o of P.orders) { const i = idx.get(trDay(Date.parse(o.date))); if (i === undefined) continue; const x = days[i]; x.rev += o.revenue || 0; x.prof += o.profit || 0; x.n++; x.u += o.units || 0; }
-  for (const x of days) { x.rev = Math.round(x.rev * 100) / 100; x.prof = Math.round(x.prof * 100) / 100; }
+  // Her gün, Kâr ekranındaki "o gün" hesabıyla birebir aynı yapılır (siparişe bağlanamayan kesintiler, reklam, tazmin dahil)
+  const dayList = []; for (let i = 6; i >= 0; i--) dayList.push(t0 - i * 86400000);
+  const [M, ...D] = await Promise.all([computeProfit(env, iso(m0), iso(to)), ...dayList.map(a => computeProfit(env, iso(a), iso(a + 86400000)))]);
+  const days = D.map((r, i) => ({ d: trDay(dayList[i]), rev: r.summary.revenue, prof: r.summary.profit, n: r.summary.orders, u: r.summary.units }));
   const out = { day: today, at: Date.now(), ms: Date.now() - t00, days, month: { revenue: M.summary.revenue, profit: M.summary.profit, margin: M.summary.margin }, losers: M.products.filter(x => x.profit < 0).length };
   await setSetting(env, 'home_cache', JSON.stringify(out)); await setSetting(env, 'home_err', '');
   return out;
