@@ -477,7 +477,6 @@ function sheetProduct(first){
       <label class="f">Birim alış fiyatı (TL)<input class="input num" id="pi-cost" inputmode="decimal" value="${p.cost!=null?esc(String(p.cost).replace('.',',')):''}" placeholder="Örn. 75,00"></label>
       <label class="f">Düşük stok sınırı<input class="input num" id="pi-min" inputmode="numeric" value="${esc(p.min)}"></label>
       <fieldset style="grid-column:1/-1;border:0;padding:0;margin:0;display:grid;gap:6px"><legend class="small" style="color:var(--ink-2);font-weight:500;margin-bottom:6px">Satıldığı kanallar</legend><div class="chips">${Object.keys(CHANNELS).map(c => `<label class="chip" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" name="pi-ch" value="${c}" ${p.channels.includes(c)?'checked':''}>${esc(CHANNELS[c].name)}</label>`).join('')}</div></fieldset>
-      <label class="chk small" style="grid-column:1/-1"><input type="checkbox" id="pi-sameday" ${p.sameDay?'checked':''}>Trendyol'da "Bugün Kargoda" etiketi var (saat ${esc(String((S.settings.fees||{}).serviceCutoff ?? 15))}:00'dan önceki siparişlerde hizmet bedeli ${esc(String((S.settings.fees||{}).serviceFast ?? 5.99).replace('.',','))} TL)</label>
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Bilgileri kaydet</button></div>
     </form>
   </div>
@@ -540,7 +539,7 @@ async function submitInfo(){
   if (costRaw && (!isFinite(cost) || cost < 0)) return toast('Alış fiyatını sayı olarak yaz. Örn. 75,50', true);
   const min = intOr($('#pi-min').value, NaN); if (!isFinite(min) || min < 0) return toast('Düşük stok sınırı 0 veya pozitif tam sayı olmalı.', true);
   const channels = [...document.querySelectorAll('input[name="pi-ch"]:checked')].map(i => i.value);
-  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), cost, min, channels, sameDay: $('#pi-sameday').checked}); await refresh(true); toast('Ürün bilgileri kaydedildi.'); });
+  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), cost, min, channels}); await refresh(true); toast('Ürün bilgileri kaydedildi.'); });
 }
 
 /* ============ Siparişler ============ */
@@ -1020,8 +1019,8 @@ function feesCard(fees){
       </div>
       <label class="f">Trendyol hizmet bedeli (TL / paket)<input class="input num" id="fe-sty" inputmode="decimal" value="${esc(String(fees.serviceTy).replace('.',','))}"></label>
       <label class="f">Hizmet bedeli · Bugün Kargoda (TL)<input class="input num" id="fe-sfast" inputmode="decimal" value="${esc(String(fees.serviceFast ?? 5.99).replace('.',','))}"></label>
-      <label class="f">Bugün Kargoda son sipariş saati<input class="input num" id="fe-scut" inputmode="numeric" value="${esc(String(fees.serviceCutoff ?? 15))}"></label>
-      <div style="grid-column:1/-1" class="row small"><span class="muted">"Bugün Kargoda" etiketli ürün: <b>${fmtN([...S.products.values()].filter(p => p.sameDay).length)}</b> / ${fmtN(S.products.size)}. Etiketli üründe, saat ${esc(String(fees.serviceCutoff ?? 15))}:00'dan önce gelen siparişe ${esc(String(fees.serviceFast ?? 5.99).replace('.',','))} TL, sonrakilere ve etiketsiz ürünlere ${esc(String(fees.serviceTy).replace('.',','))} TL yazılır.</span><button class="btn sm" type="button" data-act="sameday-all" data-id="1">Tüm ürünlere etiket ver</button><button class="btn sm ghost" type="button" data-act="sameday-all" data-id="0">Hepsinden kaldır</button></div>
+      <label class="f">Hizmet bedeli indirimi son sipariş saati<input class="input num" id="fe-scut" inputmode="numeric" value="${esc(String(fees.serviceCutoff ?? 15))}"></label>
+      <p class="muted small" style="grid-column:1/-1;margin:0">Saat ${esc(String(fees.serviceCutoff ?? 15))}:00'dan önce gelen siparişlere ${esc(String(fees.serviceFast ?? 5.99).replace('.',','))} TL, sonrakilere ${esc(String(fees.serviceTy).replace('.',','))} TL tahmini yazılır. Hizmet bedeli faturasının detay dosyası yüklenince gerçek tutar geçer.</p>
       <label class="f">Shopify kargo (TL / sipariş)<input class="input num" id="fe-csh" inputmode="decimal" value="${esc(String(fees.cargoSh).replace('.',','))}"></label>
       <label class="f">Stopaj (%)<input class="input num" id="fe-stp" inputmode="decimal" value="${esc(String(fees.stopaj).replace('.',','))}"></label>
       <p class="muted small" style="grid-column:1/-1;margin:0">Min. adet kuralı (Fiyat analizi): birim fiyat 25 TL altı 6 adet, 25–35 TL 4, 35–50 TL 3, 50–75 TL 2, üzeri 1 adet.</p>

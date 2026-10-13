@@ -961,7 +961,7 @@ async function computeProfit(env, from, to) {
       rows.push({ l, qty, retQ, dq, full: (unitRev || 0) * l.qty, revenue, commission, stopaj, cost: (unitCost || 0) * qty, pr });
     }
     const pkgs = new Map();
-    for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true }; if (!(x.pr && x.pr.same_day === 1) && !(x.l.fin && x.l.fin.fast)) g.fast = false; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ; if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
+    for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true }; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ; if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
     let cargo = 0, retCargo = 0, penalty = 0;
     const cargoInfo = [];
     if (ch === 'trendyol') for (const g of pkgs.values()) { const c = tyCargo(fee, g.amount, g.desi, g.carrier); cargo += c.cost;
@@ -969,7 +969,7 @@ async function computeProfit(env, from, to) {
       if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi, g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi, g.carrier);
       if (g.defVal > 0) penalty += penaltyFor(g.defVal); cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (desi yok, 1 sayıldı)'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
     else if (ch === 'shopify') cargo = fee.cargoSh;
-    // Platform hizmet bedeli: üründe "Bugün Kargoda" etiketi varsa ve sipariş saat <kesim> öncesi geldiyse indirimli, aksi halde normal
+    // Platform hizmet bedeli: sipariş saat <kesim> (15:00) öncesi geldiyse indirimli (Bugün Kargoda), sonrası normal. Fatura detayı gelince gerçeği yazılır.
     const ordHour = ord.date ? new Date(Date.parse(ord.date) + TY_TZ).getUTCHours() : 23;
     let service = 0, fastPk = 0;
     if (ch === 'trendyol') for (const g of pkgs.values()) { const f = g.fast && ordHour < fee.serviceCutoff; service += f ? fee.serviceFast : fee.serviceTy; if (f) fastPk++; }
