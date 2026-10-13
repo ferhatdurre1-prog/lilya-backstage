@@ -164,7 +164,7 @@ function resolveLine(l, bmap) {
 /* orders: [{orderNo, date, lines:[{key, sku, barcode, name, image, qty, status:'active'|'cancelled'|'returned'}]}] */
 function cleanFin(fin, price, qty) {
   const nn = (v) => v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
-  if (fin && typeof fin === 'object' && Number.isFinite(Number(fin.revenue))) return { revenue: Number(fin.revenue), gross: nn(fin.gross), rate: nn(fin.rate), vat: nn(fin.vat), paid: nn(fin.paid), desi: nn(fin.desi), carrier: fin.carrier ? String(fin.carrier).slice(0, 60) : null, ...(fin.und ? { und: true } : {}) };
+  if (fin && typeof fin === 'object' && Number.isFinite(Number(fin.revenue))) return { revenue: Number(fin.revenue), gross: nn(fin.gross), rate: nn(fin.rate), vat: nn(fin.vat), paid: nn(fin.paid), desi: nn(fin.desi), carrier: fin.carrier ? String(fin.carrier).slice(0, 60) : null, ...(fin.und ? { und: true } : {}), ...(fin.uns ? { uns: true } : {}) };
   const p = numOrNull(price);
   return p !== null && p >= 0 ? { revenue: Math.round(p * qty * 100) / 100, rate: null, vat: null } : null;
 }
@@ -350,7 +350,7 @@ function tyPackagesToOrders(pkgs, shift) {
     lines: (p.lines || []).map(l => ({
       key: `${p.shipmentPackageId || p.id}|${l.lineId ?? l.id ?? l.barcode}`,
       sku: l.stockCode || l.merchantSku || '', barcode: l.barcode || '', name: l.productName || '', qty: l.quantity,
-      fin: Object.assign(tyLineFin(l) || {}, { desi: Number(p.cargoDeci ?? p.deci ?? p.desi) > 0 ? Number(p.cargoDeci ?? p.deci ?? p.desi) : null, carrier: p.cargoProviderName || null }, /undeliver/i.test(String(p.shipmentPackageStatus || p.status || '')) ? { und: true } : {}),
+      fin: Object.assign(tyLineFin(l) || {}, { desi: Number(p.cargoDeci ?? p.deci ?? p.desi) > 0 ? Number(p.cargoDeci ?? p.deci ?? p.desi) : null, carrier: p.cargoProviderName || null }, /undeliver/i.test(String(p.shipmentPackageStatus || p.status || '')) ? { und: true } : {}, /unsupplied/i.test(String(p.shipmentPackageStatus || p.status || '')) ? { uns: true } : {}),
       status: (TY_CANCELLED.has(p.shipmentPackageStatus || p.status) || /cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))) ? 'cancelled' : 'active'
     }))
   }));
@@ -902,7 +902,7 @@ async function computeProfit(env, from, to) {
   const R2 = (n) => Math.round(n * 100) / 100;
   const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
-  const sum = { ...blank(), retOrders: 0, retCargoEst: 0, undOrders: 0, defOrders: 0, penaltyEst: 0, penaltyActual: 0, otherFees: 0, orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
+  const sum = { ...blank(), retOrders: 0, retCargoEst: 0, undOrders: 0, unsOrders: 0, defOrders: 0, penaltyEst: 0, penaltyActual: 0, otherFees: 0, orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
   const rep = { grossU: 0, grossTL: 0, cancelU: 0, cancelTL: 0, retU: 0, retTL: 0, pendU: 0, pendTL: 0, discTL: 0, netU: 0, netTL: 0, noGross: 0 };
   for (const ord of o.results) for (const l of JSON.parse(ord.lines || '[]')) {
     if (!l.qty) continue; const f = l.fin || {}; const unitG = (f.gross ?? f.revenue ?? 0) / l.qty, unitR = (f.revenue ?? 0) / l.qty;
@@ -917,8 +917,23 @@ async function computeProfit(env, from, to) {
   for (const k in rep) rep[k] = Math.round(rep[k] * 100) / 100;
   const byProduct = new Map(), byOrder = [], missingCostSkus = new Set();
   for (const ord of o.results) {
-    const lines = JSON.parse(ord.lines || '[]').filter(l => l.status !== 'cancelled');
-    if (!lines.length) continue;
+    const allLines = JSON.parse(ord.lines || '[]');
+    const lines = allLines.filter(l => l.status !== 'cancelled');
+    // Tedarik edememe (satıcı iptali): gönderideki iptal edilen ürünlerin net tutarına göre ceza tahmini
+    const unsPk = new Map();
+    for (const l of allLines) if (l.status === 'cancelled' && l.fin && l.fin.uns) { const pk = String(l.key).split('|')[0]; unsPk.set(pk, (unsPk.get(pk) || 0) + (Number(l.fin.revenue) || 0)); }
+    let unsPenalty = 0; for (const v of unsPk.values()) unsPenalty += penaltyFor(v);
+    if (unsPenalty) sum.unsOrders = (sum.unsOrders || 0) + 1;
+    if (!lines.length) {
+      if (!unsPenalty) continue;
+      const mo0 = miscByOrder.get(ord.order_no); const pen = mo0 ? mo0.amount : unsPenalty;
+      sum.penalty += pen; sum.profit -= pen; if (mo0) sum.penaltyActual++; else sum.penaltyEst++;
+      byOrder.push({ id: ord.id, orderNo: ord.order_no, channel: ord.channel, date: ord.date, actual: !!mo0, penaltyEst: !mo0, penaltyTypes: mo0 ? mo0.types.slice(0, 4) : ['Tedarik edememe'], cargoInfo: 'Tedarik edilemedi (iptal)', revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: R2(pen), service: 0, stopaj: 0, cost: 0, profit: R2(-pen), units: 0, retUnits: 0 });
+      const l0 = allLines.find(l => l.fin && l.fin.uns) || allLines[0];
+      let bp = byProduct.get(l0.pkey); if (!bp) { const pr = prods.get(l0.pkey); bp = { key: l0.pkey, sku: l0.sku, name: (pr && pr.name) || l0.name, image: pr ? pr.image : '', costKnown: !!(pr && pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(l0.pkey, bp); }
+      bp.penalty += pen; bp.profit -= pen;
+      continue;
+    }
     const ch = ord.channel, mk = MARKETPLACES.has(ch);
     const rows = [];
     for (const l of lines) {
@@ -958,6 +973,7 @@ async function computeProfit(env, from, to) {
       if (fa.service !== null) service = fa.service;
     }
     if (!retUnits) retCargo = 0;
+    penalty += unsPenalty;
     // Gerçek kesinti faturası (ceza, kupon vb.) varsa tahmin yerine o kullanılır
     const mo = ch === 'trendyol' ? miscByOrder.get(ord.order_no) : null;
     const penaltyEst = !mo && penalty > 0;
@@ -975,12 +991,15 @@ async function computeProfit(env, from, to) {
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
     const rv = (x) => x.l.qty ? x.full * x.retQ / x.l.qty : 0, retTot = rows.reduce((a, x) => a + rv(x), 0), retQTot = rows.reduce((a, x) => a + x.retQ, 0) || 1;
     const dv = (x) => x.l.qty ? x.full * x.dq / x.l.qty : 0, dTot = rows.reduce((a, x) => a + dv(x), 0);
+    // Tedarik edilemeyen ürünün cezası o ürüne yazılır (tahminse)
+    const unsAlloc = !mo && unsPenalty ? unsPenalty : 0;
+    if (unsAlloc) { const l0 = allLines.find(l => l.status === 'cancelled' && l.fin && l.fin.uns); let bp = byProduct.get(l0.pkey); if (!bp) { const pr = prods.get(l0.pkey); bp = { key: l0.pkey, sku: l0.sku, name: (pr && pr.name) || l0.name, image: pr ? pr.image : '', costKnown: !!(pr && pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(l0.pkey, bp); } bp.penalty += unsAlloc; bp.profit -= unsAlloc; }
     for (const x of rows) {
       const share = est ? x.revenue / est : 0, fshare = fullTot ? x.full / fullTot : x.l.qty / qtyTot;
       const k = x.l.pkey; let bp = byProduct.get(k);
       if (!bp) { bp = { key: k, sku: x.l.sku, name: (x.pr && x.pr.name) || x.l.name, image: x.pr ? x.pr.image : '', costKnown: !!(x.pr && x.pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(k, bp); }
       const lr = revenue * share, lc = commission * share, ls = stopaj * share;
-      const res = { revenue: lr, commission: lc, cargo: cargo * fshare, retCargo: retCargo * (retTot ? rv(x) / retTot : x.retQ / retQTot), penalty: penalty * (dTot ? dv(x) / dTot : fshare), service: service * fshare, stopaj: ls, cost: x.cost, units: x.qty, retUnits: x.retQ };
+      const res = { revenue: lr, commission: lc, cargo: cargo * fshare, retCargo: retCargo * (retTot ? rv(x) / retTot : x.retQ / retQTot), penalty: (penalty - unsAlloc) * (dTot ? dv(x) / dTot : fshare), service: service * fshare, stopaj: ls, cost: x.cost, units: x.qty, retUnits: x.retQ };
       res.profit = lr - lc - res.cargo - res.retCargo - res.penalty - res.service - ls - x.cost;
       add(bp, res); bp.orders++;
     }
