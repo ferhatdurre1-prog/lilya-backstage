@@ -6,7 +6,7 @@
 <title>Lilya Backstage</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'">
 <style>
 /* Layout: depo defteri — sakin adaçayı zemin, koyu orman yeşili marka, sayılar her yerde hizalı; masaüstünde üst sekme, telefonda alt menü */
 :root{
@@ -300,7 +300,7 @@ const TAB_SHORT = {home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'�
 
 /* ============ Durum ============ */
 const S = {
-  conn:'wait', authed:null, rev:null, skew:0,
+  conn:'wait', authed:(() => { try { return localStorage.getItem('lb_seen') === '1' ? true : null; } catch(e) { return null; } })(), rev:null, skew:0,
   loaded:{products:false, orders:false, returns:false, moves:false, settings:false},
   products:new Map(), orders:[], returns:[], moves:[], settings:{}, sync:{trendyol:{configured:false}},
   tab: initialTab(), q:'', filter:'all', ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
@@ -313,7 +313,7 @@ async function api(path, body){
   const opt = body === undefined ? {method:'GET', credentials:'same-origin'} : {method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body:JSON.stringify(body)};
   let r;
   try { r = await fetch(path, opt); } catch(e) { throw new Error('Sunucuya ulaşılamadı. İnternet bağlantını kontrol et.'); }
-  if (r.status === 401 && path !== '/api/login') { S.authed = false; render(); throw new Error('Oturum süresi doldu. Tekrar giriş yap.'); }
+  if (r.status === 401 && path !== '/api/login') { try { localStorage.removeItem('lb_seen'); } catch(e) {} S.authed = false; render(); throw new Error('Oturum süresi doldu. Tekrar giriş yap.'); }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || ('Sunucu hatası (' + r.status + ')'));
   return data;
@@ -323,7 +323,7 @@ const CLIENT_BUILD = '__BUILD__';
 async function refresh(force){
   try {
     const d = await api('/api/state' + (S.rev && !force ? '?rev=' + encodeURIComponent(S.rev) : ''));
-    S.authed = true; S.conn = 'ok'; if (!mktAt) setTimeout(loadMarket, 0); if (!wxAt) setTimeout(loadWeather, 0);
+    S.authed = true; S.conn = 'ok'; try { localStorage.setItem('lb_seen', '1'); } catch(e) {} if (!mktAt) setTimeout(loadMarket, 0); if (!wxAt) setTimeout(loadWeather, 0);
     // Yeni sürüm yayına alındıysa uygulama kendini yeniler (ana ekrana eklenmiş uygulama açık kalsa bile)
     if (d.build && d.build !== CLIENT_BUILD && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) {
       let last = null; try { last = JSON.parse(sessionStorage.getItem('lb_reload') || 'null'); } catch(e) {}
@@ -376,7 +376,7 @@ setInterval(() => { if (S.authed) renderSync(); }, 1000);
 let mktAt = 0;
 async function loadMarket(){
   if (!S.authed || document.visibilityState !== 'visible' || Date.now() - mktAt < 5 * 60000) return; mktAt = Date.now();
-  try { const d = await api('/api/market'); renderTicker(d.items || []); } catch(e) { mktAt = Date.now() - 4 * 60000; }
+  try { const d = await api('/api/market'); renderTicker(d.items || []); try { localStorage.setItem('lb_mkt', JSON.stringify(d.items || [])); } catch(e) {} } catch(e) { mktAt = Date.now() - 4 * 60000; }
 }
 function renderTicker(items){
   const el = $('#ticker'); if (!el) return;
@@ -395,7 +395,7 @@ const WX = {0:['☀️','Açık'],1:['🌤️','Az bulutlu'],2:['⛅','Parçalı
 function wxCoords(){ try { return JSON.parse(localStorage.getItem('lb_geo') || 'null'); } catch(e) { return null; } }
 async function loadWeather(force){
   if (!S.authed || document.visibilityState !== 'visible' || (!force && Date.now() - wxAt < 15 * 60000)) return; wxAt = Date.now();
-  try { const g = wxCoords(); const d = await api('/api/weather', g ? {lat: g.lat, lon: g.lon} : {}); renderWeather(d, !!g); } catch(e) { wxAt = Date.now() - 13 * 60000; }
+  try { const g = wxCoords(); const d = await api('/api/weather', g ? {lat: g.lat, lon: g.lon} : {}); renderWeather(d, !!g); try { localStorage.setItem('lb_wx', JSON.stringify(d)); } catch(e) {} } catch(e) { wxAt = Date.now() - 13 * 60000; }
 }
 function renderWeather(d, precise){
   const el = $('#wx'); if (!el || !d || d.temp === undefined || d.temp === null) { if (el) el.hidden = true; return; }
@@ -534,6 +534,7 @@ function viewHome(){
   if (zero) rowsA.push(`<button class="alert-row" data-act="home-stock" data-id="zero">${ic('stock','var(--bad-soft)','var(--bad)')}<div class="tx"><b>${fmtN(zero)} ürün tükendi</b><span>Stok girişi yap ya da satışı kapat</span></div></button>`);
   if (low) rowsA.push(`<button class="alert-row" data-act="home-stock" data-id="low">${ic('stock','var(--warn-soft)','var(--warn)')}<div class="tx"><b>${fmtN(low)} üründe stok azaldı</b><span>Düşük stok sınırının altında</span></div></button>`);
   if (losers) rowsA.push(`<button class="alert-row" data-act="home-losers">${ic('profit','var(--bad-soft)','var(--bad)')}<div class="tx"><b>Bu ay ${fmtN(losers)} ürün zarar ettiriyor</b><span>Kâr › Zarar edenler</span></div></button>`);
+  if (!S.loaded.products) return h + `<div class="card"><h3>Dikkat</h3><div class="skel" style="height:56px;border-radius:10px"></div></div>`;
   h += `<div class="card"><h3>Dikkat</h3>${rowsA.length ? rowsA.join('') : `<p class="muted small" style="margin:0">Her şey yolunda. Bekleyen iade, tükenen ürün ya da bağlantı sorunu yok.</p>`}</div>`;
   return h;
 }
@@ -583,6 +584,7 @@ async function loadHome(force){
 }
 function banners(){
   let h = '';
+  if (!S.loaded.settings) return h; // ilk veri gelmeden yanlış uyarı gösterme
   if (S.conn === 'err') h += `<div class="banner bad"><div><b>Sunucuya ulaşılamıyor.</b> Gösterilen bilgiler son başarılı yüklemeye ait. İnternet bağlantını kontrol et.</div></div>`;
   const st = tyState();
   if (st.cls === 'err') h += `<div class="banner bad"><div><b>Trendyol eşitlemesi hata verdi:</b> ${esc(st.err || '')}</div><button class="btn sm" data-act="open-import">Ayrıntı</button></div>`;
@@ -1741,7 +1743,7 @@ document.addEventListener('click', async e => {
     case 'cost-run': await runCosts(); break;
     case 'sync-now': await syncNow(); break;
     case 'resync-products': await saveSetting({resyncProducts:true}, 'Ürün listesi bir sonraki eşitlemede yeniden taranacak.'); break;
-    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} closeSheetForce(); S.authed = false; S.rev = null; render(); break;
+    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); } catch(e) {} closeSheetForce(); S.authed = false; S.rev = null; render(); break;
     case 'close': closeSheet(); break;
   }
 });
@@ -1796,6 +1798,8 @@ document.addEventListener('error', e => { const t = e.target; if (t && t.tagName
   if (ev === 'dragover') d.classList.add('over'); else d.classList.remove('over');
   if (ev === 'drop' && e.dataTransfer.files[0]) onImportFile(e.dataTransfer.files[0]);
 }));
+// Son görülen bant ve hava durumu açılışta hemen gösterilir
+try { if (S.authed) { const m = JSON.parse(localStorage.getItem('lb_mkt') || 'null'); if (m) renderTicker(m); const w = JSON.parse(localStorage.getItem('lb_wx') || 'null'); if (w) renderWeather(w, !!wxCoords()); } } catch(e) {}
 render();
 startPolling();
 </script>

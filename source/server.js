@@ -1488,7 +1488,10 @@ export default {
     const url = new URL(req.url); const path = url.pathname;
     try {
       if (!env.APP_PASSWORD) return new Response('Kurulum eksik: APP_PASSWORD gizli değişkeni tanımlanmalı.', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
-      await init(env);
+      // Sayfa ve simgeler veritabanını beklemeden hemen gönderilir
+      if (!path.startsWith('/api/') && path !== '/perf' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png')
+        return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
+      if (path.startsWith('/api/') && path !== '/api/login' && path !== '/api/logout' || path === '/perf') await init(env);
       if (path === '/manifest.webmanifest') return new Response(JSON.stringify({ name: 'Lilya Backstage', short_name: 'Backstage', start_url: '/', display: 'standalone', background_color: '#edf0ea', theme_color: '#1f3a30', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] }), { headers: { 'content-type': 'application/manifest+json' } });
       if (path === '/icon.svg' || path === '/apple-touch-icon.png') return new Response(ICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
       if (path === '/api/login' && req.method === 'POST') {
