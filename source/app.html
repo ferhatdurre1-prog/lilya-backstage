@@ -1116,20 +1116,25 @@ function parseDesi(txt){
 }
 // Kâr özetindeki bir kalemin sipariş sipariş dökümü
 const BD_LABEL = {revenue:'Satış (ciro)', commission:'Komisyon', cargo:'Kargo', retCargo:'İade kargosu', penalty:'Ceza ve müşteri kuponu', service:'Hizmet bedeli', stopaj:'Stopaj', cost:'Ürün maliyeti', ads:'Reklam', other:'Diğer Trendyol kesintileri'};
+function applyBdFilter(){
+  const inp = $('#bdq'); if (!inp) return; const q = searchNorm(inp.value.trim()); let n = 0, tot = 0;
+  for (const tr of document.querySelectorAll('.sheet tbody tr')) { const ok = !q || (tr.dataset.q || '').includes(q); tr.style.display = ok ? '' : 'none'; if (ok) { n++; tot += Number(tr.dataset.amt) || 0; } }
+  const nEl = $('#bd-n'), tEl = $('#bd-t'); if (nEl) nEl.textContent = `${fmtN(n)} ${nEl.dataset.u}`; if (tEl) tEl.textContent = fmtTL(tot);
+}
 function sheetBreakdown(){
   const k = S.sheet.id, D = profS().data; if (!D) return {title: BD_LABEL[k] || 'Döküm', body: loading()};
   const P = profS(), [f, t] = periodRange(P.period, P.cf, P.ct);
   const sub = `<span class="muted">${esc(fmtDate(f.toISOString(), false))} – ${esc(fmtDate(new Date(t - 1).toISOString(), false))}</span>`;
   if (k === 'ads') { const rows = D.ads || []; const tot = rows.reduce((a, x) => a + x.amount, 0);
-    return {title:'Reklam', sub, body:`<div class="card"><div class="spread"><b>${fmtN(rows.length)} gün</b><b class="num">${fmtTL(tot)}</b></div><div class="tbl-wrap"><table class="t"><thead><tr><th>Gün</th><th>Kaynak</th><th class="r">Tutar</th></tr></thead><tbody>${rows.map(a => `<tr><td data-v="${esc(a.day)}">${esc(new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td><td class="muted">${a.source==='rapor'?'Rapor':'Elle'}</td><td class="r num">${fmtTL(a.amount)}</td></tr>`).join('')}</tbody></table></div></div>`}; }
+    return {title:'Reklam', sub, body:`<div class="toolbar" style="margin:0 0 10px"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="bdq" type="search" value="${esc(S.sheet.q||'')}" placeholder="Gün ara" aria-label="Ara" autocomplete="off"></div></div><div class="card"><div class="spread"><b id="bd-n" data-u="gün">${fmtN(rows.length)} gün</b><b class="num" id="bd-t">${fmtTL(tot)}</b></div><div class="tbl-wrap"><table class="t"><thead><tr><th>Gün</th><th>Kaynak</th><th class="r">Tutar</th></tr></thead><tbody>${rows.map(a => `<tr data-amt="${a.amount}" data-q="${esc(searchNorm(a.day + ' ' + new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'long',weekday:'long'})))}"><td data-v="${esc(a.day)}">${esc(new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td><td class="muted">${a.source==='rapor'?'Rapor':'Elle'}</td><td class="r num">${fmtTL(a.amount)}</td></tr>`).join('')}</tbody></table></div></div>`}; }
   if (k === 'other') { const rows = D.otherFees || []; const tot = rows.reduce((a, x) => a + x.amount, 0);
-    return {title:'Diğer Trendyol kesintileri', sub, body:`<div class="card"><div class="spread"><b>${fmtN(rows.length)} kalem</b><b class="num">${fmtTL(tot)}</b></div><div class="tbl-wrap"><table class="t"><thead><tr><th>Fatura türü</th><th class="r">Adet</th><th class="r">Tutar</th></tr></thead><tbody>${rows.map(x => `<tr><td>${esc(x.type)}</td><td class="r num">${fmtN(x.n)}</td><td class="r num">${fmtTL(x.amount)}</td></tr>`).join('')}</tbody></table></div><p class="muted small" style="margin:0">Siparişe bağlanamayan Trendyol faturaları; fatura tarihine göre bu döneme yazıldı.</p></div>`}; }
+    return {title:'Diğer Trendyol kesintileri', sub, body:`<div class="toolbar" style="margin:0 0 10px"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="bdq" type="search" value="${esc(S.sheet.q||'')}" placeholder="Fatura türü ara" aria-label="Ara" autocomplete="off"></div></div><div class="card"><div class="spread"><b id="bd-n" data-u="kalem">${fmtN(rows.length)} kalem</b><b class="num" id="bd-t">${fmtTL(tot)}</b></div><div class="tbl-wrap"><table class="t"><thead><tr><th>Fatura türü</th><th class="r">Adet</th><th class="r">Tutar</th></tr></thead><tbody>${rows.map(x => `<tr data-amt="${x.amount}" data-q="${esc(searchNorm(x.type))}"><td>${esc(x.type)}</td><td class="r num">${fmtN(x.n)}</td><td class="r num">${fmtTL(x.amount)}</td></tr>`).join('')}</tbody></table></div><p class="muted small" style="margin:0">Siparişe bağlanamayan Trendyol faturaları; fatura tarihine göre bu döneme yazıldı.</p></div>`}; }
   const info = (o) => k === 'cargo' ? (o.cargoInfo || '') : k === 'penalty' ? ((o.penaltyTypes || []).join(', ') || 'Tahmin (iade nedeni / tedarik edememe)') : k === 'retCargo' ? (o.undelivered ? 'Teslim edilemedi' : o.retCargoEst ? 'Desi fiyatıyla tahmini' : 'Trendyol faturası') : k === 'cost' ? `${fmtN(o.units)} adet` : k === 'commission' && o.revenue ? '%' + (o.commission / o.revenue * 100).toFixed(1).replace('.', ',') : '';
   const est = (o) => k === 'cargo' ? !(o.cargoInfo === 'Trendyol kargo faturası') : k === 'penalty' ? !!o.penaltyEst : k === 'retCargo' ? !!o.retCargoEst : k === 'service' || k === 'stopaj' ? true : (k === 'commission' || k === 'revenue') ? !o.actual : false;
   const rows = (D.orders || []).filter(o => Math.abs(o[k] || 0) >= 0.005).sort((a, b) => (b[k] || 0) - (a[k] || 0));
   const tot = rows.reduce((a, o) => a + (o[k] || 0), 0);
-  return {title: BD_LABEL[k] || 'Döküm', sub, body:`<div class="card"><div class="spread"><b>${fmtN(rows.length)} sipariş</b><b class="num">${fmtTL(tot)}</b></div>
-    <div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th>Tarih</th><th>Açıklama</th><th class="r">Tutar</th></tr></thead><tbody>${rows.map(o => `<tr data-act="order" data-id="${esc(o.id)}" style="cursor:pointer"><td><span class="mono">#${esc(o.orderNo)}</span>${o.cname?`<div class="muted small">${esc(o.cname)}</div>`:''}</td><td data-v="${esc(o.date||'')}" class="small">${esc(fmtDate(o.date))}</td><td class="small">${esc(info(o))}${est(o)?' <span class="pill p-mute">tahmini</span>':''}</td><td class="r num">${fmtTL(o[k] || 0)}</td></tr>`).join('')}</tbody></table></div>
+  return {title: BD_LABEL[k] || 'Döküm', sub, body:`<div class="toolbar" style="margin:0 0 10px"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="bdq" type="search" value="${esc(S.sheet.q||'')}" placeholder="Sipariş no, müşteri adı, ürün, stok kodu veya barkod" aria-label="Ara" autocomplete="off"></div></div><div class="card"><div class="spread"><b id="bd-n" data-u="sipariş">${fmtN(rows.length)} sipariş</b><b class="num" id="bd-t">${fmtTL(tot)}</b></div>
+    <div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th>Tarih</th><th>Açıklama</th><th class="r">Tutar</th></tr></thead><tbody>${rows.map(o => `<tr data-act="order" data-id="${esc(o.id)}" data-amt="${o[k] || 0}" data-q="${esc(searchNorm(`${o.orderNo} ${o.cname||''} ${o.q||''} ${info(o)}`))}" style="cursor:pointer"><td><span class="mono">#${esc(o.orderNo)}</span>${o.cname?`<div class="muted small">${esc(o.cname)}</div>`:''}</td><td data-v="${esc(o.date||'')}" class="small">${esc(fmtDate(o.date))}</td><td class="small">${esc(info(o))}${est(o)?' <span class="pill p-mute">tahmini</span>':''}</td><td class="r num">${fmtTL(o[k] || 0)}</td></tr>`).join('')}</tbody></table></div>
     <p class="muted small" style="margin:0">Bir satıra dokununca sipariş açılır. Sütun başlıklarıyla sıralayabilirsin.</p></div>`};
 }
 const CUST = {};
@@ -1475,12 +1480,12 @@ function renderSheet(full){
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
     if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return') return; // formları bozma
-    const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; b.innerHTML = r.body; enhanceTables(b); existing.scrollTop = st; return;
+    const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; const hadFocus = document.activeElement && document.activeElement.id === 'bdq'; b.innerHTML = r.body; enhanceTables(b); applyBdFilter(); if (hadFocus) { const i = $('#bdq'); if (i) { i.focus(); const L = i.value.length; try { i.setSelectionRange(L, L); } catch(e){} } } existing.scrollTop = st; return;
   }
   root.innerHTML = `<div class="scrim" data-act="scrim"><aside class="sheet" role="dialog" aria-modal="true" aria-label="${esc(String(r.title).replace(/<[^>]+>/g,''))}" data-type="${sh.type}" data-id="${esc(sh.id||'')}">
     <div class="sheet-h">${r.lead||''}<div class="tt"><h2>${r.title}</h2>${r.sub?`<div class="row small" style="margin-top:4px;gap:6px">${r.sub}</div>`:''}</div><button class="btn ghost" data-act="close" aria-label="Kapat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <div class="sheet-b">${r.body}</div></aside></div>`;
-  enhanceTables(root);
+  enhanceTables(root); applyBdFilter();
   document.body.style.overflow = 'hidden';
   const first = root.querySelector('.sheet-b input:not([disabled]):not([type=checkbox]):not([type=file]), .sheet-b select');
   if (full && first && sh.type.startsWith('new-')) first.focus();
@@ -1571,6 +1576,7 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
   if (t.id === 'oq') { S.oq = t.value; S.opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 300); }
+  if (t.id === 'bdq') { if (S.sheet) S.sheet.q = t.value; applyBdFilter(); }
   if (t.id === 'pq') { profS().q = t.value; profS().opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
 document.addEventListener('change', e => {
