@@ -506,30 +506,25 @@ function renderDrawer(){
 }
 /* ============ Ana ekran ============ */
 function viewHome(){
-  const P = profS(); // Kâr ekranıyla aynı veri: bu ayın siparişleri
   homeMaybeLoad();
   const H = S.home && S.home.data;
   let h = '';
-  if (!H) return h + (S.home && S.home.err ? `<div class="card"><b>Ana ekran verisi alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>` : loading());
-  const t0 = new Date(); t0.setHours(0,0,0,0); const y0 = new Date(t0); y0.setDate(y0.getDate()-1);
-  const pick = (a, b) => H.orders.filter(o => { const d = Date.parse(o.date); return d >= a && d < b; });
-  const agg = (os) => os.reduce((a, o) => ({rev: a.rev + o.revenue, prof: a.prof + o.profit, n: a.n + 1, u: a.u + o.units}), {rev:0, prof:0, n:0, u:0});
-  const W = S.home.week || H; const pickW = (a, b) => W.orders.filter(o => { const d = Date.parse(o.date); return d >= a && d < b; });
-  const T = agg(pickW(t0.getTime(), t0.getTime() + 86400000)), Y = agg(pickW(y0.getTime(), t0.getTime())), M = H.summary;
-  const kpi = (k, v, sub, style='') => `<div class="kpi"><div class="k">${k}</div><div class="v" style="${style}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
-  const diff = (a, b) => b ? `Dün ${fmtTL(b)}` : '';
-  h += `<div class="home-grid">
-    ${kpi('Bugün ciro', fmtTL(T.rev), diff(T.rev, Y.rev))}
-    ${kpi('Bugün net kâr', tlS(T.prof), Y.prof ? `Dün ${tlS(Y.prof)}` : '', profitCls(T.prof))}
-    ${kpi('Bugün sipariş', fmtN(T.n), `${fmtN(T.u)} adet`)}
-    ${kpi('Bu ay net kâr', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit))}
-  </div>`;
-  h += homeChart(W, agg, pickW, t0);
-  // Dikkat gerektirenler
+  if (H) {
+    const D = H.days, T = D[D.length - 1], Y = D[D.length - 2] || {rev:0, prof:0}, M = H.month;
+    const kpi = (k, v, sub, style='') => `<div class="kpi"><div class="k">${k}</div><div class="v" style="${style}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
+    h += `<div class="home-grid">
+      ${kpi('Bugün ciro', fmtTL(T.rev), Y.rev ? `Dün ${fmtTL(Y.rev)}` : '')}
+      ${kpi('Bugün net kâr', tlS(T.prof), Y.prof ? `Dün ${tlS(Y.prof)}` : '', profitCls(T.prof))}
+      ${kpi('Bugün sipariş', fmtN(T.n), `${fmtN(T.u)} adet`)}
+      ${kpi('Bu ay net kâr', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit))}
+    </div>` + homeChart(D);
+  } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
+  else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div>`;
+  // Dikkat gerektirenler (özet gelmeden de gösterilir)
   const ps = [...S.products.values()];
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
   const pend = S.returns.filter(r => r.status === 'requested'), urgent = pend.filter(r => { const ms = retDeadline(r); return ms !== null && ms < 24*3600000; }).length;
-  const losers = (H.products || []).filter(x => x.profit < 0).length;
+  const losers = H ? H.losers || 0 : 0;
   const st = tyState();
   const ic = (name, bg, fg) => `<div class="ic" style="background:${bg};color:${fg}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg></div>`;
   const rowsA = [];
@@ -542,14 +537,14 @@ function viewHome(){
   h += `<div class="card"><h3>Dikkat</h3>${rowsA.length ? rowsA.join('') : `<p class="muted small" style="margin:0">Her şey yolunda. Bekleyen iade, tükenen ürün ya da bağlantı sorunu yok.</p>`}</div>`;
   return h;
 }
-function homeChart(W, agg, pickW, t0){
-  const days = []; for (let i = 6; i >= 0; i--) { const a = new Date(t0); a.setDate(a.getDate() - i); const b = new Date(a); b.setDate(b.getDate() + 1); days.push({d: a, ...agg(pickW(a.getTime(), b.getTime()))}); }
+function homeChart(D){
+  const days = D.map(x => ({...x, d: new Date(x.d + 'T12:00:00')}));
   const tot = days.reduce((a, x) => ({rev: a.rev + x.rev, prof: a.prof + x.prof, n: a.n + x.n}), {rev:0, prof:0, n:0});
   const max = Math.max(1, ...days.map(x => Math.max(x.rev, x.prof))), min = Math.min(0, ...days.map(x => x.prof));
-  const Wd = 340, top = 18, base = 118, H0 = base - top, scale = H0 / (max - min), zero = top + max * scale, gw = Wd / 7, bw = 13;
+  const Wd = 340, top = 18, base = 118, H0 = base - top, scale = H0 / (max - min), zero = top + max * scale, gw = Wd / days.length, bw = 13;
   const short = (v) => Math.abs(v) >= 1000 ? (v/1000).toLocaleString('tr-TR',{maximumFractionDigits:1}) + 'B' : Math.round(v).toLocaleString('tr-TR');
   let g = `<line x1="0" x2="${Wd}" y1="${zero}" y2="${zero}" stroke="var(--line-strong)" stroke-width="1"/>`;
-  days.forEach((x, i) => { const cx = gw * i + gw / 2, today = i === 6;
+  days.forEach((x, i) => { const cx = gw * i + gw / 2, today = i === days.length - 1;
     const rh = x.rev * scale, ph = Math.abs(x.prof) * scale, py = x.prof >= 0 ? zero - ph : zero;
     g += `<g><title>${esc(x.d.toLocaleDateString('tr-TR',{weekday:'long', day:'numeric', month:'long'}))}: ciro ${esc(fmtTL(x.rev))}, net kâr ${esc(fmtTL(x.prof))}, ${x.n} sipariş</title>
       <rect x="${cx - bw - 1}" y="${zero - rh}" width="${bw}" height="${Math.max(rh, x.rev ? 1 : 0)}" rx="3" fill="var(--brand-soft)" stroke="var(--brand)" stroke-opacity=".35"/>
@@ -562,24 +557,22 @@ function homeChart(W, agg, pickW, t0){
     <div class="lg"><span><i style="background:var(--brand-soft);border:1px solid var(--brand)"></i>Ciro</span><span><i style="background:var(--good)"></i>Net kâr</span><span><i style="background:var(--bad)"></i>Zarar</span></div>
     <svg viewBox="0 0 ${Wd} ${base + 40}" role="img" aria-label="Son 7 günün ciro ve net kâr grafiği">${g}</svg></div>`;
 }
-// Tek seferde tek yükleme; senkron her değiştiğinde değil, en fazla dakikada bir yenilenir. Hata olursa döngüye girmez.
+// Ana ekran özeti: son değer telefonda saklanır, açılışta anında gösterilir; arkada en fazla dakikada bir yenilenir.
 function homeMaybeLoad(force){
   if (S.homeLoading) return;
-  const H = S.home, day = todayTR(), now = Date.now();
-  if (!force && H && H.day === day && (H.rev === S.rev || now - H.at < 60000)) return;
+  if (!S.home) { try { const c = JSON.parse(localStorage.getItem('lb_home') || 'null'); if (c && c.data && c.data.day === todayTR() && c.data.days) S.home = {...c, at: 0}; } catch(e) {} }
+  const H = S.home, now = Date.now();
+  if (!force && H && H.data && H.data.day === todayTR() && (H.rev === S.rev || now - H.at < 60000)) return;
   if (!force && H && H.err && now - H.at < 60000) return;
-  setTimeout(loadHome, 0);
+  setTimeout(() => loadHome(force), 0);
 }
-async function loadHome(){
+async function loadHome(force){
   if (S.homeLoading) return; S.homeLoading = true;
-  const day = todayTR(), rev = S.rev;
-  try { const [f, t] = periodRange('month'); const w = new Date(); w.setHours(0,0,0,0); w.setDate(w.getDate()-6);
-    const week = await api('/api/profit', {from: w.toISOString(), to: t.toISOString()});
-    const month = f >= w ? null : await api('/api/profit', {from: f.toISOString(), to: t.toISOString()});
-    let data = month || week;
-    if (!month) { const mo = week.orders.filter(o => Date.parse(o.date) >= f.getTime()); const m = mo.reduce((a, o) => ({revenue:a.revenue+o.revenue, profit:a.profit+o.profit}), {revenue:0, profit:0}); data = {...week, summary: {...week.summary, ...m, margin: m.revenue ? m.profit / m.revenue * 100 : null}}; }
-    S.home = {day, rev, at: Date.now(), data, week};
-  } catch(e) { S.home = S.home && S.home.data ? {...S.home, at: Date.now()} : {day, rev, at: Date.now(), err: errText(e)}; }
+  const rev = S.rev;
+  try { const data = await api('/api/home', force ? {force: true} : {});
+    S.home = {rev, at: Date.now(), data};
+    try { localStorage.setItem('lb_home', JSON.stringify({rev, data})); } catch(e) {}
+  } catch(e) { S.home = S.home && S.home.data ? {...S.home, at: Date.now()} : {rev, at: Date.now(), err: errText(e)}; }
   S.homeLoading = false; if (S.tab === 'home') render();
 }
 function banners(){
