@@ -668,41 +668,62 @@ function viewReports(){
   const all = R.data.days || [];
   if (!all.length) return h + `<div class="panel empty"><h4>Rapor hazırlanıyor</h4><p>Günlük sonuçlar arka planda hesaplanıyor; birkaç dakika içinde burada görünür.</p></div>`;
   const years = [...new Set(all.map(d => Number(d.day.slice(0,4))))].sort(); if (!years.includes(R.year)) R.year = years[years.length - 1];
+  const inc = R.data.expected && R.data.have < R.data.expected;
+  if (inc) { h += `<div class="banner" style="background:var(--accent-soft)"><div><b>Rapor hazırlanıyor: ${fmtN(R.data.have)} / ${fmtN(R.data.expected)} gün hesaplandı.</b> Rakamlar tamamlanana kadar eksik görünür; ekran kendiliğinden güncellenir.</div></div>`; clearTimeout(R.timer); R.timer = setTimeout(() => { if (S.tab === 'reports') loadReports(true); }, 6000); }
   const yd = all.filter(d => Number(d.day.slice(0,4)) === R.year);
   const T = repGroup(yd, 'year')[0] || {}; const margin = T.revenue ? T.profit / T.revenue * 100 : null;
   const grans = [['day','Günlük'],['week','Haftalık'],['month','Aylık'],['quarter','Çeyreklik'],['year','Yıllık']];
   h += `<div class="filters" style="margin-bottom:10px"><div class="chips">${years.map(y => `<button class="chip" data-act="rep-year" data-id="${y}" aria-pressed="${R.year===y}">${y}</button>`).join('')}</div></div>`;
-  const kpi = (k, v, sub, c, cs, icon, vstyle) => `<div class="kpi" style="--c:${c};--cs:${cs}"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle||''}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
+  const kpi = (k, v, sub, c, cs, icon, vstyle, mk) => `<div class="kpi" data-act="rep-metric" data-id="${mk}" style="--c:${c};--cs:${cs};cursor:pointer"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle||''}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
   h += `<div class="home-grid">
-    ${kpi(R.year + ' ciro', fmtTL(T.revenue || 0), `${fmtN(T.n || 0)} gün kayıtlı`, 'var(--blue)', 'var(--blue-soft)', 'value', 'color:var(--blue)')}
-    ${kpi(R.year + ' net kâr', tlS(T.profit || 0), `marj ${pct(margin)}`, (T.profit||0) < 0 ? 'var(--bad)' : 'var(--good)', (T.profit||0) < 0 ? 'var(--bad-soft)' : 'var(--good-soft)', 'profit', profitCls(T.profit || 0))}
-    ${kpi('Sipariş', fmtN(T.orders || 0), `${fmtN(T.units || 0)} adet satıldı`, 'var(--orange)', 'var(--warn-soft)', 'orders', 'color:var(--orange)')}
-    ${kpi('İade', fmtN(T.retUnits || 0) + ' adet', `${fmtN(T.retOrders || 0)} siparişte`, 'var(--violet)', 'var(--violet-soft)', 'returns', 'color:var(--violet)')}
+    ${kpi(R.year + ' ciro', fmtTL(T.revenue || 0), `${fmtN(T.n || 0)} gün kayıtlı ›`, 'var(--blue)', 'var(--blue-soft)', 'value', 'color:var(--blue)', 'revenue')}
+    ${kpi(R.year + ' net kâr', tlS(T.profit || 0), `marj ${pct(margin)} ›`, (T.profit||0) < 0 ? 'var(--bad)' : 'var(--good)', (T.profit||0) < 0 ? 'var(--bad-soft)' : 'var(--good-soft)', 'profit', profitCls(T.profit || 0), 'profit')}
+    ${kpi('Sipariş', fmtN(T.orders || 0), `${fmtN(T.units || 0)} adet satıldı ›`, 'var(--orange)', 'var(--warn-soft)', 'orders', 'color:var(--orange)', 'orders')}
+    ${kpi('İade', fmtN(T.retUnits || 0) + ' adet', `${fmtN(T.retOrders || 0)} siparişte ›`, 'var(--violet)', 'var(--violet-soft)', 'returns', 'color:var(--violet)', 'retUnits')}
   </div>`;
   // Yılın kesinti dökümü
-  const parts = [['Komisyon', T.commission], ['Kargo', T.cargo], ['İade kargosu', T.retCargo], ['Ceza ve kupon', T.penalty], ['Hizmet bedeli', T.service], ['Stopaj', T.stopaj], ['Ürün maliyeti', T.cost], ['Reklam', T.ads], ['Giderler (elle)', T.expenses], ['Diğer Trendyol kesintileri', T.otherFees]].filter(x => x[1]);
-  if (T.revenue) h += `<div class="card"><h3 style="margin:0">${R.year} ciro nereye gitti</h3>${[['Satış (ciro)', T.revenue, false], ...parts.map(x => [x[0], x[1], true]), ...(T.compensation ? [['+ Kargo tazmini', T.compensation, false]] : []), ['= Net kâr', T.profit, null]].map(([l, v, neg]) => { const w = Math.min(100, Math.abs(v) / T.revenue * 100); return `<div><div class="spread small"><span>${neg ? '− ' : ''}${esc(l)}</span><span><b class="num" style="${neg===null?profitCls(v):''}">${neg===null?tlS(v):fmtTL(v)}</b> <span class="muted">%${(Math.abs(v) / T.revenue * 100).toFixed(1).replace('.',',')}</span></span></div><div style="height:6px;border-radius:4px;background:var(--surface-2);margin-top:4px;overflow:hidden"><div style="height:100%;width:${w}%;background:${neg===false?'var(--blue)':neg===null?(v<0?'var(--bad)':'var(--good)'):'var(--bad)'};opacity:${neg?'.75':'1'}"></div></div></div>`; }).join('')}</div>`;
+  const parts = [['Komisyon', T.commission, 'commission'], ['Kargo', T.cargo, 'cargo'], ['İade kargosu', T.retCargo, 'retCargo'], ['Ceza ve kupon', T.penalty, 'penalty'], ['Hizmet bedeli', T.service, 'service'], ['Stopaj', T.stopaj, 'stopaj'], ['Ürün maliyeti', T.cost, 'cost'], ['Reklam', T.ads, 'ads'], ['Giderler (elle)', T.expenses, 'expenses'], ['Diğer Trendyol kesintileri', T.otherFees, 'otherFees']].filter(x => x[1]);
+  if (T.revenue) h += `<div class="card"><h3 style="margin:0">${R.year} ciro nereye gitti</h3>${[['Satış (ciro)', T.revenue, false, 'revenue'], ...parts.map(x => [x[0], x[1], true, x[2]]), ...(T.compensation ? [['+ Kargo tazmini', T.compensation, false, 'compensation']] : []), ['= Net kâr', T.profit, null, 'profit']].map(([l, v, neg, mk]) => { const w = Math.min(100, Math.abs(v) / T.revenue * 100); return `<div data-act="rep-metric" data-id="${mk}" style="cursor:pointer"><div class="spread small"><span>${neg ? '− ' : ''}${esc(l)} <span class="muted">›</span></span><span><b class="num" style="${neg===null?profitCls(v):''}">${neg===null?tlS(v):fmtTL(v)}</b> <span class="muted">%${(Math.abs(v) / T.revenue * 100).toFixed(1).replace('.',',')}</span></span></div><div style="height:6px;border-radius:4px;background:var(--surface-2);margin-top:4px;overflow:hidden"><div style="height:100%;width:${w}%;background:${neg===false?'var(--blue)':neg===null?(v<0?'var(--bad)':'var(--good)'):'var(--bad)'};opacity:${neg?'.75':'1'}"></div></div></div>`; }).join('')}</div>`;
   // Dönem tablosu + grafik
   h += `<div class="filters" style="margin:4px 0 10px"><div class="chips">${grans.map(([id,l]) => `<button class="chip" data-act="rep-gran" data-id="${id}" aria-pressed="${R.gran===id}">${l}</button>`).join('')}</div></div>`;
   let rows = repGroup(R.gran === 'year' ? all : yd, R.gran);
   const chartRows = R.gran === 'day' ? rows.slice(-31) : rows;
   if (chartRows.length > 1) h += repChart(chartRows, R.gran);
-  const linkable = R.gran === 'day' || R.gran === 'week' || R.gran === 'month';
+  const linkable = true;
   h += `<div class="card" style="padding:0;overflow:hidden"><div class="tbl-wrap" style="border:0;margin:0"><table class="t"><thead><tr><th>Dönem</th><th class="r">Sipariş</th><th class="r">Adet</th><th class="r">Ciro</th><th class="r">Net kâr</th><th class="r">Marj</th></tr></thead><tbody>
-    ${rows.slice().reverse().map(g => `<tr${linkable ? ` data-act="rep-open" data-id="${g.from}|${g.to}" style="cursor:pointer"` : ''}><td data-v="${esc(g.key)}"><b>${esc(repLabel(g, R.gran))}</b>${g.n && R.gran !== 'day' ? `<div class="muted small">${fmtN(g.n)} gün</div>` : ''}</td><td class="r num">${fmtN(g.orders)}</td><td class="r num">${fmtN(g.units)}</td><td class="r num">${fmtTL(g.revenue)}</td><td class="r num" style="${profitCls(g.profit)};font-weight:700">${tlS(g.profit)}</td><td class="r num">${pct(g.revenue ? g.profit / g.revenue * 100 : null)}</td></tr>`).join('')}
+    ${rows.slice().reverse().map(g => `<tr data-act="${R.gran === 'quarter' || R.gran === 'year' ? 'rep-drill' : 'rep-open'}" data-id="${R.gran === 'quarter' || R.gran === 'year' ? g.key : g.from + '|' + g.to}" style="cursor:pointer"><td data-v="${esc(g.key)}"><b>${esc(repLabel(g, R.gran))}</b>${g.n && R.gran !== 'day' ? `<div class="muted small">${fmtN(g.n)} gün</div>` : ''}</td><td class="r num">${fmtN(g.orders)}</td><td class="r num">${fmtN(g.units)}</td><td class="r num">${fmtTL(g.revenue)}</td><td class="r num" style="${profitCls(g.profit)};font-weight:700">${tlS(g.profit)}</td><td class="r num">${pct(g.revenue ? g.profit / g.revenue * 100 : null)}</td></tr>`).join('')}
     <tr style="background:var(--surface-2)"><td><b>Toplam</b></td>${(() => { const t = repGroup(R.gran === 'year' ? all : yd, 'year').reduce((a, g) => { for (const k of RKEYS) a[k] = (a[k] || 0) + g[k]; return a; }, {}); return `<td class="r num"><b>${fmtN(t.orders||0)}</b></td><td class="r num"><b>${fmtN(t.units||0)}</b></td><td class="r num"><b>${fmtTL(t.revenue||0)}</b></td><td class="r num" style="${profitCls(t.profit||0)}"><b>${tlS(t.profit||0)}</b></td><td class="r num"><b>${pct(t.revenue ? t.profit / t.revenue * 100 : null)}</b></td>`; })()}</tr>
   </tbody></table></div></div>`;
-  if (linkable) h += `<p class="muted small" style="margin:-6px 0 14px">Bir satıra dokununca o dönemin sipariş ve ürün ayrıntısı Kâr ekranında açılır.</p>`;
+  h += `<p class="muted small" style="margin:-6px 0 14px">${R.gran === 'quarter' || R.gran === 'year' ? 'Bir satıra dokununca o dönemin ayları açılır.' : 'Bir satıra dokununca o dönemin sipariş ve ürün ayrıntısı Kâr ekranında açılır.'}</p>`;
   // Yılın ürünleri
   const pf = yd[0] ? yd[0].day : R.year + '-01-01', pt = yd.length ? yd[yd.length - 1].day : R.year + '-12-31';
   loadRepProducts(pf, pt); const PD = (R.prod[pf + '|' + pt] || {}).data;
-  const plist = (title, L, emptyMsg) => `<div class="card"><h3 style="margin:0">${title}</h3>${L && L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<div class="item" style="cursor:default">${thumb({image: x.image, name: x.name})}<div class="main"><div class="ttl">${esc(x.name || x.sku)}</div><div class="meta"><span class="mono">${esc(x.sku)}</span><span>· ${fmtN(x.units)} adet${x.ret ? ` · ${fmtN(x.ret)} iade` : ''}</span></div></div><div class="end" style="text-align:right"><b class="num" style="${profitCls(x.profit)}">${tlS(x.profit)}</b><div class="muted small num">${fmtTL(x.revenue)} ciro</div></div></div>`).join('')}</div>` : `<p class="muted small" style="margin:0">${PD ? emptyMsg : 'Yükleniyor…'}</p>`}</div>`;
+  const plist = (title, L, emptyMsg) => `<div class="card"><h3 style="margin:0">${title}</h3>${L && L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<button class="item" data-act="rep-prod" data-id="${esc(x.pkey)}">${thumb({image: x.image, name: x.name})}<div class="main"><div class="ttl">${esc(x.name || x.sku)}</div><div class="meta"><span class="mono">${esc(x.sku)}</span><span>· ${fmtN(x.units)} adet${x.ret ? ` · ${fmtN(x.ret)} iade` : ''}</span></div></div><div class="end" style="text-align:right"><b class="num" style="${profitCls(x.profit)}">${tlS(x.profit)}</b><div class="muted small num">${fmtTL(x.revenue)} ciro</div></div></button>`).join('')}</div>` : `<p class="muted small" style="margin:0">${PD ? emptyMsg : 'Yükleniyor…'}</p>`}</div>`;
   h += plist(R.year + ' en kârlı ürünler', PD && PD.best, 'Henüz veri yok.');
   h += plist(R.year + ' en çok satanlar', PD && PD.top, 'Henüz veri yok.');
   h += plist(R.year + ' zarar ettirenler', PD && PD.worst, 'Bu yıl zarar ettiren ürün yok.');
   const lastAt = all.reduce((a, d) => d.at > a ? d.at : a, '');
   h += `<p class="muted small">Kayıt başlangıcı: ${esc(new Date((R.data.first || all[0].day) + 'T12:00:00').toLocaleDateString('tr-TR', {day:'numeric', month:'long', year:'numeric'}))}. Son 70 gün, geç gelen iade ve faturalar için sürekli yeniden hesaplanır; daha eski günler kesinleşmiş kabul edilir. Son güncelleme ${esc(fmtDate(lastAt))}. <button class="btn sm ghost" data-act="rep-rebuild">Tümünü yeniden hesapla</button></p>`;
   return h;
+}
+const RMETRIC = {revenue:['Ciro', false], profit:['Net kâr', null], orders:['Sipariş', 'n'], units:['Satılan adet', 'n'], retUnits:['İade adedi', 'n'], commission:['Komisyon', true], cargo:['Kargo', true], retCargo:['İade kargosu', true], penalty:['Ceza ve kupon', true], service:['Hizmet bedeli', true], stopaj:['Stopaj', true], cost:['Ürün maliyeti', true], ads:['Reklam', true], expenses:['Giderler (elle)', true], otherFees:['Diğer Trendyol kesintileri', true], compensation:['Kargo tazmini', false]};
+function sheetRepMetric(){
+  const R = repS(), k = S.sheet.k, [label, kind] = RMETRIC[k] || [k, false];
+  const yd = ((R.data || {}).days || []).filter(d => Number(d.day.slice(0,4)) === R.year);
+  const months = repGroup(yd, 'month'), days = yd.slice(-31).reverse();
+  const fv = (v) => kind === 'n' ? fmtN(v) : kind === null ? tlS(v) : fmtTL(v);
+  const st = (v) => kind === null ? profitCls(v) : '';
+  const tot = months.reduce((a, g) => a + (g[k] || 0), 0), rev = months.reduce((a, g) => a + g.revenue, 0);
+  const share = (v, r) => kind === 'n' || !r ? '' : `%${(Math.abs(v) / r * 100).toFixed(1).replace('.', ',')}`;
+  const total = `<div class="spread"><b>${R.year} toplamı</b><b class="num" style="${st(tot)};font-size:18px">${fv(tot)}</b></div>${kind !== 'n' && k !== 'revenue' && rev ? `<p class="muted small" style="margin:0">Cironun ${share(tot, rev)}'i</p>` : ''}`;
+  const tbl = (title, rows, lab, act) => `<div class="card"><h3 style="margin:0">${title}</h3><div class="tbl-wrap"><table class="t"><thead><tr><th>Dönem</th><th class="r">${esc(label)}</th>${kind !== 'n' && k !== 'revenue' ? '<th class="r">Ciroya oranı</th>' : ''}</tr></thead><tbody>${rows.map(g => `<tr data-act="${act}" data-id="${g.from}|${g.to}" style="cursor:pointer"><td data-v="${esc(g.from)}">${esc(lab(g))}</td><td class="r num" style="${st(g[k] || 0)}">${fv(g[k] || 0)}</td>${kind !== 'n' && k !== 'revenue' ? `<td class="r num muted">${share(g[k] || 0, g.revenue)}</td>` : ''}</tr>`).join('')}</tbody></table></div></div>`;
+  return {title: `${label} · ${R.year}`, sub: '<span class="muted">Aylara ve günlere göre</span>', body: `<div class="card">${total}</div>` + tbl('Aylara göre', months.slice().reverse(), g => repLabel(g, 'month'), 'rep-open') + tbl('Son 31 gün', days.map(d => ({...d, from: d.day, to: d.day, key: d.day})), g => repLabel(g, 'day'), 'rep-open') + `<p class="muted small">Bir satıra dokununca o dönem Kâr ekranında açılır; oradaki döküm satırlarına dokunarak sipariş sipariş görebilirsin.</p>`};
+}
+function sheetRepDrill(){
+  const R = repS(), key = S.sheet.key, isYear = !key.includes('-Q');
+  const days = ((R.data || {}).days || []).filter(d => isYear ? d.day.startsWith(key) : (d.day.startsWith(key.slice(0,4)) && Math.ceil(Number(d.day.slice(5,7)) / 3) === Number(key.slice(-1))));
+  const months = repGroup(days, 'month');
+  return {title: isYear ? key + ' yılı' : repLabel({key}, 'quarter') + ' ' + key.slice(0,4), sub: '<span class="muted">Aylara göre</span>', body: `<div class="card"><div class="tbl-wrap"><table class="t"><thead><tr><th>Ay</th><th class="r">Sipariş</th><th class="r">Ciro</th><th class="r">Net kâr</th><th class="r">Marj</th></tr></thead><tbody>${months.map(g => `<tr data-act="rep-open" data-id="${g.from}|${g.to}" style="cursor:pointer"><td>${esc(repLabel(g, 'month'))}</td><td class="r num">${fmtN(g.orders)}</td><td class="r num">${fmtTL(g.revenue)}</td><td class="r num" style="${profitCls(g.profit)}">${tlS(g.profit)}</td><td class="r num">${pct(g.revenue ? g.profit / g.revenue * 100 : null)}</td></tr>`).join('')}</tbody></table></div><p class="muted small" style="margin:0">Bir aya dokununca ayrıntısı Kâr ekranında açılır.</p></div>`};
 }
 function repChart(rows, gran){
   const Wd = 340, top = 16, base = 112, n = rows.length, gw = Wd / n, bw = Math.max(2, Math.min(16, gw * 0.36));
@@ -1910,7 +1931,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -1986,7 +2007,10 @@ document.addEventListener('click', async e => {
     case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
     case 'rep-year': repS().year = Number(id); render(); break;
     case 'rep-gran': repS().gran = id; try { localStorage.setItem('lb_rgran', id); } catch(e) {} render(); break;
-    case 'rep-open': { const [f, t] = id.split('|'); const P = profS(); P.period = 'custom'; P.cf = f; P.ct = t; P.sub = 'products'; P.data = null; P.key = ''; setTab('profit'); break; }
+    case 'rep-metric': openSheet('repmetric', {k: id, id}); break;
+    case 'rep-drill': openSheet('repdrill', {key: id, id}); break;
+    case 'rep-prod': if (S.products.has(id)) openSheet('product', {id, mode:'in'}); else toast('Bu ürün artık stok listesinde yok.', true); break;
+    case 'rep-open': { if (S.sheet) closeSheetForce(); const [f, t] = id.split('|'); const P = profS(); P.period = 'custom'; P.cf = f; P.ct = t; P.sub = 'products'; P.data = null; P.key = ''; setTab('profit'); break; }
     case 'rep-rebuild': if (await confirmBox('Tüm günlerin raporu baştan hesaplansın mı? Birkaç dakika sürebilir; bu sırada rakamlar kademeli dolar.', 'Yeniden hesapla')) await run(async () => { await api('/api/reports/rebuild', {}); repS().data = null; repS().at = 0; repS().prod = {}; await loadReports(true); toast('Yeniden hesaplama başladı.'); }); break;
     case 'psub': profS().sub = id; profS().opage = 1; render(); break;
     case 'ppage': profS().opage = Math.max(1, Number(id) || 1); render(); window.scrollTo(0, 0); break;

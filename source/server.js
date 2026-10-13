@@ -1258,17 +1258,19 @@ async function refreshStats(env, deadline) {
   const today = trDay(Date.now()); const g = await getSettings(env, ['stats_cursor', 'stats_first']);
   let first = g.stats_first;
   if (!first) { const r = await env.DB.prepare('SELECT MIN(date) d FROM orders').first(); if (!r || !r.d) return { n: 0 }; first = trDay(Date.parse(r.d)); await setSetting(env, 'stats_first', first); }
-  const todo = [today, addDay(today, -1)];
-  // eksik günler (veri başlangıcından bugüne)
+  const todo = [today, addDay(today, -1)], LIM = 40;
+  // eksik günler: en yeniden eskiye (önce son günler dolsun)
   const { results } = await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1').bind(first).all(); const have = new Set(results.map(x => x.day));
-  for (let d = first; d <= today && todo.length < 12; d = addDay(d, 1)) if (!have.has(d) && !todo.includes(d)) todo.push(d);
+  for (let d = addDay(today, -2); d >= first && todo.length < LIM; d = addDay(d, -1)) if (!have.has(d)) todo.push(d);
   // son 70 gün dönüşümlü
   let cur = g.stats_cursor && g.stats_cursor >= addDay(today, -70) && g.stats_cursor < today ? g.stats_cursor : addDay(today, -70);
   if (cur < first) cur = first;
   while (todo.length < 12 && cur < today) { if (!todo.includes(cur)) todo.push(cur); cur = addDay(cur, 1); }
+  const busy = Number(await getSetting(env, 'stats_busy')) || 0; if (Date.now() - busy < 60000) return { n: 0, busy: true };
+  await setSetting(env, 'stats_busy', String(Date.now()));
   let n = 0;
-  for (const d of todo) { if (deadline && Date.now() > deadline) break; await snapshotDay(env, d); n++; }
-  await setSetting(env, 'stats_cursor', cur >= today ? addDay(today, -70) : cur);
+  try { for (const d of todo) { if (deadline && Date.now() > deadline) break; await snapshotDay(env, d); n++; } }
+  finally { await env.DB.batch([setStmt(env, 'stats_cursor', cur >= today ? addDay(today, -70) : cur), setStmt(env, 'stats_busy', '0')]); }
   return { n };
 }
 /* ---------- ana ekran özeti: küçük cevap, 90 sn önbellek ---------- */
@@ -1361,8 +1363,12 @@ async function api(req, env, path, ctx) {
   if (path === '/api/expenses/delete') { await env.DB.batch([env.DB.prepare('DELETE FROM expenses WHERE id=?1').bind(Number(body.id) || 0), setStmt(env, 'home_cache', ''), REV(env)]); return json({ ok: true }); }
   if (path === '/api/reports') {
     const { results } = await env.DB.prepare('SELECT day, data, computed_at FROM daily_stats ORDER BY day').all();
-    const first = await getSetting(env, 'stats_first');
-    return json({ first, days: results.map(x => ({ day: x.day, at: x.computed_at, ...JSON.parse(x.data || '{}') })) });
+    const first = await getSetting(env, 'stats_first'), today = trDay(Date.now());
+    let expected = 0; if (first) expected = Math.round((dayStartTR(today) - dayStartTR(first)) / 86400000) + 1;
+    const have = results.filter(x => x.day >= (first || '')).length;
+    // Eksik gün varsa beklemeden arka planda hesaplamaya başla
+    if (!first || have < expected) { const job = refreshStats(env, Date.now() + 25000).catch(() => {}); if (ctx && ctx.waitUntil) ctx.waitUntil(job); }
+    return json({ first, expected, have, days: results.map(x => ({ day: x.day, at: x.computed_at, ...JSON.parse(x.data || '{}') })) });
   }
   if (path === '/api/reports/products') {
     const from = String(body.from || ''), to = String(body.to || '');
@@ -1371,7 +1377,7 @@ async function api(req, env, path, ctx) {
     const [best, worst, top] = await env.DB.batch([env.DB.prepare(q + ' ORDER BY profit DESC LIMIT 10').bind(from, to), env.DB.prepare(q + ' HAVING SUM(pd.profit) < 0 ORDER BY profit ASC LIMIT 10').bind(from, to), env.DB.prepare(q + ' ORDER BY units DESC LIMIT 10').bind(from, to)]);
     return json({ best: best.results, worst: worst.results, top: top.results });
   }
-  if (path === '/api/reports/rebuild') { await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'stats_first', ''), setStmt(env, 'stats_cursor', '')]); try { await refreshStats(env, Date.now() + 15000); } catch (e) {} return json({ ok: true }); }
+  if (path === '/api/reports/rebuild') { await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'stats_first', ''), setStmt(env, 'stats_cursor', ''), setStmt(env, 'stats_busy', '0')]); const job = refreshStats(env, Date.now() + 25000).catch(() => {}); if (ctx && ctx.waitUntil) ctx.waitUntil(job); return json({ ok: true }); }
   if (path === '/api/home') return json(await homeData(env, ctx, !!body.force));
   if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
