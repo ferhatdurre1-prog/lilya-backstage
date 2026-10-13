@@ -73,6 +73,11 @@ async function init(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_gross1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_gross1','1')`), setStmt(env, 'fin_backfill_day', '13'), setStmt(env, 'audit_state', 'running'), setStmt(env, 'audit_started', iso())]); } catch (e) {}
   }
+  try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_retcargo1'`).first())) {
+    // Kargo faturaları gidiş / iade olarak ayrı okunsun diye baştan okunur (Trendyol 15 günlük pencere: Ekim'in tamamı)
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_retcargo1','1')`), env.DB.prepare('UPDATE order_fin SET cargo=NULL, ret_cargo=NULL'), setStmt(env, 'cargo_inv_done', '[]'), setStmt(env, 'fin_at', ''), REV(env)]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
 }
@@ -616,7 +621,7 @@ async function syncTrendyolFinance(env, force) {
   const s = await getSettings(env, ['fin_at', 'cargo_inv_done', 'desi_learned']);
   if (!force && s.fin_at && Date.now() - Date.parse(s.fin_at) < 6 * 3600000) return null;
   const sid = env.TRENDYOL_SELLER_ID, end = Date.now(), start = end - 15 * 86400000 + 60000;
-  const agg = new Map(); const get = (no) => { let a = agg.get(no); if (!a) { a = { revenue: 0, commission: 0, net: 0, cargo: null, service: null, sale: false }; agg.set(no, a); } return a; };
+  const agg = new Map(); const get = (no) => { let a = agg.get(no); if (!a) { a = { revenue: 0, commission: 0, net: 0, cargo: null, retCargo: null, service: null, sale: false }; agg.set(no, a); } return a; };
   let rows = 0;
   for (let page = 0; page < 20; page++) {
     const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionTypes: FIN_TYPES, startDate: start, endDate: end, page, size: 1000, supplierId: sid });
@@ -642,9 +647,10 @@ async function syncTrendyolFinance(env, force) {
           for (let p2 = 0; p2 < 20; p2++) {
             const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(x.id)}/items`, { page: p2, size: 500 });
             for (const c of (it.content || [])) {
-              if (c.orderNumber) { const a = get(String(c.orderNumber)); a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
+              const isRet = String(c.shipmentPackageType || '').toLocaleLowerCase('tr-TR').includes('iade');
+              if (c.orderNumber) { const a = get(String(c.orderNumber)); if (isRet) a.retCargo = (a.retCargo || 0) + (Number(c.amount) || 0); else a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
               const d = Math.ceil(Number(c.desi) || 0), amt = Number(c.amount) || 0;
-              if (d > 0 && amt > 0 && !String(c.shipmentPackageType || '').toLocaleLowerCase('tr-TR').includes('iade')) { (learned[d] = learned[d] || []).push(amt); }
+              if (d > 0 && amt > 0 && !isRet) { (learned[d] = learned[d] || []).push(amt); }
             }
             if (p2 + 1 >= (it.totalPages || 0)) break;
           }
@@ -655,11 +661,12 @@ async function syncTrendyolFinance(env, force) {
     }
   } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Kargo faturaları okunamadı: ' + String(e.message || e).slice(0, 200)); }
   const now = iso(); const st = [];
-  for (const [no, a] of agg) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,revenue,commission,net,cargo,service,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)
+  for (const [no, a] of agg) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,revenue,commission,net,cargo,service,updated_at,ret_cargo) VALUES(?1,?2,?3,?4,?5,?6,?7,?9)
     ON CONFLICT(order_no) DO UPDATE SET revenue=CASE WHEN ?8 THEN excluded.revenue ELSE order_fin.revenue END, commission=CASE WHEN ?8 THEN excluded.commission ELSE order_fin.commission END, net=CASE WHEN ?8 THEN excluded.net ELSE order_fin.net END,
       cargo=CASE WHEN excluded.cargo IS NULL THEN order_fin.cargo ELSE COALESCE(order_fin.cargo,0)+excluded.cargo END,
+      ret_cargo=CASE WHEN excluded.ret_cargo IS NULL THEN order_fin.ret_cargo ELSE COALESCE(order_fin.ret_cargo,0)+excluded.ret_cargo END,
       service=COALESCE(excluded.service, order_fin.service), updated_at=excluded.updated_at`)
-    .bind(no, a.sale ? Math.round(a.revenue * 100) / 100 : null, a.sale ? Math.round(a.commission * 100) / 100 : null, a.sale ? Math.round(a.net * 100) / 100 : null, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.service, now, a.sale ? 1 : 0));
+    .bind(no, a.sale ? Math.round(a.revenue * 100) / 100 : null, a.sale ? Math.round(a.commission * 100) / 100 : null, a.sale ? Math.round(a.net * 100) / 100 : null, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.service, now, a.sale ? 1 : 0, a.retCargo === null ? null : Math.round(a.retCargo * 100) / 100));
   // Barem ücretlerine (46,48 / 84,50) eşit olmayan faturalar desiye göre ücretlenmiştir → desi tablosunu öğren
   const prev = (() => { try { return JSON.parse((s.desi_learned) || '{}'); } catch (e) { return {}; } })();
   for (const [d, arr] of Object.entries(learned)) {
@@ -779,9 +786,9 @@ async function computeProfit(env, from, to) {
   const orderNos = o.results.filter(x => x.channel === 'trendyol').map(x => x.order_no);
   const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x]));
   const R2 = (n) => Math.round(n * 100) / 100;
-  const blank = () => ({ revenue: 0, commission: 0, cargo: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0 });
+  const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
-  const sum = { ...blank(), orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
+  const sum = { ...blank(), retOrders: 0, retCargoEst: 0, orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
   const rep = { grossU: 0, grossTL: 0, cancelU: 0, cancelTL: 0, retU: 0, retTL: 0, pendU: 0, pendTL: 0, discTL: 0, netU: 0, netTL: 0, noGross: 0 };
   for (const ord of o.results) for (const l of JSON.parse(ord.lines || '[]')) {
     if (!l.qty) continue; const f = l.fin || {}; const unitG = (f.gross ?? f.revenue ?? 0) / l.qty, unitR = (f.revenue ?? 0) / l.qty;
@@ -801,7 +808,7 @@ async function computeProfit(env, from, to) {
     const ch = ord.channel, mk = MARKETPLACES.has(ch);
     const rows = [];
     for (const l of lines) {
-      const retQ = rets.get(ord.id + '|' + l.pkey) || 0; const qty = Math.max(0, l.qty - retQ);
+      const retQ = Math.min(l.qty, rets.get(ord.id + '|' + l.pkey) || 0); const qty = Math.max(0, l.qty - retQ);
       const pr = prods.get(l.pkey); const unitCost = pr && pr.cost !== null && pr.cost !== undefined ? pr.cost : null;
       const f = l.fin; const unitRev = f && Number.isFinite(f.revenue) && l.qty ? f.revenue / l.qty : null;
       if (unitRev === null) sum.missingPrice++;
@@ -810,38 +817,45 @@ async function computeProfit(env, from, to) {
       const commission = f && f.rate !== null && f.rate !== undefined ? revenue * f.rate / 100 : 0;
       const vat = f && f.vat !== null && f.vat !== undefined ? f.vat : 20;
       const stopaj = mk ? revenue / (1 + vat / 100) * fee.stopaj / 100 : 0;
-      rows.push({ l, qty, revenue, commission, stopaj, cost: (unitCost || 0) * qty, pr });
+      rows.push({ l, qty, retQ, full: (unitRev || 0) * l.qty, revenue, commission, stopaj, cost: (unitCost || 0) * qty, pr });
     }
     const pkgs = new Map();
-    for (const x of rows) { if (!x.qty) continue; const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null }; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)) * (x.qty / (x.l.qty || 1)); if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
-    let cargo = 0;
+    for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0 }; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
+    let cargo = 0, retCargo = 0;
     const cargoInfo = [];
-    if (ch === 'trendyol') for (const g of pkgs.values()) { const c = tyCargo(fee, g.amount, g.desi, g.carrier); cargo += c.cost; cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (desi yok, 1 sayıldı)'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
+    if (ch === 'trendyol') for (const g of pkgs.values()) { const c = tyCargo(fee, g.amount, g.desi, g.carrier); cargo += c.cost; if (g.ret) retCargo += c.cost; cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (desi yok, 1 sayıldı)'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
     else if (ch === 'shopify') cargo = fee.cargoSh;
     let service = ch === 'trendyol' ? fee.serviceTy * pkgs.size : 0;
     const est = rows.reduce((a, x) => a + x.revenue, 0);
     let revenue = est, commission = rows.reduce((a, x) => a + x.commission, 0); let actual = false;
+    const retUnits = rows.reduce((a, x) => a + x.retQ, 0);
     const fa = ch === 'trendyol' ? fin.get(ord.order_no) : null;
+    let retCargoEst = retUnits > 0;
     if (fa) {
-      if (fa.revenue !== null) { revenue = fa.revenue; commission = fa.commission || 0; actual = true; }
+      // İade onaylanan siparişte ciro/komisyon satır verisinden (iade düşülmüş) hesaplanır; Trendyol ekstresi iadeyi geç yansıtabilir.
+      if (fa.revenue !== null && !retUnits) { revenue = fa.revenue; commission = fa.commission || 0; actual = true; }
       if (fa.cargo !== null) { cargo = fa.cargo; actual = true; }
+      if (fa.ret_cargo !== null && fa.ret_cargo !== undefined && retUnits) { retCargo = fa.ret_cargo; retCargoEst = false; }
       if (fa.service !== null) service = fa.service;
     }
+    if (!retUnits) retCargo = 0;
     const stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0);
     const cost = rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
-    const profit = revenue - commission - cargo - service - stopaj - cost;
-    const oRes = { revenue, commission, cargo, service, stopaj, cost, profit, units };
-    add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++;
-    byOrder.push({ id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    const profit = revenue - commission - cargo - retCargo - service - stopaj - cost;
+    const oRes = { revenue, commission, cargo, retCargo, service, stopaj, cost, profit, units, retUnits };
+    add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst) sum.retCargoEst++; }
+    byOrder.push({ id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, retCargoEst, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
-    const base = est || rows.reduce((a, x) => a + x.qty, 0) || 1;
+    // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
+    const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
+    const rv = (x) => x.l.qty ? x.full * x.retQ / x.l.qty : 0, retTot = rows.reduce((a, x) => a + rv(x), 0), retQTot = rows.reduce((a, x) => a + x.retQ, 0) || 1;
     for (const x of rows) {
-      const share = est ? x.revenue / est : x.qty / base;
+      const share = est ? x.revenue / est : 0, fshare = fullTot ? x.full / fullTot : x.l.qty / qtyTot;
       const k = x.l.pkey; let bp = byProduct.get(k);
       if (!bp) { bp = { key: k, sku: x.l.sku, name: (x.pr && x.pr.name) || x.l.name, image: x.pr ? x.pr.image : '', costKnown: !!(x.pr && x.pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(k, bp); }
       const lr = revenue * share, lc = commission * share, ls = stopaj * share;
-      const res = { revenue: lr, commission: lc, cargo: cargo * share, service: service * share, stopaj: ls, cost: x.cost, units: x.qty };
-      res.profit = lr - lc - res.cargo - res.service - ls - x.cost;
+      const res = { revenue: lr, commission: lc, cargo: cargo * fshare, retCargo: retCargo * (retTot ? rv(x) / retTot : x.retQ / retQTot), service: service * fshare, stopaj: ls, cost: x.cost, units: x.qty, retUnits: x.retQ };
+      res.profit = lr - lc - res.cargo - res.retCargo - res.service - ls - x.cost;
       add(bp, res); bp.orders++;
     }
   }

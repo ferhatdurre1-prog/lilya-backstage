@@ -821,20 +821,21 @@ function viewProfit(){
   const P = profS(); setTimeout(() => loadProfit(false), 0);
   const D = P.data, s = D && D.summary;
   const fees = (S.settings && S.settings.fees) || {cargoT1:46.48, cargoT2:84.5, cargoT3:98.35, desiMode:true, desiTables:{tex:[],ptt:[]}, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
-  let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti</p></div></div>
+  let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti. İadesi onaylanan ürünler siparişin verildiği günden düşülür.</p></div></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
   if (P.err) return h + `<div class="banner bad"><div>${esc(P.err)}</div></div>`;
   if (!D) return h + loading();
   if (P.sub === 'audit') return h + viewAudit() + feesCard(fees);
   if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + feesCard(fees);
-  const rows = [['Satış (ciro)', s.revenue, false], ['Komisyon', s.commission, true], ['Kargo', s.cargo, true], ['Hizmet bedeli', s.service, true], ['Stopaj', s.stopaj, true], ['Ürün maliyeti', s.cost, true]];
+  const rows = [['Satış (ciro)', s.revenue, false], ['Komisyon', s.commission, true], ['Kargo', s.cargo, true], ...(s.retCargo ? [['İade kargosu', s.retCargo, true]] : []), ['Hizmet bedeli', s.service, true], ['Stopaj', s.stopaj, true], ['Ürün maliyeti', s.cost, true]];
   const maxV = Math.max(1, s.revenue);
   h += `<div class="hero-val"><div><div class="muted small">Net kâr</div><div class="big" style="${profitCls(s.profit)}">${tlS(s.profit)}</div>
       <div class="row small" style="margin-top:8px;gap:8px"><span class="pill ${s.profit>=0?'p-good':'p-bad'}">Marj ${pct(s.margin)}</span><span class="muted">${fmtN(s.orders)} sipariş · ${fmtN(s.units)} adet</span></div></div>
     <div class="small" style="text-align:right"><span class="pill ${s.actualOrders?'p-good':'p-mute'}">${fmtN(s.actualOrders)}/${fmtN(s.orders)} siparişte gerçek kesinti</span><div class="muted" style="margin-top:6px;max-width:220px">Diğerleri sabit değerlerle tahmini</div></div></div>
   <div class="card" style="margin-bottom:14px">${rows.map(([l, v, neg]) => `<div><div class="spread small"><span>${neg?'− ':''}${l}</span><span class="num"><b>${fmtTL(v)}</b> <span class="muted">${s.revenue?'%'+(v/s.revenue*100).toFixed(1).replace('.',','):''}</span></span></div><div style="height:6px;border-radius:3px;margin-top:5px;background:${neg?'var(--bad-soft)':'var(--good-soft)'}"><div style="height:100%;border-radius:3px;width:${Math.min(100, v/maxV*100).toFixed(1)}%;background:${neg?'var(--bad)':'var(--good)'};opacity:.75"></div></div></div>`).join('')}
-    <div class="spread" style="border-top:1px solid var(--line);padding-top:10px"><b>= Net kâr</b><b class="num" style="${profitCls(s.profit)}">${tlS(s.profit)}</b></div></div>`;
+    <div class="spread" style="border-top:1px solid var(--line);padding-top:10px"><b>= Net kâr</b><b class="num" style="${profitCls(s.profit)}">${tlS(s.profit)}</b></div>
+    ${s.retOrders ? `<p class="muted small" style="margin:0">${fmtN(s.retOrders)} siparişte ${fmtN(s.retUnits)} adet iade onaylandı: satışı, komisyonu ve stopajı düşüldü, ürün maliyeti stoğa geri döndü; gidiş kargosu, hizmet bedeli ve iade kargosu zarar olarak kaldı.${s.retCargoEst ? ` ${fmtN(s.retCargoEst)} siparişin iade kargo faturası henüz gelmedi; gidiş tarifesiyle tahmin edildi.` : ''}</p>` : ''}</div>`;
   const RP = D.report;
   if (RP) h += `<div class="card" style="margin-bottom:14px"><div class="spread"><h3 style="margin:0">Satış özeti</h3><span class="muted small">Trendyol Satış Raporu düzeninde</span></div>
     ${[['Brüt satış', RP.grossU, RP.grossTL, 'var(--ink)'], ['İptaller', -RP.cancelU, -RP.cancelTL, 'var(--bad)'], ['İadeler (kabul edilen)', -RP.retU, -RP.retTL, 'var(--warn)'], ['İndirimler (senin)', null, -RP.discTL, 'var(--ink-2)']].map(([l,u,tl,c]) => `<div class="spread small"><span>${l}</span><span class="num" style="color:${c}">${u===null?'':fmtN(u)+' adet · '}<b>${tlS(tl)}</b></span></div>`).join('')}
@@ -851,7 +852,7 @@ function viewProfit(){
   if (P.sub === 'pricing') h += viewPricing();
   else if (P.sub === 'audit') h += viewAudit();
   else if (P.sub === 'orders') {
-    h += `<div class="list">${D.orders.slice(0,300).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span></div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>${D.orders.length>300?'<p class="muted small">İlk 300 sipariş gösteriliyor.</p>':''}`;
+    h += `<div class="list">${D.orders.slice(0,300).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span></div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.retUnits?`<span class="pill p-warn">${fmtN(o.retUnits)} iade</span>`:''}${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>${D.orders.length>300?'<p class="muted small">İlk 300 sipariş gösteriliyor.</p>':''}`;
   } else {
     let ps = D.products.slice();
     if (P.sub === 'winners') ps = ps.filter(x => x.profit > 0).sort((a,b) => b.profit - a.profit);
@@ -863,9 +864,9 @@ function viewProfit(){
       <th class="r"><button data-act="psort" data-id="revenue" aria-pressed="${P.sort==='revenue'}">Satış</button></th>
       <th class="r"><button data-act="psort" data-id="profit" aria-pressed="${P.sort==='profit'}">Net kâr</button></th>
       <th class="r"><button data-act="psort" data-id="margin" aria-pressed="${P.sort==='margin'}">Marj</button></th></tr></thead>
-      <tbody>${ps.slice(0,300).map(x => `<tr data-act="product" data-id="${esc(x.key)}" style="cursor:pointer"><td><div class="pcell">${thumb({name:x.name, image:x.image})}<div style="min-width:0"><span>${esc(x.name)}</span><span class="mono muted" style="font-size:11.5px">${esc(x.sku)}${x.costKnown?'':' · <b style="color:var(--warn)">maliyet yok</b>'}</span></div></div></td>
+      <tbody>${ps.slice(0,300).map(x => `<tr data-act="product" data-id="${esc(x.key)}" style="cursor:pointer"><td><div class="pcell">${thumb({name:x.name, image:x.image})}<div style="min-width:0"><span>${esc(x.name)}</span><span class="mono muted" style="font-size:11.5px">${esc(x.sku)}${x.costKnown?'':' · <b style="color:var(--warn)">maliyet yok</b>'}${x.retUnits?` · <b style="color:var(--warn)">${fmtN(x.retUnits)} iade</b>`:''}</span></div></div></td>
         <td class="r num">${fmtN(x.units)}</td><td class="r num">${fmtTL(x.revenue)}</td><td class="r num" style="${profitCls(x.profit)}"><b>${tlS(x.profit)}</b></td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
-      <p class="muted small">Sipariş başı kargo, hizmet bedeli ve komisyon ürünlere satış payına göre dağıtılır. İadesi kabul edilen adetler satıştan düşülür.</p>`;
+      <p class="muted small">Sipariş başı kargo, iade kargosu ve hizmet bedeli ürünlere sipariş içindeki paylarına göre dağıtılır. İadesi onaylanan adetler satıştan düşülür; kargo ve hizmet bedeli zararı iade edilen ürüne yazılır.</p>`;
   }
   return h + feesCard(fees);
 }
