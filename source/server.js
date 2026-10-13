@@ -90,6 +90,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE order_cust ADD COLUMN sname TEXT').run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, name TEXT, amount REAL, created_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
@@ -1004,7 +1005,7 @@ async function computeProfit(env, from, to) {
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
-  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR]] = await Promise.all([loadFees(env), env.DB.batch([
+  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare('SELECT key, sku, name, image, cost, barcode, same_day FROM products'),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note FROM returns WHERE order_id<>'' AND status<>'rejected'`),
@@ -1013,7 +1014,8 @@ async function computeProfit(env, from, to) {
     env.DB.prepare(`SELECT order_no, type, amount FROM fin_misc WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%'),
     env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo),
-    env.DB.prepare('SELECT COUNT(*) n FROM ad_spend')])]);
+    env.DB.prepare('SELECT COUNT(*) n FROM ad_spend'),
+    env.DB.prepare('SELECT id, day, name, amount, created_at FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo)])]);
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const rets = new Map(), pend = new Map(), defQ = new Map(), undOrders = new Set();
@@ -1159,12 +1161,15 @@ async function computeProfit(env, from, to) {
   const adTracked = ((adAnyR.results[0] || {}).n || 0) > 0; // günlük reklam takibi varsa faturalar hiçbir dönemde ayrıca düşülmez (günler toplamı = ay)
   const otherFees = miscFree.filter(x => !(adTracked && isAd(x.type))).map(x => ({ type: x.type, amount: R2(x.amount || 0), n: x.n }));
   sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices);
-  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads; sum.profit += sum.compensation;
+  // Elle girilen işletme giderleri (paketleme malzemesi vb.): girildiği günün gideri
+  const expenses = expR.results.map(x => ({ id: x.id, day: x.day, name: x.name, amount: R2(x.amount || 0) }));
+  sum.expenses = expenses.reduce((a, x) => a + x.amount, 0);
+  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses; sum.profit += sum.compensation;
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
   mark('cpu'); PERF_LAST = { ...TM, orders: o.results.length };
-  return { from, to, fees: fee, summary: sum, report: rep, otherFees, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, missingCostSkus: [...missingCostSkus].slice(0, 30) };
+  return { from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, missingCostSkus: [...missingCostSkus].slice(0, 30) };
 }
 
 async function computePricing(env) {
@@ -1308,6 +1313,15 @@ async function api(req, env, path, ctx) {
   }
   if (path === '/api/passkey/list') return json({ user: await authUser(env), items: (await env.DB.prepare('SELECT id, label, created_at, used_at FROM wa_creds ORDER BY created_at DESC').all()).results });
   if (path === '/api/passkey/delete') { if (body.all) await env.DB.prepare('DELETE FROM wa_creds').run(); else await env.DB.prepare('DELETE FROM wa_creds WHERE id=?1').bind(String(body.id || '')).run(); return json({ ok: true }); }
+  if (path === '/api/expenses/add') {
+    const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), day = String(body.day || trDay(Date.now()));
+    if (!name) return bad('Gider adını yaz.');
+    if (!isFinite(amount) || amount <= 0 || amount > 1e8) return bad('Geçerli bir tutar yaz.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return bad('Tarih geçersiz.');
+    await env.DB.batch([env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at) VALUES(?1,?2,?3,?4)').bind(day, name, Math.round(amount * 100) / 100, iso()), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true });
+  }
+  if (path === '/api/expenses/delete') { await env.DB.batch([env.DB.prepare('DELETE FROM expenses WHERE id=?1').bind(Number(body.id) || 0), setStmt(env, 'home_cache', ''), REV(env)]); return json({ ok: true }); }
   if (path === '/api/home') return json(await homeData(env, ctx, !!body.force));
   if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
