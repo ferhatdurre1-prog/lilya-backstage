@@ -662,7 +662,7 @@ function repLabel(g, gran){
 }
 function viewReports(){
   const R = repS(); loadReports(false);
-  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Raporlar</h2><p class="lead small">Her günün kesin sonucu kalıcı olarak saklanır. Günlük, haftalık, aylık, çeyreklik ve yıllık toplamlar buradan.</p></div>`;
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Raporlar</h2><p class="lead small">Her günün kesin sonucu kalıcı olarak saklanır. Günlük, haftalık, aylık, yıllık ya da istediğin dönemin toplamı buradan.</p></div>`;
   if (R.err && !R.data) return h + `<div class="banner bad"><div>${esc(R.err)}</div></div>`;
   if (!R.data) return h + loading();
   const all = R.data.days || [];
@@ -672,7 +672,8 @@ function viewReports(){
   if (inc) { h += `<div class="banner" style="background:var(--accent-soft)"><div><b>Rapor hazırlanıyor: ${fmtN(R.data.have)} / ${fmtN(R.data.expected)} gün hesaplandı.</b> Rakamlar tamamlanana kadar eksik görünür; ekran kendiliğinden güncellenir.</div></div>`; clearTimeout(R.timer); R.timer = setTimeout(() => { if (S.tab === 'reports') loadReports(true); }, 6000); }
   const yd = all.filter(d => Number(d.day.slice(0,4)) === R.year);
   const T = repGroup(yd, 'year')[0] || {}; const margin = T.revenue ? T.profit / T.revenue * 100 : null;
-  const grans = [['day','Günlük'],['week','Haftalık'],['month','Aylık'],['quarter','Çeyreklik'],['year','Yıllık']];
+  const grans = [['day','Günlük'],['week','Haftalık'],['month','Aylık'],['year','Yıllık'],['custom','Dönem seç']];
+  if (!grans.some(g => g[0] === R.gran)) R.gran = 'month';
   h += `<div class="filters" style="margin-bottom:10px"><div class="chips">${years.map(y => `<button class="chip" data-act="rep-year" data-id="${y}" aria-pressed="${R.year===y}">${y}</button>`).join('')}</div></div>`;
   const kpi = (k, v, sub, c, cs, icon, vstyle, mk) => `<div class="kpi" data-act="rep-metric" data-id="${mk}" style="--c:${c};--cs:${cs};cursor:pointer"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle||''}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
   h += `<div class="home-grid">
@@ -686,6 +687,33 @@ function viewReports(){
   if (T.revenue) h += `<div class="card"><h3 style="margin:0">${R.year} ciro nereye gitti</h3>${[['Satış (ciro)', T.revenue, false, 'revenue'], ...parts.map(x => [x[0], x[1], true, x[2]]), ...(T.compensation ? [['+ Kargo tazmini', T.compensation, false, 'compensation']] : []), ['= Net kâr', T.profit, null, 'profit']].map(([l, v, neg, mk]) => { const w = Math.min(100, Math.abs(v) / T.revenue * 100); return `<div data-act="rep-metric" data-id="${mk}" style="cursor:pointer"><div class="spread small"><span>${neg ? '− ' : ''}${esc(l)} <span class="muted">›</span></span><span><b class="num" style="${neg===null?profitCls(v):''}">${neg===null?tlS(v):fmtTL(v)}</b> <span class="muted">%${(Math.abs(v) / T.revenue * 100).toFixed(1).replace('.',',')}</span></span></div><div style="height:6px;border-radius:4px;background:var(--surface-2);margin-top:4px;overflow:hidden"><div style="height:100%;width:${w}%;background:${neg===false?'var(--blue)':neg===null?(v<0?'var(--bad)':'var(--good)'):'var(--bad)'};opacity:${neg?'.75':'1'}"></div></div></div>`; }).join('')}</div>`;
   // Dönem tablosu + grafik
   h += `<div class="filters" style="margin:4px 0 10px"><div class="chips">${grans.map(([id,l]) => `<button class="chip" data-act="rep-gran" data-id="${id}" aria-pressed="${R.gran===id}">${l}</button>`).join('')}</div></div>`;
+  if (R.gran === 'custom') {
+    const today = todayTR(); if (!R.cf) { R.cf = today.slice(0,8) + '01'; R.ct = today; }
+    h += `<form id="f-repp" class="card" style="gap:10px"><h3 style="margin:0">Dönem seç</h3><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label class="f">Başlangıç<input class="input" type="date" id="rp-from" value="${esc(R.cf)}" min="${esc(all[0].day)}" max="${today}" required></label><label class="f">Bitiş<input class="input" type="date" id="rp-to" value="${esc(R.ct)}" min="${esc(all[0].day)}" max="${today}" required></label></div>
+      <div class="chips">${[['Bu ay', today.slice(0,8)+'01', today], ['Geçen ay', (() => { const d = new Date(today + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() - 1); const a = d.toISOString().slice(0,10); const e = new Date(d); e.setMonth(e.getMonth() + 1); e.setDate(0); return a + '|' + e.toISOString().slice(0,10); })(), null], ['Son 30 gün', (() => { const d = new Date(today + 'T12:00:00'); d.setDate(d.getDate() - 29); return d.toISOString().slice(0,10); })(), today], ['Bu yıl', today.slice(0,4) + '-01-01', today]].map(([l, a, b]) => { const [f, t] = b ? [a, b] : a.split('|'); return `<button type="button" class="chip" data-act="rep-quick" data-id="${f}|${t}" aria-pressed="${R.cf===f && R.ct===t}">${l}</button>`; }).join('')}</div>
+      <button class="btn primary" type="submit">Göster</button></form>`;
+    const sel = all.filter(d => d.day >= R.cf && d.day <= R.ct);
+    if (!sel.length) return h + `<div class="panel empty"><h4>Bu dönemde kayıt yok</h4><p>Kayıtlar ${esc(all[0].day)} tarihinden itibaren tutuluyor.</p></div>`;
+    const C = repGroup(sel, 'year').reduce((a, g) => { for (const k of RKEYS) a[k] = (a[k] || 0) + g[k]; a.n = (a.n || 0) + g.n; return a; }, {});
+    const fd = (d) => new Date(d + 'T12:00:00').toLocaleDateString('tr-TR', {day:'numeric', month:'long', year:'numeric'});
+    const cparts = [['Komisyon', C.commission], ['Kargo', C.cargo], ['İade kargosu', C.retCargo], ['Ceza ve kupon', C.penalty], ['Hizmet bedeli', C.service], ['Stopaj', C.stopaj], ['Ürün maliyeti', C.cost], ['Reklam', C.ads], ['Giderler (elle)', C.expenses], ['Diğer Trendyol kesintileri', C.otherFees]].filter(x => x[1]);
+    h += `<div class="card"><div class="spread"><h3 style="margin:0">${esc(fd(R.cf))} – ${esc(fd(R.ct))}</h3><span class="pill" style="background:var(--accent-soft);color:var(--accent)">${fmtN(C.n)} gün</span></div>
+      <div class="home-grid" style="margin:4px 0 0">
+        <div class="kpi" style="--c:var(--blue);box-shadow:none"><div class="k">Ciro</div><div class="v" style="color:var(--blue)">${fmtTL(C.revenue)}</div></div>
+        <div class="kpi" style="--c:${C.profit < 0 ? 'var(--bad)' : 'var(--good)'};box-shadow:none"><div class="k">Net kâr</div><div class="v" style="${profitCls(C.profit)}">${tlS(C.profit)}</div><div class="s">marj ${pct(C.revenue ? C.profit / C.revenue * 100 : null)}</div></div>
+        <div class="kpi" style="--c:var(--orange);box-shadow:none"><div class="k">Sipariş</div><div class="v" style="color:var(--orange)">${fmtN(C.orders)}</div><div class="s">${fmtN(C.units)} adet</div></div>
+        <div class="kpi" style="--c:var(--violet);box-shadow:none"><div class="k">İade</div><div class="v" style="color:var(--violet)">${fmtN(C.retUnits)} adet</div><div class="s">${fmtN(C.retOrders)} siparişte</div></div>
+      </div>
+      ${C.revenue ? `<div style="display:grid;gap:8px">${cparts.map(([l, v]) => `<div class="spread small"><span>− ${esc(l)}</span><span><b class="num">${fmtTL(v)}</b> <span class="muted">%${(v / C.revenue * 100).toFixed(1).replace('.', ',')}</span></span></div>`).join('')}${C.compensation ? `<div class="spread small"><span>+ Kargo tazmini</span><b class="num">${fmtTL(C.compensation)}</b></div>` : ''}<div class="spread"><b>= Net kâr</b><b class="num" style="${profitCls(C.profit)}">${tlS(C.profit)}</b></div></div>` : ''}
+      <button class="btn" data-act="rep-open" data-id="${R.cf}|${R.ct}">Sipariş ve ürün ayrıntısını Kâr ekranında aç ›</button></div>`;
+    const crow = repGroup(sel, sel.length > 62 ? 'month' : 'day'), cg = sel.length > 62 ? 'month' : 'day';
+    if (crow.length > 1) h += repChart(cg === 'day' ? crow.slice(-62) : crow, cg);
+    h += `<div class="card" style="padding:0;overflow:hidden"><div class="tbl-wrap" style="border:0;margin:0"><table class="t"><thead><tr><th>${cg === 'day' ? 'Gün' : 'Ay'}</th><th class="r">Sipariş</th><th class="r">Ciro</th><th class="r">Net kâr</th><th class="r">Marj</th></tr></thead><tbody>${crow.slice().reverse().map(g => `<tr data-act="rep-open" data-id="${g.from}|${g.to}" style="cursor:pointer"><td data-v="${esc(g.key)}">${esc(repLabel(g, cg))}</td><td class="r num">${fmtN(g.orders)}</td><td class="r num">${fmtTL(g.revenue)}</td><td class="r num" style="${profitCls(g.profit)};font-weight:700">${tlS(g.profit)}</td><td class="r num">${pct(g.revenue ? g.profit / g.revenue * 100 : null)}</td></tr>`).join('')}</tbody></table></div></div>`;
+    loadRepProducts(R.cf, R.ct); const CP = (R.prod[R.cf + '|' + R.ct] || {}).data;
+    const pl = (title, L, emptyMsg) => `<div class="card"><h3 style="margin:0">${title}</h3>${L && L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<button class="item" data-act="rep-prod" data-id="${esc(x.pkey)}">${thumb({image: x.image, name: x.name})}<div class="main"><div class="ttl">${esc(x.name || x.sku)}</div><div class="meta"><span class="mono">${esc(x.sku)}</span><span>· ${fmtN(x.units)} adet${x.ret ? ` · ${fmtN(x.ret)} iade` : ''}</span></div></div><div class="end" style="text-align:right"><b class="num" style="${profitCls(x.profit)}">${tlS(x.profit)}</b><div class="muted small num">${fmtTL(x.revenue)} ciro</div></div></button>`).join('')}</div>` : `<p class="muted small" style="margin:0">${CP ? emptyMsg : 'Yükleniyor…'}</p>`}</div>`;
+    h += pl('Dönemin en kârlı ürünleri', CP && CP.best, 'Veri yok.') + pl('Dönemin en çok satanları', CP && CP.top, 'Veri yok.') + pl('Dönemde zarar ettirenler', CP && CP.worst, 'Bu dönemde zarar ettiren ürün yok.');
+    return h;
+  }
   let rows = repGroup(R.gran === 'year' ? all : yd, R.gran);
   const chartRows = R.gran === 'day' ? rows.slice(-31) : rows;
   if (chartRows.length > 1) h += repChart(chartRows, R.gran);
@@ -694,7 +722,7 @@ function viewReports(){
     ${rows.slice().reverse().map(g => `<tr data-act="${R.gran === 'quarter' || R.gran === 'year' ? 'rep-drill' : 'rep-open'}" data-id="${R.gran === 'quarter' || R.gran === 'year' ? g.key : g.from + '|' + g.to}" style="cursor:pointer"><td data-v="${esc(g.key)}"><b>${esc(repLabel(g, R.gran))}</b>${g.n && R.gran !== 'day' ? `<div class="muted small">${fmtN(g.n)} gün</div>` : ''}</td><td class="r num">${fmtN(g.orders)}</td><td class="r num">${fmtN(g.units)}</td><td class="r num">${fmtTL(g.revenue)}</td><td class="r num" style="${profitCls(g.profit)};font-weight:700">${tlS(g.profit)}</td><td class="r num">${pct(g.revenue ? g.profit / g.revenue * 100 : null)}</td></tr>`).join('')}
     <tr style="background:var(--surface-2)"><td><b>Toplam</b></td>${(() => { const t = repGroup(R.gran === 'year' ? all : yd, 'year').reduce((a, g) => { for (const k of RKEYS) a[k] = (a[k] || 0) + g[k]; return a; }, {}); return `<td class="r num"><b>${fmtN(t.orders||0)}</b></td><td class="r num"><b>${fmtN(t.units||0)}</b></td><td class="r num"><b>${fmtTL(t.revenue||0)}</b></td><td class="r num" style="${profitCls(t.profit||0)}"><b>${tlS(t.profit||0)}</b></td><td class="r num"><b>${pct(t.revenue ? t.profit / t.revenue * 100 : null)}</b></td>`; })()}</tr>
   </tbody></table></div></div>`;
-  h += `<p class="muted small" style="margin:-6px 0 14px">${R.gran === 'quarter' || R.gran === 'year' ? 'Bir satıra dokununca o dönemin ayları açılır.' : 'Bir satıra dokununca o dönemin sipariş ve ürün ayrıntısı Kâr ekranında açılır.'}</p>`;
+  h += `<p class="muted small" style="margin:-6px 0 14px">${R.gran === 'year' ? 'Bir satıra dokununca o yılın ayları açılır.' : 'Bir satıra dokununca o dönemin sipariş ve ürün ayrıntısı Kâr ekranında açılır.'}</p>`;
   // Yılın ürünleri
   const pf = yd[0] ? yd[0].day : R.year + '-01-01', pt = yd.length ? yd[yd.length - 1].day : R.year + '-12-31';
   loadRepProducts(pf, pt); const PD = (R.prod[pf + '|' + pt] || {}).data;
@@ -2007,6 +2035,7 @@ document.addEventListener('click', async e => {
     case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
     case 'rep-year': repS().year = Number(id); render(); break;
     case 'rep-gran': repS().gran = id; try { localStorage.setItem('lb_rgran', id); } catch(e) {} render(); break;
+    case 'rep-quick': { const R = repS(); [R.cf, R.ct] = id.split('|'); render(); break; }
     case 'rep-metric': openSheet('repmetric', {k: id, id}); break;
     case 'rep-drill': openSheet('repdrill', {key: id, id}); break;
     case 'rep-prod': if (S.products.has(id)) openSheet('product', {id, mode:'in'}); else toast('Bu ürün artık stok listesinde yok.', true); break;
@@ -2042,6 +2071,7 @@ document.addEventListener('submit', async e => {
     catch(err) { toast(errText(err), true); }
     btn.disabled = false; return;
   }
+  if (id === 'f-repp') { const R = repS(); let f = $('#rp-from').value, t = $('#rp-to').value; if (!f || !t) return toast('İki tarihi de seç.', true); if (f > t) [f, t] = [t, f]; R.cf = f; R.ct = t; render(); return; }
   if (id === 'f-exp') {
     const name = $('#ex-name').value.trim(), amount = num($('#ex-amt').value), day = $('#ex-day').value;
     if (!name) return toast('Gider adını yaz.', true);
