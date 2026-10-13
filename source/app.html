@@ -894,8 +894,12 @@ function viewProfit(){
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
   if (P.err) return h + `<div class="banner bad"><div>${esc(P.err)}</div></div>`;
   if (!D) return h + loading();
-  if (P.sub === 'audit') return h + viewAudit() + feesCard(fees);
-  if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + feesCard(fees);
+  const subs = [['products','Ürünler'],['orders','Siparişler'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi'],['audit','Kontrol'],['settings','Ayarlar']];
+  const subsHtml = () => `<div class="filters"><div class="chips">${subs.map(([id,l]) => `<button class="chip" data-act="psub" data-id="${id}" aria-pressed="${P.sub===id}">${l}${id==='losers'?` · ${D.products.filter(x=>x.profit<0).length}`:id==='winners'?` · ${D.products.filter(x=>x.profit>0).length}`:''}</button>`).join('')}</div></div>`;
+  // Reklam girişi, fatura detayı yükleme ve kesinti varsayımları ayrı "Ayarlar" sekmesinde
+  if (P.sub === 'settings') return h + subsHtml() + adsCard(D) + detailsCard() + feesCard(fees);
+  if (P.sub === 'audit') return h + subsHtml() + viewAudit();
+  if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + subsHtml();
   const rows = [['Satış (ciro)', s.revenue, false], ['Komisyon', s.commission, true], ['Kargo', s.cargo, true], ...(s.retCargo ? [['İade kargosu', s.retCargo, true]] : []), ...(s.penalty ? [['Ceza ve müşteri kuponu', s.penalty, true]] : []), ['Hizmet bedeli', s.service, true], ['Stopaj', s.stopaj, true], ['Ürün maliyeti', s.cost, true], ...(s.ads ? [['Reklam', s.ads, true]] : []), ...(s.otherFees ? [['Diğer Trendyol kesintileri', s.otherFees, true]] : [])];
   if (s.compensation) rows.push(['+ Kayıp kargo tazmini (Trendyol ödedi)', s.compensation, false]);
   const maxV = Math.max(1, s.revenue);
@@ -906,7 +910,7 @@ function viewProfit(){
     <div class="spread" style="border-top:1px solid var(--line);padding-top:10px"><b>= Net kâr</b><b class="num" style="${profitCls(s.profit)}">${tlS(s.profit)}</b></div>
     ${s.retOrders ? `<p class="muted small" style="margin:0">${fmtN(s.retOrders)} siparişte ${fmtN(s.retUnits)} adet iade onaylandı: satışı, komisyonu ve stopajı düşüldü, ürün maliyeti stoğa geri döndü; gidiş kargosu, hizmet bedeli ve iade kargosu zarar olarak kaldı.${s.undOrders ? ` ${fmtN(s.undOrders)} sipariş teslim edilemediği için döndü; dönüş kargosu Trendyol'a ait, yalnızca taşıyıcının başarısız teslimat ek bedeli yazıldı (PTT: paketin desi fiyatının %30'u, barem değil; TEX: yok).` : ''}${s.retCargoEst ? ` ${fmtN(s.retCargoEst)} siparişin iade kargo faturası henüz gelmedi; iadeler barem desteği almadığı için desi fiyatıyla tahmin edildi.` : ''}</p>` : ''}
     ${s.penalty ? `<p class="muted small" style="margin:0">Ceza ve kupon: ${s.defOrders ? `${fmtN(s.defOrders)} siparişte kusurlu / eksik / yanlış ürün nedenli iade var (Trendyol iade ekranındaki iade nedeninden); Trendyol müşteriye memnuniyet kuponu tanımlayıp tutarını senden keser.` : ''}${s.unsOrders ? ` ${fmtN(s.unsOrders)} siparişte tedarik edilemeyen (satıcı iptali) ürün var.` : ''} Tutarlar sözleşme ceza tablosuna göre (27.07.2026).${s.penaltyEst ? ` ${fmtN(s.penaltyEst)} sipariş tabloya göre tahmini,` : ''}${s.penaltyActual ? ` ${fmtN(s.penaltyActual)} sipariş Trendyol faturasından.` : ''}</p>` : ''}
-    ${s.penInvoices ? `<p class="muted small" style="margin:0">Bu dönemde siparişe bağlanamayan ${fmtTL(s.penInvoices)} ceza faturası var (yanlış / eksik / kusurlu ürün, tedarik edememe). Bunlar iade nedenlerinden zaten tahmin edildiği için ikinci kez düşülmedi. Faturanın "Detay indir" dosyasını aşağıdan yüklersen tahminin yerine gerçek tutar siparişe yazılır.</p>` : ''}
+    ${s.penInvoices ? `<p class="muted small" style="margin:0">Bu dönemde siparişe bağlanamayan ${fmtTL(s.penInvoices)} ceza faturası var (yanlış / eksik / kusurlu ürün, tedarik edememe). Bunlar iade nedenlerinden zaten tahmin edildiği için ikinci kez düşülmedi. Faturanın "Detay indir" dosyasını Ayarlar sekmesinden yüklersen tahminin yerine gerçek tutar siparişe yazılır.</p>` : ''}
     ${(D.otherFees||[]).length ? `<p class="muted small" style="margin:0">Diğer Trendyol kesintileri (siparişe bağlanamayan faturalar, fatura tarihine göre): ${D.otherFees.map(x => `${esc(x.type)} ${fmtTL(x.amount)}`).join(' · ')}</p>` : ''}</div>`;
   const RP = D.report;
   if (RP) h += `<div class="card" style="margin-bottom:14px"><div class="spread"><h3 style="margin:0">Satış özeti</h3><span class="muted small">Trendyol Satış Raporu düzeninde</span></div>
@@ -919,8 +923,7 @@ function viewProfit(){
   if (s.noDesiTable && s.desiOrders) h += `<div class="banner"><div><b>${fmtN(s.desiOrders)} paket 350 TL üzerinde</b>, ama desi ücretleri henüz bilinmiyor; bu paketlere 200–349,99 ücreti uygulandı. Trendyol kargo faturaları okununca desi ücretleri kendiliğinden öğrenilecek.</div></div>`;
   else if (s.desiMissing) h += `<div class="banner"><div><b>${fmtN(s.desiMissing)} paketin desisi Trendyol'dan gelmedi</b>; 1 desi sayıldı.</div></div>`;
   if (s.missingPrice) h += `<div class="banner"><div><b>${fmtN(s.missingPrice)} sipariş satırında satış tutarı yok.</b> Eski ya da elle girilmiş siparişler olabilir; bu satırların cirosu 0 sayıldı.</div></div>`;
-  const subs = [['products','Ürünler'],['orders','Siparişler'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi'],['audit','Kontrol']];
-  h += `<div class="filters"><div class="chips">${subs.map(([id,l]) => `<button class="chip" data-act="psub" data-id="${id}" aria-pressed="${P.sub===id}">${l}${id==='losers'?` · ${D.products.filter(x=>x.profit<0).length}`:id==='winners'?` · ${D.products.filter(x=>x.profit>0).length}`:''}</button>`).join('')}</div></div>`;
+  h += subsHtml();
   if (P.sub !== 'audit') h += `<div class="toolbar" style="margin-bottom:10px"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="pq" type="search" placeholder="${P.sub==='orders'?'Sipariş no, müşteri adı, ürün, stok kodu veya barkod':'Ürün adı, stok kodu veya barkod'}" value="${esc(P.q||'')}" aria-label="Ara" autocomplete="off"></div></div>`;
   const pq = searchNorm((P.q||'').trim());
   if (P.sub === 'pricing') h += viewPricing();
@@ -928,7 +931,11 @@ function viewProfit(){
   else if (P.sub === 'orders') {
     const os = pq ? D.orders.filter(o => searchNorm(`${o.orderNo} ${o.cname||''} ${o.q||''}`).includes(pq)) : D.orders;
     if (!os.length) h += `<div class="panel empty"><h4>Eşleşen sipariş yok</h4><p>Aramayı değiştir ya da başka bir dönem seç.</p></div>`;
-    h += `<div class="list">${os.slice(0,300).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.retUnits?`<span class="pill p-warn">${fmtN(o.retUnits)} ${o.undelivered?'teslim edilemedi':'iade'}</span>`:''}${o.penalty?`<span class="pill p-bad">${o.penaltyTypes?esc(o.penaltyTypes[0]):'Kupon/ceza'} ${fmtTL(o.penalty)}${o.penaltyEst?' (tahmini)':''}</span>`:''}${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>${D.orders.length>300?'<p class="muted small">İlk 300 sipariş gösteriliyor.</p>':''}`;
+    const per = 100, pages = Math.max(1, Math.ceil(os.length / per)), cur = Math.min(Math.max(1, P.opage || 1), pages);
+    const pn = []; for (let i = 1; i <= pages; i++) if (i === 1 || i === pages || Math.abs(i - cur) <= 2) pn.push(i); else if (pn[pn.length - 1] !== '…') pn.push('…');
+    const pager = pages > 1 ? `<div class="row" style="justify-content:center;flex-wrap:wrap;gap:6px;margin:14px 0"><button class="btn sm" data-act="ppage" data-id="${cur-1}" ${cur<=1?'disabled':''}>‹ Önceki</button>${pn.map(n => n === '…' ? '<span class="muted">…</span>' : `<button class="btn sm ${n===cur?'primary':'ghost'}" data-act="ppage" data-id="${n}">${n}</button>`).join('')}<button class="btn sm" data-act="ppage" data-id="${cur+1}" ${cur>=pages?'disabled':''}>Sonraki ›</button></div>` : '';
+    if (os.length) h += `<p class="muted small" style="margin:0 0 8px">${fmtN(os.length)} sipariş${pages > 1 ? ` · sayfa ${fmtN(cur)} / ${fmtN(pages)}` : ''}</p>`;
+    h += `<div class="list">${os.slice((cur-1)*per, cur*per).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.retUnits?`<span class="pill p-warn">${fmtN(o.retUnits)} ${o.undelivered?'teslim edilemedi':'iade'}</span>`:''}${o.penalty?`<span class="pill p-bad">${o.penaltyTypes?esc(o.penaltyTypes[0]):'Kupon/ceza'} ${fmtTL(o.penalty)}${o.penaltyEst?' (tahmini)':''}</span>`:''}${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>` + pager;
   } else {
     let ps = D.products.slice();
     if (pq) ps = ps.filter(x => searchNorm(`${x.name} ${x.sku} ${x.barcode||''} ${(S.products.get(x.key)||{}).barcode||''}`).includes(pq));
@@ -945,7 +952,7 @@ function viewProfit(){
         <td class="r num">${fmtN(x.units)}</td><td class="r num">${fmtTL(x.revenue)}</td><td class="r num" style="${profitCls(x.profit)}"><b>${tlS(x.profit)}</b></td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
       <p class="muted small">Sipariş başı kargo, iade kargosu ve hizmet bedeli ürünlere sipariş içindeki paylarına göre dağıtılır. İadesi onaylanan adetler satıştan düşülür; kargo ve hizmet bedeli zararı iade edilen ürüne yazılır.</p>`;
   }
-  return h + adsCard(D) + detailsCard() + feesCard(fees);
+  return h;
 }
 function detailsCard(){
   return `<div class="card" style="margin-top:18px"><h3 style="margin:0">Trendyol fatura detayları</h3>
@@ -1487,8 +1494,9 @@ document.addEventListener('click', async e => {
     case 'imp-reset': S.imp = null; renderSheet(false); break;
     case 'imp-run': await runImport(); break;
     case 'export-value': await exportValue(); break;
-    case 'period': { const P = profS(); P.period = id; try { localStorage.setItem('lb-period', id); } catch(e){} P.data = null; P.key = ''; render(); break; }
-    case 'psub': profS().sub = id; render(); break;
+    case 'period': { const P = profS(); P.period = id; P.opage = 1; try { localStorage.setItem('lb-period', id); } catch(e){} P.data = null; P.key = ''; render(); break; }
+    case 'psub': profS().sub = id; profS().opage = 1; render(); break;
+    case 'ppage': profS().opage = Math.max(1, Number(id) || 1); render(); window.scrollTo(0, 0); break;
     case 'pfilter': profS().pfilter = id; render(); break;
     case 'pricing-reload': profS().pricing = null; render(); break;
     case 'audit-reload': profS().auditAt = 0; render(); break;
@@ -1532,7 +1540,7 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
   if (t.id === 'oq') { S.oq = t.value; S.opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 300); }
-  if (t.id === 'pq') { profS().q = t.value; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
+  if (t.id === 'pq') { profS().q = t.value; profS().opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
 document.addEventListener('change', e => {
   const t = e.target;

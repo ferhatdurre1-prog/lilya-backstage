@@ -1079,7 +1079,7 @@ async function computeProfit(env, from, to) {
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
-  return { from, to, fees: fee, summary: sum, report: rep, otherFees, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder.slice(0, 500), missingCostSkus: [...missingCostSkus].slice(0, 30) };
+  return { from, to, fees: fee, summary: sum, report: rep, otherFees, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, missingCostSkus: [...missingCostSkus].slice(0, 30) };
 }
 
 async function computePricing(env) {
