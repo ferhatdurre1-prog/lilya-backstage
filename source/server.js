@@ -716,7 +716,7 @@ async function syncTrendyolFinance(env, force, deadline) {
       for (const x of (r.content || [])) { stat.svcRows++; const no = await orderOf(x); if (!no) continue; stat.svcLinked++; svc.set(no, (svc.get(no) || 0) + Math.abs(Number(x.debt) || Number(x.credit) || 0)); }
       if (page + 1 >= (r.totalPages || 0)) break;
     }
-    for (const [no, v] of svc) { const a = get(no); a.service = Math.round(v * 100) / 100; }
+    for (const [no, v] of svc) { if (!(v > 0)) continue; const a = get(no); a.service = Math.round(v * 100) / 100; }
   } catch (e) { stat.errors.push('Hizmet bedeli: ' + String(e.message || e).slice(0, 120)); }
   // Kargo ve diğer kesinti faturaları
   const done = new Set(JSON.parse(s.cargo_inv_done || '[]')); let cargoInv = 0; const misc = [];
