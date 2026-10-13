@@ -2,7 +2,7 @@
 <html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Backstage"><meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#1f3a30"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/icon.svg">
-<style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}:root{padding-top:env(safe-area-inset-top,0px)}</style>
+<style>body{margin:0}body::before{content:"";position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top,0px);background:#eef2ef;z-index:200}@media (prefers-color-scheme:dark){body::before{background:#0f1613}}img{max-width:100%}[hidden]{display:none!important}:root{padding-top:env(safe-area-inset-top,0px)}</style>
 <title>Lilya Backstage</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -709,13 +709,13 @@ function viewStock(){
   if (!ps.length) return head + `<div class="panel empty"><h4>Depo henüz boş</h4><p>Trendyol bağlantısı kurulunca ürünler stok kodları ve görselleriyle kendiliğinden gelir. Eski uygulamanın yedeğini yükleyebilir ya da ürünleri tek tek ekleyebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar &amp; yedek</button><button class="btn" data-act="new-product">Elle ürün ekle</button></div></div>`;
   const usedCh = [...new Set(ps.flatMap(p => p.channels))].filter(c => CHANNELS[c]);
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="q" type="search" placeholder="Ürün adı, stok kodu veya barkod" value="${esc(S.q)}" aria-label="Ürün ara" autocomplete="off"></div></div>
-    <div class="filters"><div class="chips">${[['all','Tümü'],['low','Düşük stok'],['zero','Tükenen']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
+    <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
     ${usedCh.length > 1 ? `<div class="chips"><button class="chip" data-act="chf" data-id="" aria-pressed="${!S.ch}">Tüm kanallar</button>${usedCh.map(c => `<button class="chip" data-act="chf" data-id="${c}" aria-pressed="${S.ch===c}">${esc(CHANNELS[c].name)}</button>`).join('')}</div>` : ''}</div>`;
   return head + tools + `<div id="plist">${productList()}</div>`;
 }
 function filteredProducts(){
   const q = searchNorm(S.q.trim());
-  let ps = productsArr().filter(p => (!q || searchNorm(`${p.name} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0)) && (!S.ch || p.channels.includes(S.ch)));
+  let ps = productsArr().filter(p => (!q || searchNorm(`${p.name} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0)) && (!S.ch || p.channels.includes(S.ch)));
   ps.sort((a,b) => a.name.localeCompare(b.name, 'tr'));
   return ps;
 }
