@@ -1318,17 +1318,18 @@ function todayTR(){ return new Date(Date.now() + 3 * 3600000).toISOString().slic
 function expensesCard(D, inSheet){
   const L = D.expenses || [], tot = L.reduce((a, x) => a + x.amount, 0);
   const dfmt = (d) => new Date(d + 'T12:00:00').toLocaleDateString('tr-TR', {day:'numeric', month:'long', weekday:'short'});
-  return `<div class="card" style="${inSheet ? '' : 'margin-top:14px'}"><div class="spread"><h3 style="margin:0">Gider ekle</h3><span class="muted small">Girildiği günün kârından düşer</span></div>
+  const E = S.expEdit; const amtStr = (n) => String(n).replace('.', ',');
+  return `<div class="card" id="exp-form" style="${inSheet ? '' : 'margin-top:14px'}${E ? ';border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)' : ''}"><div class="spread"><h3 style="margin:0">${E ? 'Gideri düzenle' : 'Gider ekle'}</h3><span class="muted small">Girildiği günün kârından düşer</span></div>
     <form id="f-exp" style="display:grid;gap:10px">
-      <label class="f">Gider adı<input class="input" id="ex-name" type="text" placeholder="Örn: 2 top poşet, patpat" maxlength="80" required autocomplete="off"></label>
+      <label class="f">Gider adı<input class="input" id="ex-name" type="text" placeholder="Örn: 2 top poşet, patpat" maxlength="80" required autocomplete="off" value="${E ? esc(E.name) : ''}"></label>
       <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <label class="f">Tutar (₺)<input class="input num" id="ex-amt" type="text" inputmode="decimal" placeholder="0,00" required autocomplete="off"></label>
-        <label class="f">Tarih<input class="input" id="ex-day" type="date" value="${todayTR()}" max="${todayTR()}" required></label>
+        <label class="f">Tutar (₺)<input class="input num" id="ex-amt" type="text" inputmode="decimal" placeholder="0,00" required autocomplete="off" value="${E ? esc(amtStr(E.amount)) : ''}"></label>
+        <label class="f">Tarih<input class="input" id="ex-day" type="date" value="${E ? esc(E.day) : todayTR()}" max="${todayTR()}" required></label>
       </div>
-      <button class="btn primary" type="submit">Gideri ekle</button>
+      ${E ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><button class="btn" type="button" data-act="exp-cancel">Vazgeç</button><button class="btn primary" type="submit">Kaydet</button></div>` : `<button class="btn primary" type="submit">Gideri ekle</button>`}
     </form></div>
     <div class="card"><div class="spread"><h3 style="margin:0">Bu dönemin giderleri</h3><b class="num" style="color:var(--bad)">${L.length ? '−' + fmtTL(tot) : fmtTL(0)}</b></div>
-    ${L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<div class="item" style="cursor:default"><div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span>${esc(dfmt(x.day))}</span></div></div><div class="end" style="display:flex;align-items:center;gap:8px"><b class="num">${fmtTL(x.amount)}</b><button class="btn sm ghost" data-act="exp-del" data-id="${x.id}" aria-label="Sil">Sil</button></div></div>`).join('')}</div>` : `<p class="muted small" style="margin:0">Seçili dönemde girilmiş gider yok. Dönemi üstteki düğmelerden değiştirebilirsin.</p>`}
+    ${L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<div class="item" style="cursor:default"><div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span>${esc(dfmt(x.day))}</span></div></div><div class="end" style="display:flex;align-items:center;gap:6px"><b class="num">${fmtTL(x.amount)}</b><button class="btn sm" data-act="exp-edit" data-id="${x.id}">Düzenle</button><button class="btn sm ghost" data-act="exp-del" data-id="${x.id}" aria-label="Sil" style="color:var(--bad)">Sil</button></div></div>`).join('')}</div>` : `<p class="muted small" style="margin:0">Seçili dönemde girilmiş gider yok. Dönemi üstteki düğmelerden değiştirebilirsin.</p>`}
     <p class="muted small" style="margin:0">Paketleme malzemesi, kırtasiye, kargo malzemesi gibi siparişe bağlı olmayan giderler. Net kârdan düşülür; ana ekrandaki günlük ve aylık kâra da yansır.</p></div>`;
 }
 function adsCard(D){
@@ -1887,7 +1888,9 @@ document.addEventListener('click', async e => {
     case 'export-value': await exportValue(); break;
     case 'period': { const P = profS(); P.period = id; P.opage = 1; try { localStorage.setItem('lb-period', id); } catch(e){} P.data = null; P.key = ''; render(); break; }
     case 'bd': openSheet('breakdown', {id}); break;
-    case 'exp-del': if (await confirmBox('Bu gider silinsin mi?', 'Sil', true)) await run(async () => { await api('/api/expenses/delete', {id}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); if (S.sheet && S.sheet.type === 'breakdown') closeSheet(); toast('Gider silindi.'); }); break;
+    case 'exp-del': if (await confirmBox('Bu gider silinsin mi?', 'Sil', true)) await run(async () => { await api('/api/expenses/delete', {id}); if (S.expEdit && String(S.expEdit.id) === String(id)) S.expEdit = null; profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); if (S.sheet && S.sheet.type === 'breakdown') closeSheet(); toast('Gider silindi.'); }); break;
+    case 'exp-edit': { const x = ((profS().data || {}).expenses || []).find(e => String(e.id) === String(id)); if (!x) break; S.expEdit = {...x}; if (S.sheet && S.sheet.type === 'breakdown') { closeSheet(); profS().sub = 'expenses'; } render(); setTimeout(() => { const f = $('#exp-form'); if (f) f.scrollIntoView({behavior:'smooth', block:'center'}); }, 50); break; }
+    case 'exp-cancel': S.expEdit = null; render(); break;
     case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
     case 'psub': profS().sub = id; profS().opage = 1; render(); break;
     case 'ppage': profS().opage = Math.max(1, Number(id) || 1); render(); window.scrollTo(0, 0); break;
@@ -1923,7 +1926,8 @@ document.addEventListener('submit', async e => {
     const name = $('#ex-name').value.trim(), amount = num($('#ex-amt').value), day = $('#ex-day').value;
     if (!name) return toast('Gider adını yaz.', true);
     if (!isFinite(amount) || amount <= 0) return toast('Geçerli bir tutar yaz.', true);
-    await run(async () => { await api('/api/expenses/add', {name, amount, day}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(`${name}: ${fmtTL(amount)} gider olarak eklendi.`); });
+    const E = S.expEdit;
+    await run(async () => { await api(E ? '/api/expenses/update' : '/api/expenses/add', {id: E && E.id, name, amount, day}); S.expEdit = null; profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(E ? 'Gider güncellendi.' : `${name}: ${fmtTL(amount)} gider olarak eklendi.`); });
     return;
   }
   if (id === 'f-new') submitNewProduct();

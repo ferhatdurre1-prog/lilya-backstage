@@ -1313,12 +1313,15 @@ async function api(req, env, path, ctx) {
   }
   if (path === '/api/passkey/list') return json({ user: await authUser(env), items: (await env.DB.prepare('SELECT id, label, created_at, used_at FROM wa_creds ORDER BY created_at DESC').all()).results });
   if (path === '/api/passkey/delete') { if (body.all) await env.DB.prepare('DELETE FROM wa_creds').run(); else await env.DB.prepare('DELETE FROM wa_creds WHERE id=?1').bind(String(body.id || '')).run(); return json({ ok: true }); }
-  if (path === '/api/expenses/add') {
+  if (path === '/api/expenses/add' || path === '/api/expenses/update') {
     const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), day = String(body.day || trDay(Date.now()));
     if (!name) return bad('Gider adını yaz.');
     if (!isFinite(amount) || amount <= 0 || amount > 1e8) return bad('Geçerli bir tutar yaz.');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return bad('Tarih geçersiz.');
-    await env.DB.batch([env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at) VALUES(?1,?2,?3,?4)').bind(day, name, Math.round(amount * 100) / 100, iso()), setStmt(env, 'home_cache', ''), REV(env)]);
+    const st = path === '/api/expenses/update'
+      ? env.DB.prepare('UPDATE expenses SET day=?1, name=?2, amount=?3 WHERE id=?4').bind(day, name, Math.round(amount * 100) / 100, Number(body.id) || 0)
+      : env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at) VALUES(?1,?2,?3,?4)').bind(day, name, Math.round(amount * 100) / 100, iso());
+    await env.DB.batch([st, setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true });
   }
   if (path === '/api/expenses/delete') { await env.DB.batch([env.DB.prepare('DELETE FROM expenses WHERE id=?1').bind(Number(body.id) || 0), setStmt(env, 'home_cache', ''), REV(env)]); return json({ ok: true }); }
