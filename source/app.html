@@ -630,14 +630,14 @@ function viewHome(){
   const H = S.home && S.home.data;
   let h = '';
   if (H) {
-    const D = H.days, T = D[D.length - 1], Y = D[D.length - 2] || {rev:0, prof:0}, M = H.month;
+    const D = H.days, T = D[D.length - 1], Y = D[D.length - 2] || {rev:0, prof:0}, M = H.month, YS = H.ySame || null;
     const kpi = (k, icon, c, cs, v, sub, vstyle='') => `<div class="kpi" style="--c:${c};--cs:${cs}"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
     const vs = (a, b) => { if (!b) return ''; const d = (a - b) / Math.abs(b) * 100; if (!isFinite(d)) return ''; return ` <span class="${d >= 0 ? 'up' : 'dn'}">${d >= 0 ? '▲' : '▼'} %${Math.abs(d).toFixed(0)}</span>`; };
     const pc = (n) => n < 0 ? 'var(--bad)' : 'var(--good)', pcs = (n) => n < 0 ? 'var(--bad-soft)' : 'var(--good-soft)';
     h += `<div class="home-grid">
-      ${kpi('Bugün ciro', 'value', 'var(--blue)', 'var(--blue-soft)', fmtTL(T.rev), Y.rev ? `Dün ${fmtTL(Y.rev)}${vs(T.rev, Y.rev)}` : 'Dün satış yok', 'color:var(--blue)')}
-      ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), Y.prof ? `Dün ${tlS(Y.prof)}` : '', profitCls(T.prof))}
-      ${kpi('Bugün sipariş', 'orders', 'var(--orange)', 'var(--warn-soft)', fmtN(T.n), `${fmtN(T.u)} adet`, 'color:var(--orange)')}
+      ${kpi('Bugün ciro', 'value', 'var(--blue)', 'var(--blue-soft)', fmtTL(T.rev), YS ? `Dün bu saatte ${fmtTL(YS.rev)}${vs(T.rev, YS.rev)}` : (Y.rev ? `Dün ${fmtTL(Y.rev)}` : 'Dün satış yok'), 'color:var(--blue)')}
+      ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : (Y.prof ? `Dün ${tlS(Y.prof)}` : ''), profitCls(T.prof))}
+      ${kpi('Bugün sipariş', 'orders', 'var(--orange)', 'var(--warn-soft)', fmtN(T.n), `${fmtN(T.u)} adet${YS ? ` · dün bu saatte ${fmtN(YS.n)}${vs(T.n, YS.n)}` : ''}`, 'color:var(--orange)')}
       ${kpi('Bu ay net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit) || 'color:var(--violet)')}
     </div>` + homeChart(D);
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;

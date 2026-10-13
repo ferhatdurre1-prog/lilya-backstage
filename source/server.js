@@ -1251,9 +1251,11 @@ async function computeHome(env) {
   const t0 = dayStart(today), to = t0 + 86400000, w0 = t0 - 6 * 86400000, m0 = dayStart(today.slice(0, 8) + '01');
   // Her gün, Kâr ekranındaki "o gün" hesabıyla birebir aynı yapılır (siparişe bağlanamayan kesintiler, reklam, tazmin dahil)
   const dayList = []; for (let i = 6; i >= 0; i--) dayList.push(t0 - i * 86400000);
-  const [M, ...D] = await Promise.all([computeProfit(env, iso(m0), iso(to)), ...dayList.map(a => computeProfit(env, iso(a), iso(a + 86400000)))]);
+  // Dün bu saate kadar: bugünle adil karşılaştırma için dünün aynı saatine kadarki ciro/kâr/sipariş
+  const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
+  const [M, YS, ...D] = await Promise.all([computeProfit(env, iso(m0), iso(to)), computeProfit(env, iso(t0 - 86400000), iso(ySame)), ...dayList.map(a => computeProfit(env, iso(a), iso(a + 86400000)))]);
   const days = D.map((r, i) => ({ d: trDay(dayList[i]), rev: r.summary.revenue, prof: r.summary.profit, n: r.summary.orders, u: r.summary.units }));
-  const out = { day: today, at: Date.now(), ms: Date.now() - t00, days, month: { revenue: M.summary.revenue, profit: M.summary.profit, margin: M.summary.margin }, losers: M.products.filter(x => x.profit < 0).length };
+  const out = { day: today, at: Date.now(), ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days, month: { revenue: M.summary.revenue, profit: M.summary.profit, margin: M.summary.margin }, losers: M.products.filter(x => x.profit < 0).length };
   await setSetting(env, 'home_cache', JSON.stringify(out)); await setSetting(env, 'home_err', '');
   return out;
 }
