@@ -1109,6 +1109,45 @@ async function syncInfo(env) {
   const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi']);
   return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
 }
+/* ---------- piyasa bandı (döviz, borsa, emtia) ---------- */
+const MKT_SYMS = { USD: 'USDTRY=X', EUR: 'EURTRY=X', BIST: 'XU100.IS', GOLD: 'GC=F', SILVER: 'SI=F', BRENT: 'BZ=F' };
+async function yahooQuote(sym) {
+  for (const host of ['query1', 'query2']) {
+    try {
+      const r = await fetch(`https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=1d&interval=15m`, { headers: { 'user-agent': 'Mozilla/5.0 (LilyaBackstage)', accept: 'application/json' }, cf: { cacheTtl: 120 } });
+      if (!r.ok) continue;
+      const m = (((await r.json()).chart || {}).result || [])[0]?.meta; if (!m || !(m.regularMarketPrice > 0)) continue;
+      const prev = m.chartPreviousClose || m.previousClose || null;
+      return { price: m.regularMarketPrice, prev, t: m.regularMarketTime ? m.regularMarketTime * 1000 : Date.now() };
+    } catch (e) {}
+  }
+  return null;
+}
+async function tcmbRates() {
+  try {
+    const x = await (await fetch('https://www.tcmb.gov.tr/kurlar/today.xml')).text();
+    const one = (c) => { const b = x.match(new RegExp(`CurrencyCode="${c}"[\\s\\S]*?<ForexSelling>([\\d.]+)<`)); return b ? Number(b[1]) : null; };
+    return { USD: one('USD'), EUR: one('EUR') };
+  } catch (e) { return {}; }
+}
+async function marketData(env) {
+  const cached = JSON.parse((await getSetting(env, 'market')) || 'null');
+  if (cached && Date.now() - cached.at < 4 * 60000) return cached;
+  const keys = Object.keys(MKT_SYMS), qs = await Promise.all(keys.map(k => yahooQuote(MKT_SYMS[k])));
+  const q = {}; keys.forEach((k, i) => { if (qs[i]) q[k] = qs[i]; });
+  if (!q.USD || !q.EUR) { const t = await tcmbRates(); for (const c of ['USD', 'EUR']) if (!q[c] && t[c]) q[c] = { price: t[c], prev: null, t: Date.now(), src: 'tcmb' }; }
+  const OZ = 31.1035, items = [];
+  const add = (id, label, x, unit, dec) => { if (x && x.price > 0) items.push({ id, label, price: x.price, chg: x.prev ? (x.price / x.prev - 1) * 100 : null, unit, dec }); };
+  add('usd', 'Dolar', q.USD, '₺', 4); add('eur', 'Euro', q.EUR, '₺', 4);
+  if (q.GOLD && q.USD) add('gram', 'Gram altın', { price: q.GOLD.price * q.USD.price / OZ, prev: q.GOLD.prev && q.USD.prev ? q.GOLD.prev * q.USD.prev / OZ : null }, '₺', 2);
+  add('bist', 'BIST 100', q.BIST, '', 2); add('gold', 'Ons altın', q.GOLD, '$', 2);
+  if (q.SILVER && q.USD) add('gs', 'Gram gümüş', { price: q.SILVER.price * q.USD.price / OZ, prev: q.SILVER.prev && q.USD.prev ? q.SILVER.prev * q.USD.prev / OZ : null }, '₺', 2);
+  add('silver', 'Ons gümüş', q.SILVER, '$', 2); add('brent', 'Brent petrol', q.BRENT, '$', 2);
+  const out = { at: Date.now(), items };
+  if (items.length) await setSetting(env, 'market', JSON.stringify(out));
+  else if (cached) return cached;
+  return out;
+}
 async function api(req, env, path) {
   const method = req.method;
   const body = method === 'POST' ? await req.json().catch(() => ({})) : {};
@@ -1125,6 +1164,7 @@ async function api(req, env, path) {
     const pending = (pd.results || []).map(x => ({ ...mapOrder(x), pstatus: x.pstatus }));
     return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove), pending });
   }
+  if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
   if (method !== 'POST' && path !== '/api/export') return bad('Yöntem desteklenmiyor', 405);
 
   if (path === '/api/products') {
