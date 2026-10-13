@@ -143,6 +143,7 @@ label.f{display:grid;gap:5px;font-size:13px;color:var(--ink-2);font-weight:500;m
 .tbl-wrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
 table.t{width:100%;border-collapse:collapse;font-size:14px;min-width:560px}
 table.t th{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);font-weight:600;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.t th.sortable{cursor:pointer;user-select:none;-webkit-user-select:none} table.t th.sortable:hover{color:var(--ink)} table.t th .arr{display:inline-block;margin-left:4px;font-size:10px;color:var(--ink)} table.t th.sorted{color:var(--ink)}
 table.t th button{border:0;background:none;padding:0;font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer}
 table.t th button[aria-pressed="true"]{color:var(--ink)}
 table.t td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
@@ -336,6 +337,46 @@ function viewLogin(){
     <label class="f">Şifre<input class="input" id="lg-pass" type="password" autocomplete="current-password" required></label>
     <button class="btn primary" type="submit">Giriş yap</button></form>`;
 }
+/* ============ Tablo sıralama: her tablonun sütun başlığına dokununca büyükten küçüğe / küçükten büyüğe ============ */
+const TSORT = (() => { try { return JSON.parse(localStorage.getItem('lb_tsort') || '{}'); } catch(e) { return {}; } })();
+function tblKey(t){ return [...t.tHead.rows[0].cells].map(c => c.textContent.trim()).join('|'); }
+function cellVal(td){
+  if (!td) return null;
+  if (td.dataset.v !== undefined) return td.dataset.v;
+  const inp = td.querySelector && td.querySelector('input');
+  const t = (inp ? inp.value : td.textContent).replace(/\s+/g, ' ').trim();
+  if (!t || t === '—' || t === '-') return null;
+  const m = t.match(/[\d][\d.]*(?:,\d+)?/);
+  if (m && /^[\s−\-+₺%#]*[\d]/.test(t)) { let n = parseFloat(m[0].replace(/\./g, '').replace(',', '.')); if (/^[\s₺+]*[−\-]/.test(t)) n = -n; return n; }
+  return t.toLocaleLowerCase('tr-TR');
+}
+function sortTable(t, col, dir){
+  const tb = t.tBodies[0]; if (!tb) return;
+  const rows = [...tb.rows], vals = new Map(rows.map(r => [r, cellVal(r.cells[col])]));
+  rows.sort((a, b) => { const x = vals.get(a), y = vals.get(b); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1;
+    if (typeof x !== typeof y) return typeof x === 'number' ? -1 : 1; const c = typeof x === 'number' ? x - y : String(x).localeCompare(String(y), 'tr', {numeric:true}); return dir === 'asc' ? c : -c; });
+  for (const r of rows) tb.appendChild(r);
+}
+function enhanceTables(root){
+  for (const t of (root || document).querySelectorAll('table.t')) {
+    if (!t.tHead || !t.tBodies[0] || t.tBodies[0].rows.length < 2) continue;
+    const key = tblKey(t), st = TSORT[key];
+    [...t.tHead.rows[0].cells].forEach((th, i) => { if (!th.textContent.trim()) return; th.classList.add('sortable'); th.dataset.col = i; th.setAttribute('role', 'button'); th.title = 'Sırala';
+      if (st && st.col === i) { th.classList.add('sorted'); th.insertAdjacentHTML('beforeend', `<span class="arr">${st.dir === 'asc' ? '▲' : '▼'}</span>`); } });
+    if (st) sortTable(t, st.col, st.dir);
+  }
+}
+document.addEventListener('click', e => {
+  const th = e.target.closest && e.target.closest('table.t th.sortable'); if (!th) return;
+  const t = th.closest('table'), key = tblKey(t).replace(/[▲▼]/g, ''), col = Number(th.dataset.col);
+  const firstNum = [...t.tBodies[0].rows].map(r => cellVal(r.cells[col])).find(v => v !== null);
+  const cur = TSORT[key], def = typeof firstNum === 'number' ? 'desc' : 'asc';
+  TSORT[key] = { col, dir: cur && cur.col === col ? (cur.dir === 'asc' ? 'desc' : 'asc') : def };
+  try { localStorage.setItem('lb_tsort', JSON.stringify(TSORT)); } catch(err) {}
+  [...t.tHead.rows[0].cells].forEach(c => { c.classList.remove('sorted'); const a = c.querySelector('.arr'); if (a) a.remove(); });
+  th.classList.add('sorted'); th.insertAdjacentHTML('beforeend', `<span class="arr">${TSORT[key].dir === 'asc' ? '▲' : '▼'}</span>`);
+  sortTable(t, col, TSORT[key].dir);
+});
 function render(){
   const logged = S.authed === true;
   $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#hdr-actions').hidden = !logged;
@@ -348,6 +389,7 @@ function render(){
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
   v.innerHTML = banners() + ({stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves}[S.tab])();
+  enhanceTables(v);
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
   if (S.sheet) renderSheet(false);
@@ -695,10 +737,10 @@ function viewValue(){
   return head + `<div class="hero-val"><div><div class="muted small">Depodaki toplam maliyet değeri</div><div class="big">${fmtTL(total)}</div><div class="muted small" style="margin-top:8px">${fmtN(ps.length)} ürün · ${fmtN(units)} adet</div></div>
     <div>${missing.length ? `<button class="btn" data-act="vfilter" data-id="${S.vfilter==='missing'?'all':'missing'}"><span class="pill p-warn">${fmtN(missing.length)}</span>${S.vfilter==='missing'?'Tüm ürünleri göster':'üründe alış fiyatı eksik'}</button>` : '<span class="pill p-good">Bütün ürünlerin alış fiyatı girildi</span>'}</div></div>
   <div class="tbl-wrap"><table class="t"><thead><tr>
-    <th><button data-act="vsort" data-id="name" aria-pressed="${S.vsort==='name'}">Ürün</button></th>
-    <th class="r"><button data-act="vsort" data-id="qty" aria-pressed="${S.vsort==='qty'}">Adet</button></th>
+    <th>Ürün</th>
+    <th class="r">Adet</th>
     <th class="r">Alış fiyatı</th>
-    <th class="r"><button data-act="vsort" data-id="value" aria-pressed="${S.vsort==='value'}">Stok değeri</button></th></tr></thead>
+    <th class="r">Stok değeri</th></tr></thead>
   <tbody>${rows.slice(0,500).map(p => `<tr><td><div class="pcell">${thumb(p)}<div style="min-width:0"><span>${esc(p.name)}</span><span class="mono muted" style="font-size:11.5px">${esc(p.sku)}</span></div></div></td>
     <td class="r num ${p.qty<0?'':''}" style="${p.qty<0?'color:var(--bad)':''}">${fmtN(p.qty)}</td>
     <td class="r"><input class="input num cost-in" id="cost-${esc(p.id)}" data-cost="${esc(p.id)}" inputmode="decimal" value="${p.cost!=null?esc(String(p.cost).replace('.',',')):''}" placeholder="TL gir" aria-label="${esc(p.name)} alış fiyatı"></td>
@@ -878,10 +920,10 @@ function viewProfit(){
     else ps.sort(P.sort === 'units' ? (a,b) => b.units - a.units : P.sort === 'margin' ? (a,b) => (b.margin??-1e9) - (a.margin??-1e9) : P.sort === 'revenue' ? (a,b) => b.revenue - a.revenue : (a,b) => b.profit - a.profit);
     if (!ps.length) h += `<div class="panel empty"><h4>${P.sub==='losers'?'Zarar eden ürün yok':'Kâr eden ürün yok'}</h4><p>${P.sub==='losers'?'Bu dönemde bütün satılan ürünler kâr bırakmış.':'Bu dönemde kâr bırakan ürün bulunamadı.'}</p></div>`;
     else h += `<div class="tbl-wrap"><table class="t"><thead><tr><th>Ürün</th>
-      <th class="r"><button data-act="psort" data-id="units" aria-pressed="${P.sort==='units'}">Adet</button></th>
-      <th class="r"><button data-act="psort" data-id="revenue" aria-pressed="${P.sort==='revenue'}">Satış</button></th>
-      <th class="r"><button data-act="psort" data-id="profit" aria-pressed="${P.sort==='profit'}">Net kâr</button></th>
-      <th class="r"><button data-act="psort" data-id="margin" aria-pressed="${P.sort==='margin'}">Marj</button></th></tr></thead>
+      <th class="r">Adet</th>
+      <th class="r">Satış</th>
+      <th class="r">Net kâr</th>
+      <th class="r">Marj</th></tr></thead>
       <tbody>${ps.slice(0,300).map(x => `<tr data-act="product" data-id="${esc(x.key)}" style="cursor:pointer"><td><div class="pcell">${thumb({name:x.name, image:x.image})}<div style="min-width:0"><span>${esc(x.name)}</span><span class="mono muted" style="font-size:11.5px">${esc(x.sku)}${x.costKnown?'':' · <b style="color:var(--warn)">maliyet yok</b>'}${x.retUnits?` · <b style="color:var(--warn)">${fmtN(x.retUnits)} iade</b>`:''}</span></div></div></td>
         <td class="r num">${fmtN(x.units)}</td><td class="r num">${fmtTL(x.revenue)}</td><td class="r num" style="${profitCls(x.profit)}"><b>${tlS(x.profit)}</b></td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
       <p class="muted small">Sipariş başı kargo, iade kargosu ve hizmet bedeli ürünlere sipariş içindeki paylarına göre dağıtılır. İadesi onaylanan adetler satıştan düşülür; kargo ve hizmet bedeli zararı iade edilen ürüne yazılır.</p>`;
@@ -919,7 +961,7 @@ function adsCard(D){
     <form id="f-ad" class="row" style="flex-wrap:wrap;gap:8px"><input class="input" type="date" id="ad-day" value="${todayTR()}" style="max-width:170px" aria-label="Gün"><input class="input num" id="ad-amt" inputmode="decimal" placeholder="Harcama (TL)" style="max-width:150px" aria-label="Harcama"><button class="btn primary" type="submit">Kaydet</button>
       <label class="btn ghost" style="cursor:pointer">Rapor yükle<input type="file" id="ad-file" accept=".xlsx,.xls,.csv,.txt" hidden></label>
       <label class="chk small"><input type="checkbox" id="ad-kdv">Rapordaki tutarlara %20 KDV ekle</label></form>
-    ${ads.length ? `<div class="tbl-wrap"><table class="t"><thead><tr><th>Gün</th><th>Kaynak</th><th class="r">Harcama</th><th></th></tr></thead><tbody>${ads.map(a => `<tr><td class="num">${esc(new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td><td class="muted small">${esc(a.source==='rapor'?'Rapor':'Elle')}</td><td class="r num">${fmtTL(a.amount)}</td><td class="r"><button class="btn sm ghost" data-act="ad-del" data-id="${esc(a.day)}">Sil</button></td></tr>`).join('')}</tbody></table></div><div class="spread small"><span class="muted">${fmtN(ads.length)} gün</span><b class="num">${fmtTL(s.ads||0)}</b></div>` : '<p class="muted small" style="margin:0">Bu dönem için reklam girişi yok.</p>'}
+    ${ads.length ? `<div class="tbl-wrap"><table class="t"><thead><tr><th>Gün</th><th>Kaynak</th><th class="r">Harcama</th><th></th></tr></thead><tbody>${ads.map(a => `<tr><td class="num" data-v="${esc(a.day)}">${esc(new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td><td class="muted small">${esc(a.source==='rapor'?'Rapor':'Elle')}</td><td class="r num">${fmtTL(a.amount)}</td><td class="r"><button class="btn sm ghost" data-act="ad-del" data-id="${esc(a.day)}">Sil</button></td></tr>`).join('')}</tbody></table></div><div class="spread small"><span class="muted">${fmtN(ads.length)} gün</span><b class="num">${fmtTL(s.ads||0)}</b></div>` : '<p class="muted small" style="margin:0">Bu dönem için reklam girişi yok.</p>'}
   </div>`;
 }
 async function saveAds(items, source, msg){
@@ -991,7 +1033,7 @@ function viewAudit(){
     <p class="muted small" style="margin:0">Her gün için Trendyol'dan okunan siparişlerle Backstage'deki kayıtlar karşılaştırılır. <b>Ciro</b> = ürün fiyatı − senin indirimin; <b>Müşteri ödedi</b> = Trendyol indirimleri de düşülmüş tutar. Panelindeki rakam hangisine uyuyorsa bana söyle; kâr hesabını ona göre ayarlarım.</p>
     <div class="row"><button class="btn sm primary" data-act="audit-start" ${A.state==='running'?'disabled':''}>Yeniden tara ve onar</button>${A.mismatchCount && A.state!=='running' ? `<button class="btn sm" data-act="audit-fix">Farkları şimdi onar</button>` : ''}<button class="btn sm ghost" data-act="audit-reload">Yenile</button></div></div>`;
   h += `<div class="tbl-wrap" style="margin-top:12px"><table class="t"><thead><tr><th>Gün</th><th class="r">Trendyol<br>sipariş · adet</th><th class="r">Trendyol<br>ciro</th><th class="r">Müşteri<br>ödedi</th><th class="r">Backstage<br>sipariş · adet</th><th class="r">Backstage<br>ciro</th><th></th></tr></thead><tbody>
-    ${A.days.map(d => { const same = d.diff === 0 && d.tyOrders === d.bsOrders && d.tyUnits === d.bsUnits; return `<tr><td class="num">${esc(new Date(d.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td>
+    ${A.days.map(d => { const same = d.diff === 0 && d.tyOrders === d.bsOrders && d.tyUnits === d.bsUnits; return `<tr><td class="num" data-v="${esc(d.day)}">${esc(new Date(d.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td>
       <td class="r num">${fmtN(d.tyOrders)} · ${fmtN(d.tyUnits)}</td><td class="r num">${fmtTL(d.tyRevenue)}</td><td class="r num muted">${fmtTL(d.tyPaid)}</td>
       <td class="r num" style="${same?'':'color:var(--bad)'}">${fmtN(d.bsOrders)} · ${fmtN(d.bsUnits)}</td><td class="r num" style="${Math.abs(d.tyRevenue-d.bsRevenue)>0.05?'color:var(--bad)':''}">${fmtTL(d.bsRevenue)}</td>
       <td>${same && Math.abs(d.tyRevenue-d.bsRevenue)<=0.05 ? '<span class="pill p-good">✓</span>' : `<span class="pill p-warn">${fmtN(d.diff)}</span>`}</td></tr>`; }).join('')}</tbody></table></div>`;
@@ -1366,11 +1408,12 @@ function renderSheet(full){
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
     if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return') return; // formları bozma
-    const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; b.innerHTML = r.body; existing.scrollTop = st; return;
+    const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; b.innerHTML = r.body; enhanceTables(b); existing.scrollTop = st; return;
   }
   root.innerHTML = `<div class="scrim" data-act="scrim"><aside class="sheet" role="dialog" aria-modal="true" aria-label="${esc(String(r.title).replace(/<[^>]+>/g,''))}" data-type="${sh.type}" data-id="${esc(sh.id||'')}">
     <div class="sheet-h">${r.lead||''}<div class="tt"><h2>${r.title}</h2>${r.sub?`<div class="row small" style="margin-top:4px;gap:6px">${r.sub}</div>`:''}</div><button class="btn ghost" data-act="close" aria-label="Kapat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <div class="sheet-b">${r.body}</div></aside></div>`;
+  enhanceTables(root);
   document.body.style.overflow = 'hidden';
   const first = root.querySelector('.sheet-b input:not([disabled]):not([type=checkbox]):not([type=file]), .sheet-b select');
   if (full && first && sh.type.startsWith('new-')) first.focus();
