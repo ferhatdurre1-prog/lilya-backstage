@@ -984,7 +984,7 @@ async function computeProfit(env, from, to) {
       if (!unsPenalty) continue;
       const mo0 = miscByOrder.get(ord.order_no); const pen = mo0 ? mo0.amount : unsPenalty;
       sum.penalty += pen; sum.profit -= pen; if (mo0) sum.penaltyActual++; else sum.penaltyEst++;
-      byOrder.push({ cname: cnames.get(ord.order_no) || "", q: allLines.map(l => l.sku + " " + (l.name || "")).join(" ").slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ord.channel, date: ord.date, actual: !!mo0, penaltyEst: !mo0, penaltyTypes: mo0 ? mo0.types.slice(0, 4) : ['Tedarik edememe'], cargoInfo: 'Tedarik edilemedi (iptal)', revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: R2(pen), service: 0, stopaj: 0, cost: 0, profit: R2(-pen), units: 0, retUnits: 0 });
+      byOrder.push({ pkeys: [...new Set(allLines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || "", q: allLines.map(l => l.sku + " " + (l.name || "")).join(" ").slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ord.channel, date: ord.date, actual: !!mo0, penaltyEst: !mo0, penaltyTypes: mo0 ? mo0.types.slice(0, 4) : ['Tedarik edememe'], cargoInfo: 'Tedarik edilemedi (iptal)', revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: R2(pen), service: 0, stopaj: 0, cost: 0, profit: R2(-pen), units: 0, retUnits: 0 });
       const l0 = allLines.find(l => l.fin && l.fin.uns) || allLines[0];
       let bp = byProduct.get(l0.pkey); if (!bp) { const pr = prods.get(l0.pkey); bp = { key: l0.pkey, sku: l0.sku, name: (pr && pr.name) || l0.name, image: pr ? pr.image : '', costKnown: !!(pr && pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(l0.pkey, bp); }
       bp.penalty += pen; bp.profit -= pen;
@@ -1045,7 +1045,7 @@ async function computeProfit(env, from, to) {
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
-    byOrder.push({ cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, retCargoEst, undelivered, penaltyEst, penaltyTypes: mo ? mo.types.slice(0, 4) : null, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, retCargoEst, undelivered, penaltyEst, penaltyTypes: mo ? mo.types.slice(0, 4) : null, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
     // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
