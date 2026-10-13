@@ -49,6 +49,30 @@ button,input,select,textarea{font:inherit;color:inherit}
 .top{display:flex;align-items:center;gap:12px;padding-block:18px 10px}
 .mark{width:40px;height:40px;border-radius:11px;background:#1f3a30;color:#f1eedf;display:grid;place-items:center;font-family:var(--f-display);font-size:24px;font-weight:500;flex:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)}
 .brandtxt{min-width:0;flex:1}
+.brandbtn{display:flex;align-items:center;gap:12px;border:0;background:none;padding:0;cursor:pointer;text-align:left;color:inherit;flex:1;min-width:0}
+.burger{border:0;background:none;padding:8px;margin-left:-8px;cursor:pointer;color:var(--ink);display:grid;place-items:center;border-radius:10px}
+.burger svg{width:24px;height:24px}
+.drawer-scrim{position:fixed;inset:0;background:rgba(20,24,22,.38);z-index:60;animation:fadein .15s}
+.drawer{position:fixed;top:0;bottom:0;left:0;width:min(300px,84vw);background:var(--surface);z-index:61;box-shadow:0 0 40px rgba(0,0,0,.18);padding:calc(18px + env(safe-area-inset-top,0px)) 14px 18px;display:flex;flex-direction:column;gap:4px;overflow-y:auto;animation:slidein .18s ease-out}
+.drawer .dh{display:flex;align-items:center;gap:12px;padding:4px 6px 16px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.drawer button.di{display:flex;align-items:center;gap:12px;border:0;background:none;padding:12px 10px;border-radius:10px;font:inherit;font-size:15px;color:var(--ink);cursor:pointer;text-align:left;width:100%}
+.drawer button.di svg{width:21px;height:21px;color:var(--ink-3);flex:none}
+.drawer button.di[aria-current="page"]{background:var(--brand-soft);color:var(--brand);font-weight:600}
+.drawer button.di[aria-current="page"] svg{color:var(--brand)}
+.drawer .di .cnt{margin-left:auto;min-width:20px;padding:1px 6px;border-radius:10px;background:var(--warn-soft);color:var(--warn);font-size:12px;font-weight:600;text-align:center}
+.drawer .sep{height:1px;background:var(--line);margin:8px 0}
+@keyframes slidein{from{transform:translateX(-100%)}to{transform:none}}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+.home-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px}
+.kpi .k{font-size:12px;color:var(--ink-3);font-weight:500}
+.kpi .v{font-family:var(--f-display);font-size:24px;line-height:1.15;margin-top:4px;font-variant-numeric:tabular-nums}
+.kpi .s{font-size:12px;color:var(--ink-3);margin-top:4px}
+.alert-row{display:flex;align-items:center;gap:12px;padding:12px 2px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left;font:inherit;color:inherit}
+.alert-row:first-of-type{border-top:0}
+.alert-row .ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none}
+.alert-row .ic svg{width:18px;height:18px}
+.alert-row .tx{flex:1;min-width:0}.alert-row .tx b{display:block;font-size:14.5px}.alert-row .tx span{font-size:12.5px;color:var(--ink-3)}
 .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
 .brandtxt h1{margin:0;font-family:var(--f-display);font-weight:500;font-size:24px;line-height:1.1;letter-spacing:-.01em}
 .conn{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-3)}
@@ -62,7 +86,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .bnav{display:none}
 @media (max-width:720px){
   .tabs{display:none}
-  .bnav{display:grid;grid-template-columns:repeat(6,1fr);position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px))}
+  .bnav{display:grid;grid-template-columns:repeat(2,1fr);position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px))}
   .bnav button{border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--ink-3);padding:5px 0;cursor:pointer;position:relative}
   .bnav button svg{width:22px;height:22px}
   .bnav button[aria-current="page"]{color:var(--brand);font-weight:600}
@@ -209,8 +233,9 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 
 <div class="wrap">
   <header class="top">
-    <div class="mark" aria-hidden="true">L</div>
-    <div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1>Backstage</h1></div>
+    <button class="burger" id="burger" data-act="menu" aria-label="Menü" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    <button class="brandbtn" data-act="tab" data-id="home" aria-label="Ana ekran"><div class="mark" aria-hidden="true">L</div>
+    <div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1>Backstage</h1></div></button>
     <div class="row" id="hdr-actions" hidden style="gap:10px;flex-wrap:nowrap">
       <button class="conn" id="conn" data-act="open-import" style="border:0;background:none;cursor:pointer;padding:6px 0"><i></i><span>Bağlanıyor</span></button>
       <button class="btn" data-act="open-import" aria-label="Bağlantılar ve yedek"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7l1.7-1.7"/></svg><span class="hide-sm">Bağlantılar</span></button>
@@ -220,6 +245,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
   <main id="view"></main>
 </div>
 <nav class="bnav" id="bnav" aria-label="Bölümler"></nav>
+<div id="drawer-root"></div>
 <div id="sheet-root"></div>
 <div id="dialog-root"></div>
 <div id="toast-root" aria-live="polite"></div>
@@ -241,10 +267,14 @@ const ICONS = {
   returns:'<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 010 10h-3"/>',
   value:'<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .8-3 2s1.3 1.7 3 2 3 .8 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6v2M12 16v2"/>',
   moves:'<path d="M7 4v16M3 8l4-4 4 4"/><path d="M17 20V4M13 16l4 4 4-4"/>',
-  profit:'<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>'
+  profit:'<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  home:'<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
+  link:'<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
+  out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
-const TABS = [['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['value','Stok değeri'],['profit','Kâr'],['moves','Hareketler']];
-const TAB_SHORT = {stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
+const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['value','Stok değeri'],['profit','Kâr'],['moves','Hareketler']];
+const NAV_MAIN = ['stock','profit']; // alt çubukta görünenler; diğerleri sol menüde
+const TAB_SHORT = {home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
 
 /* ============ Durum ============ */
 const S = {
@@ -254,7 +284,7 @@ const S = {
   tab: initialTab(), q:'', filter:'all', ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
   sheet:null, imp:null, busy:false, syncing:false
 };
-function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=localStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'stock'; }
+function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=localStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'home'; }
 
 /* ============ Sunucu ============ */
 async function api(path, body){
@@ -386,20 +416,85 @@ document.addEventListener('click', e => {
 });
 function render(){
   const logged = S.authed === true;
-  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#hdr-actions').hidden = !logged;
+  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#hdr-actions').hidden = !logged; $('#burger').hidden = !logged;
   if (S.authed === false) { $('#view').innerHTML = viewLogin(); setTimeout(() => { const i = $('#lg-pass'); if (i) i.focus(); }, 30); return; }
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
   const pending = S.returns.filter(r => r.status === 'requested').length;
   const counts = {returns: pending};
-  $('#tabs').innerHTML = TABS.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
-  $('#bnav').innerHTML = TABS.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
+  const NAV = TABS.filter(([id]) => NAV_MAIN.includes(id));
+  $('#tabs').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
+  $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
-  v.innerHTML = banners() + ({stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves}[S.tab])();
+  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves}[S.tab])();
   enhanceTables(v);
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
+  if (S.drawer) renderDrawer();
   if (S.sheet) renderSheet(false);
+}
+/* ============ Sol menü ============ */
+function renderDrawer(){
+  const root = $('#drawer-root'); if (!S.drawer) { root.innerHTML = ''; return; }
+  const pending = S.returns.filter(r => r.status === 'requested').length;
+  const item = (id, label, icon, cnt) => `<button class="di" data-act="dnav" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon||id]}</svg>${label}${cnt?`<span class="cnt">${cnt}</span>`:''}</button>`;
+  root.innerHTML = `<div class="drawer-scrim" data-act="menu-close"></div><nav class="drawer" aria-label="Menü">
+    <div class="dh"><div class="mark" aria-hidden="true">L</div><div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1 style="font-size:20px">Backstage</h1></div></div>
+    ${TABS.map(([id, label]) => item(id, label, id, id === 'returns' ? pending : 0)).join('')}
+    <div class="sep"></div>
+    <button class="di" data-act="dnav" data-id="__conn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg>Bağlantılar & yedek</button>
+    <button class="di" data-act="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.out}</svg>Çıkış</button>
+  </nav>`;
+}
+/* ============ Ana ekran ============ */
+function viewHome(){
+  const P = profS(); // Kâr ekranıyla aynı veri: bu ayın siparişleri
+  if (!S.home || S.home.key !== todayTR() + '|' + S.rev) loadHome();
+  const H = S.home && S.home.data;
+  const hr = new Date().getHours(), hello = hr < 6 ? 'İyi geceler' : hr < 12 ? 'Günaydın' : hr < 18 ? 'İyi günler' : 'İyi akşamlar';
+  let h = `<div style="margin:4px 0 16px"><h2 class="sec" style="margin:0">${hello}</h2><p class="lead small" style="margin:4px 0 0">${esc(new Date().toLocaleDateString('tr-TR',{weekday:'long', day:'numeric', month:'long'}))}</p></div>`;
+  if (!H) return h + loading();
+  const t0 = new Date(); t0.setHours(0,0,0,0); const y0 = new Date(t0); y0.setDate(y0.getDate()-1);
+  const pick = (a, b) => H.orders.filter(o => { const d = Date.parse(o.date); return d >= a && d < b; });
+  const agg = (os) => os.reduce((a, o) => ({rev: a.rev + o.revenue, prof: a.prof + o.profit, n: a.n + 1, u: a.u + o.units}), {rev:0, prof:0, n:0, u:0});
+  const T = agg(pick(t0.getTime(), t0.getTime() + 86400000)), Y = agg(pick(y0.getTime(), t0.getTime())), M = H.summary;
+  const kpi = (k, v, sub, style='') => `<div class="kpi"><div class="k">${k}</div><div class="v" style="${style}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
+  const diff = (a, b) => b ? `Dün ${fmtTL(b)}` : '';
+  h += `<div class="home-grid">
+    ${kpi('Bugün ciro', fmtTL(T.rev), diff(T.rev, Y.rev))}
+    ${kpi('Bugün net kâr', tlS(T.prof), Y.prof ? `Dün ${tlS(Y.prof)}` : '', profitCls(T.prof))}
+    ${kpi('Bugün sipariş', fmtN(T.n), `${fmtN(T.u)} adet`)}
+    ${kpi('Bu ay net kâr', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit))}
+  </div>`;
+  // Dikkat gerektirenler
+  const ps = [...S.products.values()];
+  const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
+  const pend = S.returns.filter(r => r.status === 'requested'), urgent = pend.filter(r => { const ms = retDeadline(r); return ms !== null && ms < 24*3600000; }).length;
+  const losers = (H.products || []).filter(x => x.profit < 0).length;
+  const st = tyState();
+  const ic = (name, bg, fg) => `<div class="ic" style="background:${bg};color:${fg}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg></div>`;
+  const rowsA = [];
+  if (st.cls === 'err' || st.cls === 'warn') rowsA.push(`<button class="alert-row" data-act="open-import">${ic('link','var(--bad-soft)','var(--bad)')}<div class="tx"><b>${esc(st.text)}</b><span>${esc(st.err || 'Bağlantıyı kontrol et')}</span></div></button>`);
+  if (urgent) rowsA.push(`<button class="alert-row" data-act="tab" data-id="returns">${ic('returns','var(--bad-soft)','var(--bad)')}<div class="tx"><b>${fmtN(urgent)} iadede işlem süresi doluyor</b><span>24 saatten az kaldı; Trendyol'da onayla ya da reddet</span></div></button>`);
+  if (pend.length) rowsA.push(`<button class="alert-row" data-act="tab" data-id="returns">${ic('returns','var(--warn-soft)','var(--warn)')}<div class="tx"><b>${fmtN(pend.length)} bekleyen iade</b><span>Depoya ulaşınca kabul et</span></div></button>`);
+  if (zero) rowsA.push(`<button class="alert-row" data-act="home-stock" data-id="zero">${ic('stock','var(--bad-soft)','var(--bad)')}<div class="tx"><b>${fmtN(zero)} ürün tükendi</b><span>Stok girişi yap ya da satışı kapat</span></div></button>`);
+  if (low) rowsA.push(`<button class="alert-row" data-act="home-stock" data-id="low">${ic('stock','var(--warn-soft)','var(--warn)')}<div class="tx"><b>${fmtN(low)} üründe stok azaldı</b><span>Düşük stok sınırının altında</span></div></button>`);
+  if (losers) rowsA.push(`<button class="alert-row" data-act="home-losers">${ic('profit','var(--bad-soft)','var(--bad)')}<div class="tx"><b>Bu ay ${fmtN(losers)} ürün zarar ettiriyor</b><span>Kâr › Zarar edenler</span></div></button>`);
+  h += `<div class="card"><h3>Dikkat</h3>${rowsA.length ? rowsA.join('') : `<p class="muted small" style="margin:0">Her şey yolunda. Bekleyen iade, tükenen ürün ya da bağlantı sorunu yok.</p>`}</div>`;
+  // Son siparişler
+  const last = S.orders.slice(0, 6);
+  if (last.length) h += `<div class="card" style="padding-bottom:6px"><div class="spread"><h3 style="margin:0">Son siparişler</h3><button class="btn sm ghost" data-act="tab" data-id="orders">Tümü ›</button></div><div class="list" style="margin:0 -14px">${last.map(o => { const st2 = OST[orderStatus(o)]; const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0); return `<button class="item" data-act="order" data-id="${esc(o.id)}">${orderThumb((o.lines||[]).map(l => l.pkey), (o.lines||[]).map(l => l.name))}<div class="main"><div class="ttl">${o.cname ? esc(o.cname) : `<span class="mono">#${esc(o.orderNo)}</span>`}</div><div class="meta"><span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(units)} adet</span></div></div><div class="end"><span class="pill ${st2[1]}">${st2[0]}</span></div></button>`; }).join('')}</div></div>`;
+  return h;
+}
+async function loadHome(){
+  const key = todayTR() + '|' + S.rev; if (S.homeLoading === key) return; S.homeLoading = key;
+  try { const [f, t] = periodRange('month'); const y = new Date(); y.setHours(0,0,0,0); y.setDate(y.getDate()-1); const from = f < y ? f : y;
+    const data = await api('/api/profit', {from: from.toISOString(), to: t.toISOString()});
+    // "Bu ay" özeti dün ayın başında değilse ayın siparişlerinden; ay başıysa ayrıca hesaplanır
+    if (f > y) { const mo = data.orders.filter(o => Date.parse(o.date) >= f.getTime()); const m = mo.reduce((a, o) => ({revenue:a.revenue+o.revenue, profit:a.profit+o.profit}), {revenue:0, profit:0}); data.summary = {...data.summary, ...m, margin: m.revenue ? m.profit / m.revenue * 100 : null}; }
+    S.home = {key, data};
+  } catch(e) { S.home = S.home || null; }
+  S.homeLoading = null; if (S.tab === 'home') render();
 }
 function banners(){
   let h = '';
@@ -1503,7 +1598,12 @@ document.addEventListener('click', async e => {
   const act = b.dataset.act, id = b.dataset.id;
   if (act === 'scrim') { if (e.target === b) closeSheet(); return; }
   switch (act) {
-    case 'tab': setTab(id); break;
+    case 'tab': S.drawer = false; renderDrawer(); setTab(id); break;
+    case 'menu': S.drawer = true; renderDrawer(); break;
+    case 'menu-close': S.drawer = false; renderDrawer(); break;
+    case 'dnav': S.drawer = false; renderDrawer(); if (id === '__conn') { S.imp = null; openSheet('import'); } else setTab(id); break;
+    case 'home-stock': S.filter = id; setTab('stock'); break;
+    case 'home-losers': profS().sub = 'losers'; setTab('profit'); break;
     case 'filter': S.filter = id; if (S.tab !== 'stock') setTab('stock'); else render(); break;
     case 'chf': S.ch = id; render(); break;
     case 'ofilter': S.ofilter = id; S.opage = 1; render(); break;
