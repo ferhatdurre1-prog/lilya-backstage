@@ -91,6 +91,9 @@ async function init(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_und1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_und1','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_svc1'`).first())) {
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_svc1','1')`), setStmt(env, 'fin_at', '')]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_barem2'`).first())) {
     // Trendyol kargo faturasındaki gerçek barem tutarları: 46,49 / 84,49 (KDV dahil)
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_barem2','1')`), env.DB.prepare(`UPDATE settings SET v='46.49' WHERE k IN ('fee_cargo_t1','fee_cargo_ty') AND v IN ('46.48','46.5')`), env.DB.prepare(`UPDATE settings SET v='84.49' WHERE k='fee_cargo_t2' AND v IN ('84.50','84.5')`), REV(env)]); } catch (e) {}
@@ -676,7 +679,21 @@ async function syncTrendyolFinance(env, force, deadline) {
   } catch (e) { if (type === 'Sale') throw e; stat.errors.push(type + ': ' + String(e.message || e).slice(0, 80)); }
   stat.types[type] = typeRows;
   }
-  // Kargo ve platform hizmet bedeli faturaları
+  // Paket numarasından sipariş numarasına (Trendyol bazı kayıtlarda yalnızca shipmentPackageId verir)
+  const pkgOrder = async (pid) => { if (!pid) return null; const r = await env.DB.prepare('SELECT order_no FROM audit_pkg WHERE pkg_id=?1').bind(String(pid)).first(); return r ? r.order_no : null; };
+  const orderOf = async (x) => x.orderNumber ? String(x.orderNumber) : await pkgOrder(x.shipmentPackageId);
+  // Platform hizmet bedeli kayıtları ayrı filtreyle (transactionSubType=PlatformServiceFee) okunur; siparişe bağlanabilenler gerçek tutar olarak yazılır
+  stat.svcRows = 0; stat.svcLinked = 0;
+  try {
+    const svc = new Map();
+    for (let page = 0; page < 20; page++) {
+      const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', transactionSubType: 'PlatformServiceFee', startDate: start, endDate: end, page, size: 500, supplierId: sid });
+      for (const x of (r.content || [])) { stat.svcRows++; const no = await orderOf(x); if (!no) continue; stat.svcLinked++; svc.set(no, (svc.get(no) || 0) + Math.abs(Number(x.debt) || Number(x.credit) || 0)); }
+      if (page + 1 >= (r.totalPages || 0)) break;
+    }
+    for (const [no, v] of svc) { const a = get(no); a.service = Math.round(v * 100) / 100; }
+  } catch (e) { stat.errors.push('Hizmet bedeli: ' + String(e.message || e).slice(0, 120)); }
+  // Kargo ve diğer kesinti faturaları
   const done = new Set(JSON.parse(s.cargo_inv_done || '[]')); let cargoInv = 0; const misc = [];
   const fees0 = await loadFees(env); const learned = {}; let partial = false;
   // Her kargo faturası okunur okunmaz tek atomik yazımla kaydedilir; süre biterse kalan faturalar bir sonraki turda okunur
@@ -711,11 +728,12 @@ async function syncTrendyolFinance(env, force, deadline) {
             if (p2 + 1 >= (it.totalPages || 0)) break;
           }
           await flushCargo(String(x.id)); cargoInv++;
-        } else if (/platform|hizmet/i.test(t) && x.orderNumber) { const a = get(String(x.orderNumber)); a.service = (a.service || 0) + Math.abs(Number(x.debt) || Number(x.credit) || 0); }
+        } else if (/platform hizmet|hizmet bedeli/i.test(t)) { /* yukarıda ayrı okunur */ }
         else if (!/kargo|platform|hizmet bedeli|komisyon/i.test(t)) {
           const amt = Math.round(((Math.abs(Number(x.debt) || 0)) - (Math.abs(Number(x.credit) || 0))) * 100) / 100;
           const comp = isCompensation(t); const amtS = comp ? -Math.abs(amt) : amt;
-          if (amt) misc.push({ id: String(x.id || (t + '|' + x.transactionDate + '|' + amt)).slice(0, 120), no: x.orderNumber ? String(x.orderNumber) : null, date: x.transactionDate ? iso(Number(x.transactionDate)) : iso(), type: String(x.transactionType || x.description || 'Diğer kesinti').slice(0, 80), amt: amtS, descr: String(x.description || '').slice(0, 160) });
+          const mno = await orderOf(x); if (mno) stat.miscLinked = (stat.miscLinked || 0) + 1;
+          if (amt) misc.push({ id: String(x.id || (t + '|' + x.transactionDate + '|' + amt)).slice(0, 120), no: mno, date: x.transactionDate ? iso(Number(x.transactionDate)) : iso(), type: String(x.transactionType || x.description || 'Diğer kesinti').slice(0, 80), amt: amtS, descr: String(x.description || '').slice(0, 160) });
         }
       }
       if (page + 1 >= (r.totalPages || 0)) break;
