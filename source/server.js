@@ -638,6 +638,8 @@ async function checkTrendyolPushBatch(env) {
   await env.DB.batch([setStmt(env, 'ty_push_fail', msg), setStmt(env, 'ty_push_batch', '')]);
   return { failed: failed.length };
 }
+// Kayıp/hasarlı kargo tazmini: Trendyol satıcıya öder (gelir). Ceza faturalarındaki "tazmin bedelidir" ifadesi bunu tetiklemez.
+function isCompensation(t) { const s = String(t || '').toLocaleLowerCase('tr-TR'); return /tazmin/.test(s) && !/yanlış|eksik|kusur|hasarlı ürün|ayıplı|tedarik|ceza/.test(s); }
 const ESTIMATED_PEN_RE = /yanlış ürün|eksik ürün|kusurlu|hasarlı|ayıplı|tedarik/;
 const AUTO_ACC_NOTE = 'Trendyol otomatik onayladı; ürün depoya ulaşınca stoğa eklemek için onayla';
 // Kusurlu ürün iadesi hakkı kapsamındaki sebepler (müşteri memnuniyet kuponu satıcıya yansıtılır)
@@ -712,7 +714,8 @@ async function syncTrendyolFinance(env, force, deadline) {
         } else if (/platform|hizmet/i.test(t) && x.orderNumber) { const a = get(String(x.orderNumber)); a.service = (a.service || 0) + Math.abs(Number(x.debt) || Number(x.credit) || 0); }
         else if (!/kargo|platform|hizmet bedeli|komisyon/i.test(t)) {
           const amt = Math.round(((Math.abs(Number(x.debt) || 0)) - (Math.abs(Number(x.credit) || 0))) * 100) / 100;
-          if (amt) misc.push({ id: String(x.id || (t + '|' + x.transactionDate + '|' + amt)).slice(0, 120), no: x.orderNumber ? String(x.orderNumber) : null, date: x.transactionDate ? iso(Number(x.transactionDate)) : iso(), type: String(x.transactionType || x.description || 'Diğer kesinti').slice(0, 80), amt, descr: String(x.description || '').slice(0, 160) });
+          const comp = isCompensation(t); const amtS = comp ? -Math.abs(amt) : amt;
+          if (amt) misc.push({ id: String(x.id || (t + '|' + x.transactionDate + '|' + amt)).slice(0, 120), no: x.orderNumber ? String(x.orderNumber) : null, date: x.transactionDate ? iso(Number(x.transactionDate)) : iso(), type: String(x.transactionType || x.description || 'Diğer kesinti').slice(0, 80), amt: amtS, descr: String(x.description || '').slice(0, 160) });
         }
       }
       if (page + 1 >= (r.totalPages || 0)) break;
@@ -899,8 +902,11 @@ async function computeProfit(env, from, to) {
   const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x]));
   // Trendyol'un ceza vb. kesinti faturaları: siparişe bağlı olanlar siparişe, bağlanamayanlar fatura tarihine göre döneme yazılır
   const miscByOrder = new Map();
-  for (const m of await selectIn(env, 'SELECT order_no, type, amount FROM fin_misc', 'order_no', orderNos)) { const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
-  const { results: miscFree } = await env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE order_no IS NULL AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to).all();
+  for (const m of await selectIn(env, 'SELECT order_no, type, amount FROM fin_misc', 'order_no', orderNos)) { if (isCompensation(m.type)) continue; const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
+  const { results: miscAll } = await env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%').all();
+  // Kayıp kargo tazmini fatura tarihine göre gelir olarak eklenir; ceza türleri siparişe bağlıysa siparişte sayılır
+  const miscFree = miscAll.filter(x => !isCompensation(x.type));
+  const compensation = miscAll.filter(x => isCompensation(x.type)).reduce((a, x) => a + Math.abs(x.amount || 0), 0);
   // Reklam: harcandığı günün gideri (elle ya da Trendyol reklam raporundan girilen günlük harcama)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const { results: adRows } = await env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo).all();
@@ -1020,7 +1026,7 @@ async function computeProfit(env, from, to) {
   const adInvoices = miscFree.filter(x => isAd(x.type)).reduce((a, x) => a + (x.amount || 0), 0);
   const otherFees = miscFree.filter(x => !(adRows.length && isAd(x.type))).map(x => ({ type: x.type, amount: R2(x.amount || 0), n: x.n }));
   sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices);
-  sum.profit -= sum.otherFees + sum.ads;
+  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads; sum.profit += sum.compensation;
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;

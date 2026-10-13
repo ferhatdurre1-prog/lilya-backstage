@@ -843,6 +843,7 @@ function viewProfit(){
   if (P.sub === 'audit') return h + viewAudit() + feesCard(fees);
   if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + feesCard(fees);
   const rows = [['Satış (ciro)', s.revenue, false], ['Komisyon', s.commission, true], ['Kargo', s.cargo, true], ...(s.retCargo ? [['İade kargosu', s.retCargo, true]] : []), ...(s.penalty ? [['Ceza ve müşteri kuponu', s.penalty, true]] : []), ['Hizmet bedeli', s.service, true], ['Stopaj', s.stopaj, true], ['Ürün maliyeti', s.cost, true], ...(s.ads ? [['Reklam', s.ads, true]] : []), ...(s.otherFees ? [['Diğer Trendyol kesintileri', s.otherFees, true]] : [])];
+  if (s.compensation) rows.push(['+ Kayıp kargo tazmini (Trendyol ödedi)', s.compensation, false]);
   const maxV = Math.max(1, s.revenue);
   h += `<div class="hero-val"><div><div class="muted small">Net kâr</div><div class="big" style="${profitCls(s.profit)}">${tlS(s.profit)}</div>
       <div class="row small" style="margin-top:8px;gap:8px"><span class="pill ${s.profit>=0?'p-good':'p-bad'}">Marj ${pct(s.margin)}</span><span class="muted">${fmtN(s.orders)} sipariş · ${fmtN(s.units)} adet</span></div></div>
