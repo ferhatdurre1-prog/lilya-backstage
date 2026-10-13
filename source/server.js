@@ -1131,7 +1131,7 @@ async function tcmbRates() {
   } catch (e) { return {}; }
 }
 async function marketData(env) {
-  const cached = JSON.parse((await getSetting(env, 'market')) || 'null');
+  const cached = JSON.parse((await getSetting(env, 'market2')) || 'null');
   if (cached && Date.now() - cached.at < 4 * 60000) return cached;
   const keys = Object.keys(MKT_SYMS), qs = await Promise.all(keys.map(k => yahooQuote(MKT_SYMS[k])));
   const q = {}; keys.forEach((k, i) => { if (qs[i]) q[k] = qs[i]; });
@@ -1142,9 +1142,9 @@ async function marketData(env) {
   if (q.GOLD && q.USD) add('gram', 'Gram altın', { price: q.GOLD.price * q.USD.price / OZ, prev: q.GOLD.prev && q.USD.prev ? q.GOLD.prev * q.USD.prev / OZ : null }, '₺', 2);
   add('bist', 'BIST 100', q.BIST, '', 2); add('gold', 'Ons altın', q.GOLD, '$', 2);
   if (q.SILVER && q.USD) add('gs', 'Gram gümüş', { price: q.SILVER.price * q.USD.price / OZ, prev: q.SILVER.prev && q.USD.prev ? q.SILVER.prev * q.USD.prev / OZ : null }, '₺', 2);
-  add('silver', 'Ons gümüş', q.SILVER, '$', 2); add('brent', 'Brent petrol', q.BRENT, '$', 2);
+  add('brent', 'Brent petrol', q.BRENT, '$', 2);
   const out = { at: Date.now(), items };
-  if (items.length) await setSetting(env, 'market', JSON.stringify(out));
+  if (items.length) await setSetting(env, 'market2', JSON.stringify(out));
   else if (cached) return cached;
   return out;
 }
