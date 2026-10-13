@@ -154,7 +154,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .pcell .thumb{width:34px;height:34px;font-size:12px;border-radius:8px}
 .pcell span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px;display:block}
 .cost-in{width:110px;text-align:right;padding:6px 8px;border-radius:8px}
-@media (max-width:560px){table.t{min-width:0;font-size:13px}.pcell .thumb{display:none}.pcell span{white-space:normal;max-width:none;font-size:13px}table.t td,table.t th{padding:8px 6px}.cost-in{width:76px;padding:6px}}
+@media (max-width:560px){table.t{min-width:0;font-size:13px}.pcell .thumb{width:32px;height:32px;font-size:11px;border-radius:7px}.pcell span{white-space:normal;max-width:none;font-size:13px}table.t td,table.t th{padding:8px 6px}.cost-in{width:76px;padding:6px}}
 .bar{height:3px;border-radius:2px;background:var(--brass);opacity:.75;margin-top:4px;margin-left:auto}
 /* moves */
 .day{margin-bottom:16px}
@@ -181,6 +181,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .lines{display:grid}
 .ln{display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px 0;border-top:1px solid var(--line);align-items:center}
 .ln:first-child{border-top:0;padding-top:0}
+.ln .pcell .thumb{width:52px !important;height:52px !important;font-size:14px;border-radius:10px}
 .drop{border:1.5px dashed var(--line-strong);border-radius:var(--r);padding:22px 16px;text-align:center;display:grid;gap:8px;justify-items:center;background:var(--surface);cursor:pointer}
 .drop.over{border-color:var(--brand);background:var(--brand-soft)}
 .progress{height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden;border:1px solid var(--line)}
