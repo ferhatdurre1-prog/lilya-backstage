@@ -1171,6 +1171,14 @@ function parseOldBackup(json){
 }
 /* ============ Aktarım sayfası ============ */
 const TYC = {Created:'Oluşturuldu', WaitingInAction:'Aksiyon bekliyor', Accepted:'Onaylandı', Rejected:'Reddedildi', Cancelled:'İptal edildi', Unresolved:'Çözümsüz', InAnalysis:'İncelemede', WaitingFraudCheck:'Kontrolde'};
+const STEP_NAMES = {orders:'Siparişler', recon:'Sipariş kontrolü', push:'Stok gönderimi', claims:'İadeler', products:'Ürün listesi', pushCheck:'Stok gönderim kontrolü', finance:'Kesintiler (kâr)', backfill:'Geçmiş tarama'};
+function diagHtml(t){
+  const d = t.diag; if (!d) return '';
+  const slow = Object.entries(d.slow || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, v]) => `${STEP_NAMES[k] || k} ${(v/1000).toFixed(1).replace('.', ',')} sn`).join(', ');
+  const errs = Object.entries(d.errs || {}).map(([k, v]) => `${STEP_NAMES[k.replace(/Err$/, '')] || k}: ${v}`);
+  const gaps = (t.gaps || []).slice(0, 3).map(g => `${fmtDate(g.from)} → ${g.min} dk`);
+  return `<p class="muted small" style="margin:0">Son tur ${esc(ago(d.at))}: ${fmtN(d.polls)} eşitleme, ${(d.ms/1000).toFixed(0)} sn${slow ? ' · en uzun: ' + esc(slow) : ''}.${gaps.length ? ' Son duraklamalar: ' + esc(gaps.join(' · ')) + '.' : ''}</p>${errs.length ? `<p class="small" style="margin:0;color:var(--bad)">${esc(errs.join(' · '))}</p>` : ''}`;
+}
 function tyCardLive(){
   const t = (S.sync && S.sync.trendyol) || {}; const st = tyState();
   if (!t.configured) return `<p class="muted small" style="margin:0">Cloudflare'de <span class="mono">TRENDYOL_SELLER_ID</span>, <span class="mono">TRENDYOL_API_KEY</span> ve <span class="mono">TRENDYOL_API_SECRET</span> girildiğinde otomatik eşitleme başlar.</p>`;
@@ -1179,6 +1187,7 @@ function tyCardLive(){
     <dt>Kesintiler (kâr)</dt><dd>${t.finAt ? 'Son okuma ' + esc(ago(t.finAt)) : '6 saatte bir okunur'}</dd>
     <dt>Stok → Trendyol</dt><dd>${S.settings.pushStock===false ? 'Kapalı' : t.pushAt ? 'Son gönderim ' + esc(ago(t.pushAt)) + ' · ' + fmtN(t.pushCount) + ' ürün' : 'Değişiklik olunca gönderilir'}</dd><dt>İadeler</dt><dd>Her dakika</dd><dt>Ürün listesi</dt><dd>${t.productsAt ? '6 saatte bir · son ' + esc(ago(t.productsAt)) : 'İlk tarama sürüyor'}</dd></dl>
     ${st.cls==='err' ? `<div class="banner bad" style="margin:0"><div>${esc(st.err||'')}</div></div>` : ''}
+    ${diagHtml(t)}
     ${t.pushErr ? `<div class="banner bad" style="margin:0"><div><b>Stok gönderimi:</b> ${esc(t.pushErr.slice(27))}</div></div>` : ''}
     ${t.pushFail ? `<div class="banner" style="margin:0"><div><b>Trendyol bazı stokları kabul etmedi:</b> ${esc(t.pushFail)}</div></div>` : ''}`;
 }

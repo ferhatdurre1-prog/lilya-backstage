@@ -644,7 +644,7 @@ const penaltyFor = (amount) => (PENALTY_TABLE.find(([lim]) => amount < lim) || [
 function failPct(carrier) { const c = String(carrier || '').toLocaleLowerCase('tr-TR'); if (!c || /trendyol|express|tex/.test(c)) return 0; if (/ptt/.test(c)) return 0.3; if (/sürat|surat/.test(c)) return 0.25; if (/borusan|ceva|horoz/.test(c)) return 1; return 0.5; }
 const UNDELIVERED_RE = /teslim\s*edile?me|ula[sş][ıi]lam|bulunamad|undeliver/;
 const FIN_TYPES = 'Sale,Return,Discount,DiscountCancel,Coupon,CouponCancel,ManualRefund,ManualRefundCancel';
-async function syncTrendyolFinance(env, force) {
+async function syncTrendyolFinance(env, force, deadline) {
   const s = await getSettings(env, ['fin_at', 'cargo_inv_done', 'desi_learned']);
   if (!force && s.fin_at && Date.now() - Date.parse(s.fin_at) < 6 * 3600000) return null;
   const sid = env.TRENDYOL_SELLER_ID, end = Date.now(), start = end - 15 * 86400000 + 60000;
@@ -671,13 +671,27 @@ async function syncTrendyolFinance(env, force) {
   }
   // Kargo ve platform hizmet bedeli faturaları
   const done = new Set(JSON.parse(s.cargo_inv_done || '[]')); let cargoInv = 0; const misc = [];
-  const fees0 = await loadFees(env); const learned = {};
+  const fees0 = await loadFees(env); const learned = {}; let partial = false;
+  // Her kargo faturası okunur okunmaz tek atomik yazımla kaydedilir; süre biterse kalan faturalar bir sonraki turda okunur
+  const flushCargo = async (invId) => {
+    const ws = [];
+    for (const [no, a] of agg) if (a.cargo !== null || a.retCargo !== null) {
+      ws.push(env.DB.prepare(`INSERT INTO order_fin(order_no,cargo,ret_cargo,updated_at) VALUES(?1,?2,?3,?4) ON CONFLICT(order_no) DO UPDATE SET
+        cargo=CASE WHEN excluded.cargo IS NULL THEN order_fin.cargo ELSE COALESCE(order_fin.cargo,0)+excluded.cargo END,
+        ret_cargo=CASE WHEN excluded.ret_cargo IS NULL THEN order_fin.ret_cargo ELSE COALESCE(order_fin.ret_cargo,0)+excluded.ret_cargo END, updated_at=excluded.updated_at`)
+        .bind(no, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.retCargo === null ? null : Math.round(a.retCargo * 100) / 100, iso()));
+      a.cargo = null; a.retCargo = null;
+    }
+    done.add(invId); ws.push(setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))));
+    await env.DB.batch(ws);
+  };
   try {
-    for (let page = 0; page < 5; page++) {
+    outer: for (let page = 0; page < 5; page++) {
       const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', startDate: start, endDate: end, page, size: 500, supplierId: sid });
       for (const x of (r.content || [])) {
         const t = String(x.transactionType || '') + ' ' + String(x.description || '');
         if (/kargo/i.test(t) && x.id && !done.has(String(x.id))) {
+          if (deadline && Date.now() > deadline) { partial = true; break outer; }
           for (let p2 = 0; p2 < 20; p2++) {
             const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(x.id)}/items`, { page: p2, size: 500 });
             for (const c of (it.content || [])) {
@@ -689,7 +703,7 @@ async function syncTrendyolFinance(env, force) {
             }
             if (p2 + 1 >= (it.totalPages || 0)) break;
           }
-          done.add(String(x.id)); cargoInv++;
+          await flushCargo(String(x.id)); cargoInv++;
         } else if (/platform|hizmet/i.test(t) && x.orderNumber) { const a = get(String(x.orderNumber)); a.service = (a.service || 0) + Math.abs(Number(x.debt) || Number(x.credit) || 0); }
         else if (!/kargo|platform|hizmet bedeli|komisyon/i.test(t)) {
           const amt = Math.round(((Math.abs(Number(x.debt) || 0)) - (Math.abs(Number(x.credit) || 0))) * 100) / 100;
@@ -699,7 +713,7 @@ async function syncTrendyolFinance(env, force) {
       if (page + 1 >= (r.totalPages || 0)) break;
     }
   } catch (e) { stat.errors.push('Kargo faturaları: ' + String(e.message || e).slice(0, 150)); await setSetting(env, 'fin_err', iso() + ' · Kargo faturaları okunamadı: ' + String(e.message || e).slice(0, 200)); }
-  stat.cargoInvoices = cargoInv; stat.orders = agg.size; stat.misc = misc.length;
+  stat.cargoInvoices = cargoInv; stat.orders = agg.size; stat.misc = misc.length; stat.partial = partial;
   const now = iso(); const st = [];
   for (const [no, a] of agg) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,revenue,commission,net,cargo,service,updated_at,ret_cargo) VALUES(?1,?2,?3,?4,?5,?6,?7,?9)
     ON CONFLICT(order_no) DO UPDATE SET revenue=CASE WHEN ?8 THEN excluded.revenue ELSE order_fin.revenue END, commission=CASE WHEN ?8 THEN excluded.commission ELSE order_fin.commission END, net=CASE WHEN ?8 THEN excluded.net ELSE order_fin.net END,
@@ -719,7 +733,8 @@ async function syncTrendyolFinance(env, force) {
   for (const m of misc) st.push(env.DB.prepare(`INSERT INTO fin_misc(id,order_no,date,type,amount,descr) VALUES(?1,?2,?3,?4,?5,?6)
     ON CONFLICT(id) DO UPDATE SET order_no=excluded.order_no, date=excluded.date, type=excluded.type, amount=excluded.amount, descr=excluded.descr
     WHERE fin_misc.amount IS NOT excluded.amount OR fin_misc.type IS NOT excluded.type OR fin_misc.order_no IS NOT excluded.order_no`).bind(m.id, m.no, m.date, m.type, m.amt, m.descr));
-  st.push(setStmt(env, 'fin_stat', JSON.stringify(stat)), setStmt(env, 'fin_at', now), setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))), REV(env));
+  st.push(setStmt(env, 'fin_stat', JSON.stringify(stat)), REV(env));
+  if (!partial) st.push(setStmt(env, 'fin_at', now));
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   return { orders: agg.size, rows, cargoInvoices: cargoInv, stat };
 }
@@ -730,8 +745,16 @@ async function tryLock(env, ms) {
 }
 async function unlock(env) { await env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`).run(); }
 function tyConfigured(env) { return !!(env.TRENDYOL_SELLER_ID && env.TRENDYOL_API_KEY && env.TRENDYOL_API_SECRET); }
-async function pollOnce(env, full) {
-  const t = Date.now(); const result = {};
+async function pollOnce(env, full, budget) {
+  const t = Date.now(); const result = { steps: {} };
+  const left = () => (budget || Infinity) - Date.now();
+  // Her adım ayrı ölçülür ve ayrı hata yakalar: biri takılırsa sipariş eşitlemesi durmaz
+  const step = async (name, fn, errKey) => {
+    const s0 = Date.now();
+    try { result[name] = await fn(); }
+    catch (e) { result.steps[name + 'Err'] = String(e.message || e).slice(0, 200); if (errKey) await setSetting(env, errKey, iso() + ' · ' + String(e.message || e).slice(0, 250)); }
+    result.steps[name] = Date.now() - s0;
+  };
   try {
     // İlk kurulumda önce ürün listesi tamamen aktarılır; aksi halde siparişler stoğu olmayan ürünlerden düşer.
     if (!(await getSetting(env, 'ty_prod_done'))) {
@@ -739,38 +762,62 @@ async function pollOnce(env, full) {
       if (result.products && result.products.finished && (await getSetting(env, 'started_at_auto')) !== '0') await setSetting(env, 'started_at', iso());
       if (!result.products || !result.products.finished) { await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', '')]); return result; }
     }
+    const s0 = Date.now();
     result.orders = await syncTrendyolOrders(env);
-    try {
-      let add = (result.orders && result.orders.stats && result.orders.stats.recon) || [];
-      if (!(await getSetting(env, 'mig_recon1'))) { try { await env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_recon1','1')`).run(); add = add.concat(await queueSuspectOrders(env)); } catch (e) {} }
-      result.recon = await processReconQueue(env, add);
-    } catch (e) { result.reconErr = String(e.message || e); }
-    if (full) { result.claims = await syncTrendyolClaims(env); result.products = await syncTrendyolProducts(env); }
-    try { result.backfill = await backfillTrendyolOrders(env); } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Geçmiş sipariş taraması: ' + String(e.message || e).slice(0, 200)); }
-    if (full) { try { result.finance = await syncTrendyolFinance(env, false); if (result.finance) await setSetting(env, 'fin_err', ''); } catch (e) { await setSetting(env, 'fin_err', iso() + ' · Cari hesap ekstresi: ' + String(e.message || e).slice(0, 200)); } }
-    try { result.push = await pushTrendyolStock(env); if (full) result.pushCheck = await checkTrendyolPushBatch(env); }
-    catch (e) { await setSetting(env, 'ty_push_err', iso() + ' · ' + String(e.message || e).slice(0, 250)); }
-    if (full) await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', ''), setStmt(env, 'ty_ms', Date.now() - t)]);
-    else await setSetting(env, 'ty_err', '');
+    result.steps.orders = Date.now() - s0;
+    // Siparişler alındı: "son eşitleme" saati hemen güncellenir (ağır işler sonra)
+    await env.DB.batch([setStmt(env, 'ty_ok', iso()), setStmt(env, 'ty_err', '')]);
   } catch (e) {
     await setSetting(env, 'ty_err', iso() + ' · ' + String(e.message || e).slice(0, 300));
     result.error = String(e.message || e);
+    return result;
   }
+  await step('recon', async () => {
+    let add = (result.orders && result.orders.stats && result.orders.stats.recon) || [];
+    if (!(await getSetting(env, 'mig_recon1'))) { try { await env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_recon1','1')`).run(); add = add.concat(await queueSuspectOrders(env)); } catch (e) {} }
+    return processReconQueue(env, add);
+  });
+  await step('push', () => pushTrendyolStock(env), 'ty_push_err');
+  if (full) {
+    if (left() > 30000) await step('claims', () => syncTrendyolClaims(env));
+    if (left() > 30000) await step('products', () => syncTrendyolProducts(env));
+    if (left() > 30000) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
+    if (left() > 35000) { await step('finance', () => syncTrendyolFinance(env, false, budget ? budget - 15000 : null), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
+  }
+  if (left() > 25000) await step('backfill', () => backfillTrendyolOrders(env), 'fin_err');
+  result.ms = Date.now() - t;
   return result;
 }
 async function cronRun(env) {
   await init(env);
   if (!tyConfigured(env)) return;
   const t0 = Date.now();
-  if (!(await tryLock(env, 90000))) return;
+  // Kesinti teşhisi: bir önceki turdan bu yana 2,5 dakikadan uzun geçtiyse kaydet
+  try {
+    const prev = Number(await getSetting(env, 'cron_at')) || 0;
+    if (prev && t0 - prev > 150000) {
+      const gaps = JSON.parse((await getSetting(env, 'cron_gaps')) || '[]');
+      gaps.unshift({ from: iso(prev), to: iso(t0), min: Math.round((t0 - prev) / 60000) });
+      await setSetting(env, 'cron_gaps', JSON.stringify(gaps.slice(0, 10)));
+    }
+  } catch (e) {}
+  if (!(await tryLock(env, 90000))) { await setSetting(env, 'cron_busy', iso()); return; }
+  await setSetting(env, 'cron_at', String(t0));
+  const diag = { at: iso(t0), polls: 0, slow: {}, errs: {} };
   try {
     for (let i = 0; i < 6; i++) {
       const wait = t0 + i * 10000 - Date.now();
       if (wait > 0) await sleep(wait);
-      if (Date.now() - t0 > 55000) break;
-      await pollOnce(env, i === 0);
+      if (Date.now() - t0 > 52000) break;
+      const r = await pollOnce(env, i === 0, t0 + 55000);
+      diag.polls++;
+      for (const [k, v] of Object.entries(r.steps || {})) { if (typeof v === 'number') { if (!(diag.slow[k] >= v)) diag.slow[k] = v; } else diag.errs[k] = v; }
+      if (r.error) diag.errs.orders = r.error;
     }
-  } finally { await unlock(env); }
+  } finally {
+    diag.ms = Date.now() - t0;
+    try { await env.DB.batch([setStmt(env, 'ty_diag', JSON.stringify(diag)), env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`)]); } catch (e) { await unlock(env); }
+  }
 }
 
 /* ---------- oturum ---------- */
@@ -974,8 +1021,8 @@ function mapReturn(r) { return { extAt: r.ext_at || null, id: r.id, channel: r.c
 function mapProduct(r) { return { id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps']);
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
 }
 async function api(req, env, path) {
   const method = req.method;
