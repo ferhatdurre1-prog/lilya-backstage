@@ -1252,6 +1252,27 @@ async function api(req, env, path) {
     else await env.DB.batch([env.DB.prepare('UPDATE products SET same_day=?1').bind(v), REV(env)]);
     return json({ ok: true });
   }
+  if (path === '/api/orders/page') {
+    // Sipariş ekranı: sayfa başına 100 sipariş; durum, kanal ve arama süzgeci sunucuda
+    const size = 100, page = Math.max(1, intOr(body.page, 1));
+    const where = [], args = [];
+    const f = String(body.filter || 'all');
+    if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`o.status='returned'`);
+    if (body.channel) { args.push(String(body.channel)); where.push(`o.channel=?${args.length}`); }
+    const q = String(body.q || '').trim();
+    if (q) {
+      args.push('%' + q.replace(/[%_]/g, '') + '%'); const a1 = args.length;
+      args.push('%' + q.toLocaleLowerCase('tr-TR').replace(/[%_]/g, '') + '%'); const a2 = args.length;
+      const bc = await env.DB.prepare('SELECT sku FROM products WHERE barcode=?1').bind(q).first();
+      let extra = ''; if (bc) { args.push('%' + bc.sku + '%'); extra = ` OR o.lines LIKE ?${args.length}`; }
+      where.push(`(o.order_no LIKE ?${a1} OR c.sname LIKE ?${a2} OR o.lines LIKE ?${a1}${extra})`);
+    }
+    const W = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const J = `FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ${W}`;
+    const tot = await env.DB.prepare(`SELECT COUNT(*) n ${J}`).bind(...args).first();
+    const { results } = await env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname ${J} ORDER BY o.date DESC LIMIT ${size} OFFSET ${(page - 1) * size}`).bind(...args).all();
+    return json({ ok: true, page, size, total: tot ? tot.n : 0, orders: results.map(mapOrder) });
+  }
   if (path === '/api/orders/search') {
     // Sipariş no, müşteri adı, ürün adı / stok kodu / barkod ile arama (son 300 siparişin dışındakiler dahil)
     const q = String(body.q || '').trim(); if (q.length < 2) return json({ ok: true, orders: [] });

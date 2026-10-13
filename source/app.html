@@ -600,18 +600,22 @@ function viewOrders(){
   const info = `<p class="muted small" style="margin:10px 0 14px">${startedAt() ? `Stok takibi başlangıcı: <b>${esc(fmtDate(startedAt(), false))}</b>. ` : ''}${last ? `Son aktarım: ${esc(last.label)} · ${esc(fmtDate(last.at))}` : 'Henüz sipariş dosyası aktarılmadı.'}</p>`;
   if (!S.loaded.orders) return head + info + loading();
   if (!S.orders.length) return head + info + `<div class="panel empty"><h4>Henüz sipariş yok</h4><p>Trendyol siparişleri bağlantı kurulunca her 10 saniyede kendiliğinden gelir; iptal olanlar stoğa geri eklenir. Diğer kanalların siparişlerini dosyadan aktarabilir ya da elle girebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar</button></div></div>`;
-  const q = searchNorm(S.oq.trim());
   const used = [...new Set(S.orders.map(o => o.channel))];
-  const pool = q && S.osearch && S.osearch.q === S.oq.trim() ? [...S.orders, ...S.osearch.orders.filter(x => !S.orders.some(y => y.id === x.id))] : S.orders;
-  const bcSku = q ? [...S.products.values()].filter(p => p.barcode && searchNorm(p.barcode) === q).map(p => searchNorm(p.sku)) : [];
-  let os = pool.filter(o => (!q || searchNorm(o.orderNo + ' ' + (o.cname||'') + ' ' + (o.lines||[]).map(l => l.sku + ' ' + l.name).join(' ')).includes(q) || (o.lines||[]).some(l => bcSku.includes(searchNorm(l.sku)))) && (S.ofilter === 'all' || orderStatus(o) === S.ofilter || (S.ofilter==='cancelled' && orderStatus(o)==='partial')) && (!S.och || o.channel === S.och));
+  const key = [S.opage || 1, S.ofilter, S.och || '', S.oq.trim(), S.rev].join('|');
+  const PD = S.oPage;
+  if (!PD || PD.key !== key) { if (!S.oLoading || S.oLoading !== key) { S.oLoading = key; api('/api/orders/page', {page:S.opage||1, filter:S.ofilter, channel:S.och||'', q:S.oq.trim()}).then(r => { S.oPage = {key, ...r}; S.oLoading = null; if (S.tab === 'orders') render(); }).catch(e => { S.oLoading = null; toast(errText(e), true); }); } }
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="oq" type="search" placeholder="Sipariş no, müşteri adı, ürün, stok kodu veya barkod" value="${esc(S.oq)}" aria-label="Sipariş ara" autocomplete="off"></div></div>
   <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['cancelled','İptal'],['returned','İade var']].map(([id,l]) => `<button class="chip" data-act="ofilter" data-id="${id}" aria-pressed="${S.ofilter===id}">${l}</button>`).join('')}</div>
   ${used.length > 1 ? `<div class="chips"><button class="chip" data-act="och" data-id="" aria-pressed="${!S.och}">Tüm kanallar</button>${used.map(c => `<button class="chip" data-act="och" data-id="${c}" aria-pressed="${S.och===c}">${esc((CHANNELS[c]||{name:c}).name)}</button>`).join('')}</div>` : ''}</div>`;
-  const list = os.length ? `<div class="list">${os.slice(0,200).map(o => { const st = OST[orderStatus(o)]; const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0); return `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${(o.lines||[]).length} kalem · ${fmtN(units)} adet</span>${o.baseline?'<span class="pill p-mute">Başlangıç öncesi</span>':''}</div></div><div class="end"><span class="pill ${st[1]}">${st[0]}</span></div></button>`; }).join('')}${S.orders.length>=300?'<div class="more">Son 300 sipariş gösteriliyor</div>':''}</div>` : `<div class="panel empty"><h4>Eşleşen sipariş yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
+  const base = key.split('|').slice(0, 4).join('|'); const pd = S.oPage && S.oPage.key.split('|').slice(0, 4).join('|') === base ? S.oPage : null; const os = pd ? pd.orders : [];
+  const pages = pd ? Math.max(1, Math.ceil(pd.total / pd.size)) : 1, cur = pd ? pd.page : (S.opage || 1);
+  const pnums = []; for (let i = 1; i <= pages; i++) if (i === 1 || i === pages || Math.abs(i - cur) <= 2) pnums.push(i); else if (pnums[pnums.length - 1] !== '…') pnums.push('…');
+  const pager = pd && pages > 1 ? `<div class="row" style="justify-content:center;flex-wrap:wrap;gap:6px;margin:14px 0"><button class="btn sm" data-act="opage" data-id="${cur-1}" ${cur<=1?'disabled':''}>‹ Önceki</button>${pnums.map(n => n === '…' ? '<span class="muted">…</span>' : `<button class="btn sm ${n===cur?'primary':'ghost'}" data-act="opage" data-id="${n}">${n}</button>`).join('')}<button class="btn sm" data-act="opage" data-id="${cur+1}" ${cur>=pages?'disabled':''}>Sonraki ›</button></div>` : '';
+  const countLine = pd ? `<p class="muted small" style="margin:0 0 8px">${fmtN(pd.total)} sipariş${pages > 1 ? ` · sayfa ${fmtN(cur)} / ${fmtN(pages)}` : ''}</p>` : '';
+  const list = !pd ? loading() : os.length ? countLine + `<div class="list">${os.map(o => { const st = OST[orderStatus(o)]; const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0); return `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${(o.lines||[]).length} kalem · ${fmtN(units)} adet</span>${o.baseline?'<span class="pill p-mute">Başlangıç öncesi</span>':''}</div></div><div class="end"><span class="pill ${st[1]}">${st[0]}</span></div></button>`; }).join('')}</div>` + pager : `<div class="panel empty"><h4>Eşleşen sipariş yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
   return head + info + tools + list;
 }
-function findOrder(id){ return S.orders.find(x => x.id === id) || (S.osearch && S.osearch.orders.find(x => x.id === id)) || (S.extraOrders && S.extraOrders[id]); }
+function findOrder(id){ return S.orders.find(x => x.id === id) || (S.oPage && S.oPage.orders.find(x => x.id === id)) || (S.osearch && S.osearch.orders.find(x => x.id === id)) || (S.extraOrders && S.extraOrders[id]); }
 function sheetOrder(){
   const o = findOrder(S.sheet.id);
   if (!o) {
@@ -1460,8 +1464,9 @@ document.addEventListener('click', async e => {
     case 'tab': setTab(id); break;
     case 'filter': S.filter = id; if (S.tab !== 'stock') setTab('stock'); else render(); break;
     case 'chf': S.ch = id; render(); break;
-    case 'ofilter': S.ofilter = id; render(); break;
-    case 'och': S.och = id; render(); break;
+    case 'ofilter': S.ofilter = id; S.opage = 1; render(); break;
+    case 'och': S.och = id; S.opage = 1; render(); break;
+    case 'opage': S.opage = Math.max(1, Number(id) || 1); render(); window.scrollTo(0, 0); break;
     case 'rfilter': S.rfilter = id; render(); break;
     case 'mfilter': S.mfilter = id; render(); break;
     case 'vsort': S.vsort = id; render(); break;
@@ -1526,7 +1531,7 @@ let qTimer;
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
-  if (t.id === 'oq') { S.oq = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { render(); const q = S.oq.trim(); if (q.length >= 2) api('/api/orders/search', {q}).then(r => { if (S.oq.trim() === q) { S.osearch = {q, orders: r.orders}; render(); } }).catch(() => {}); }, 300); }
+  if (t.id === 'oq') { S.oq = t.value; S.opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 300); }
   if (t.id === 'pq') { profS().q = t.value; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
 document.addEventListener('change', e => {
