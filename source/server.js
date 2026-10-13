@@ -1115,12 +1115,15 @@ async function api(req, env, path) {
   if (path === '/api/state') {
     const info = await syncInfo(env);
     if (new URL(req.url).searchParams.get('rev') === info.rev) return json({ ...info, same: true });
-    const [p, o, r, m] = await env.DB.batch([
+    const [p, o, r, m, pd] = await env.DB.batch([
       env.DB.prepare('SELECT * FROM products ORDER BY name'),
       env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ORDER BY o.date DESC LIMIT 300`),
       env.DB.prepare('SELECT * FROM returns ORDER BY created_at DESC LIMIT 400'),
-      env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600')]);
-    return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove) });
+      env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600'),
+      env.DB.prepare(`SELECT o.*, a.status pstatus, json_extract(c.data,'$.name') cname FROM audit_pkg a JOIN orders o ON o.order_no=a.order_no AND o.channel='trendyol' LEFT JOIN order_cust c ON c.order_no=a.order_no
+        WHERE a.status IN ('Created','Picking','Invoiced','ReadyToShip','Awaiting') AND a.day >= ?1 GROUP BY o.id ORDER BY o.date ASC LIMIT 200`).bind(trDay(Date.now() - 30 * 86400000))]);
+    const pending = (pd.results || []).map(x => ({ ...mapOrder(x), pstatus: x.pstatus }));
+    return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove), pending });
   }
   if (method !== 'POST' && path !== '/api/export') return bad('Yöntem desteklenmiyor', 405);
 
