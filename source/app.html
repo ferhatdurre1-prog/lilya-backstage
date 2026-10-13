@@ -452,11 +452,11 @@ function renderDrawer(){
 /* ============ Ana ekran ============ */
 function viewHome(){
   const P = profS(); // Kâr ekranıyla aynı veri: bu ayın siparişleri
-  if (!S.home || S.home.key !== todayTR() + '|' + S.rev) loadHome();
+  homeMaybeLoad();
   const H = S.home && S.home.data;
   const hr = new Date().getHours(), hello = hr < 6 ? 'İyi geceler' : hr < 12 ? 'Günaydın' : hr < 18 ? 'İyi günler' : 'İyi akşamlar';
   let h = `<div style="margin:4px 0 16px"><h2 class="sec" style="margin:0">${hello}</h2><p class="lead small" style="margin:4px 0 0">${esc(new Date().toLocaleDateString('tr-TR',{weekday:'long', day:'numeric', month:'long'}))}</p></div>`;
-  if (!H) return h + loading();
+  if (!H) return h + (S.home && S.home.err ? `<div class="card"><b>Ana ekran verisi alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>` : loading());
   const t0 = new Date(); t0.setHours(0,0,0,0); const y0 = new Date(t0); y0.setDate(y0.getDate()-1);
   const pick = (a, b) => H.orders.filter(o => { const d = Date.parse(o.date); return d >= a && d < b; });
   const agg = (os) => os.reduce((a, o) => ({rev: a.rev + o.revenue, prof: a.prof + o.profit, n: a.n + 1, u: a.u + o.units}), {rev:0, prof:0, n:0, u:0});
@@ -523,13 +523,25 @@ function homeChart(W, agg, pickW, t0){
     <div class="lg"><span><i style="background:var(--brand-soft);border:1px solid var(--brand)"></i>Ciro</span><span><i style="background:var(--good)"></i>Net kâr</span><span><i style="background:var(--bad)"></i>Zarar</span></div>
     <svg viewBox="0 0 ${Wd} ${base + 40}" role="img" aria-label="Son 7 günün ciro ve net kâr grafiği">${g}</svg></div>`;
 }
+// Tek seferde tek yükleme; senkron her değiştiğinde değil, en fazla dakikada bir yenilenir. Hata olursa döngüye girmez.
+function homeMaybeLoad(force){
+  if (S.homeLoading) return;
+  const H = S.home, day = todayTR(), now = Date.now();
+  if (!force && H && H.day === day && (H.rev === S.rev || now - H.at < 60000)) return;
+  if (!force && H && H.err && now - H.at < 60000) return;
+  setTimeout(loadHome, 0);
+}
 async function loadHome(){
-  const key = todayTR() + '|' + S.rev; if (S.homeLoading === key) return; S.homeLoading = key;
+  if (S.homeLoading) return; S.homeLoading = true;
+  const day = todayTR(), rev = S.rev;
   try { const [f, t] = periodRange('month'); const w = new Date(); w.setHours(0,0,0,0); w.setDate(w.getDate()-6);
-    const [month, week] = await Promise.all([api('/api/profit', {from: f.toISOString(), to: t.toISOString()}), api('/api/profit', {from: w.toISOString(), to: t.toISOString()})]);
-    S.home = {key, data: month, week};
-  } catch(e) { S.home = S.home || null; }
-  S.homeLoading = null; if (S.tab === 'home') render();
+    const week = await api('/api/profit', {from: w.toISOString(), to: t.toISOString()});
+    const month = f >= w ? null : await api('/api/profit', {from: f.toISOString(), to: t.toISOString()});
+    let data = month || week;
+    if (!month) { const mo = week.orders.filter(o => Date.parse(o.date) >= f.getTime()); const m = mo.reduce((a, o) => ({revenue:a.revenue+o.revenue, profit:a.profit+o.profit}), {revenue:0, profit:0}); data = {...week, summary: {...week.summary, ...m, margin: m.revenue ? m.profit / m.revenue * 100 : null}}; }
+    S.home = {day, rev, at: Date.now(), data, week};
+  } catch(e) { S.home = S.home && S.home.data ? {...S.home, at: Date.now()} : {day, rev, at: Date.now(), err: errText(e)}; }
+  S.homeLoading = false; if (S.tab === 'home') render();
 }
 function banners(){
   let h = '';
@@ -1638,6 +1650,7 @@ document.addEventListener('click', async e => {
     case 'menu-close': S.drawer = false; renderDrawer(); break;
     case 'dnav': S.drawer = false; renderDrawer(); if (id === '__conn') { S.imp = null; openSheet('import'); } else setTab(id); break;
     case 'home-stock': S.filter = id; setTab('stock'); break;
+    case 'home-retry': homeMaybeLoad(true); render(); break;
     case 'home-pend': S.homePendAll = !S.homePendAll; render(); break;
     case 'home-losers': profS().sub = 'losers'; setTab('profit'); break;
     case 'filter': S.filter = id; if (S.tab !== 'stock') setTab('stock'); else render(); break;
