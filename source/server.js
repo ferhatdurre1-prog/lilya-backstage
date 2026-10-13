@@ -75,6 +75,7 @@ async function init(env) {
   }
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_misc1'`).first())) {
@@ -320,6 +321,23 @@ async function ty(env, path, params) {
 }
 const TY_ORDER_DATE_SHIFT = 3 * 3600000;
 const trDay = (ms) => new Date(ms + TY_TZ).toISOString().slice(0, 10); // Türkiye takvim günü
+// Sipariş teslimatı ve fatura kesimi için gereken alıcı bilgileri (sözleşme EK-4: yalnızca sözleşmesel yükümlülük amacıyla;
+// e-posta / telefon / T.C. kimlik no saklanmaz, pazarlama için kullanılmaz)
+async function recordCustomers(env, pkgs) {
+  const st = [], now = iso(), byNo = new Map();
+  for (const p of pkgs) {
+    const ia = p.invoiceAddress || {}, sa = p.shipmentAddress || {};
+    const t = (v) => String(v || '').trim().slice(0, 300);
+    const d = { name: t([p.customerFirstName, p.customerLastName].filter(Boolean).join(' ')) || t(sa.fullName),
+      ship: { fullName: t(sa.fullName), address: t(sa.fullAddress || [sa.address1, sa.address2].filter(Boolean).join(' ')), district: t(sa.district), city: t(sa.city) },
+      inv: { fullName: t(ia.fullName), company: t(ia.company), address: t(ia.fullAddress || [ia.address1, ia.address2].filter(Boolean).join(' ')), district: t(ia.district), city: t(ia.city), postalCode: t(ia.postalCode), taxOffice: t(ia.taxOffice), taxNumber: t(ia.taxNumber) },
+      commercial: !!p.commercial };
+    if (!d.name && !d.inv.fullName && !d.ship.fullName) continue;
+    byNo.set(String(p.orderNumber), d);
+  }
+  for (const [no, d] of byNo) st.push(env.DB.prepare(`INSERT INTO order_cust(order_no,channel,data,updated_at) VALUES(?1,'trendyol',?2,?3) ON CONFLICT(order_no) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at WHERE order_cust.data IS NOT excluded.data`).bind(no, JSON.stringify(d), now));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+}
 async function recordAuditPkgs(env, pkgs) {
   const now = iso(), st = [];
   for (const p of pkgs) {
@@ -412,7 +430,7 @@ async function syncTrendyolOrders(env) {
   let shift = s.ty_shift !== null && s.ty_shift !== undefined ? Number(s.ty_shift) : null;
   if (list.length && shift === null) { shift = maxMod > now + 30 * 60000 ? 3 * 3600000 : 0; await setSetting(env, 'ty_shift', shift); }
   let stats = null;
-  if (list.length) { stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' }); await recordAuditPkgs(env, list); }
+  if (list.length) { stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' }); await recordAuditPkgs(env, list); try { await recordCustomers(env, list); } catch (e) {} }
   const desiSt = [];
   for (const p of list) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const ls = p.lines || []; if (d > 0 && ls.length === 1 && ls[0].stockCode) desiSt.push(env.DB.prepare('UPDATE products SET desi=?1 WHERE key=?2 AND desi IS NOT ?1').bind(Math.round(d / Math.max(1, Number(ls[0].quantity) || 1) * 100) / 100, skuKey(ls[0].stockCode))); }
   for (let i = 0; i < desiSt.length; i += 90) await env.DB.batch(desiSt.slice(i, i + 90));
@@ -429,7 +447,7 @@ async function backfillTrendyolOrders(env) {
   const pkgs = await fetchOrderPackages(env, start, end);
   const latest = new Map(); for (const p of pkgs) { const k = String(p.shipmentPackageId || p.id); const o = latest.get(k); if (!o || (p.lastModifiedDate || 0) >= (o.lastModifiedDate || 0)) latest.set(k, p); }
   const stats = latest.size ? await ingestOrders(env, 'trendyol', tyPackagesToOrders([...latest.values()], shift), { source: 'trendyol' }) : null;
-  if (latest.size) await recordAuditPkgs(env, [...latest.values()]);
+  if (latest.size) { await recordAuditPkgs(env, [...latest.values()]); try { await recordCustomers(env, [...latest.values()]); } catch (e) {} }
   if (stats && stats.recon.length) await processReconQueue(env, stats.recon, 0);
   await setSetting(env, 'fin_backfill_day', day - 1 > 0 ? String(day - 1) : 'done');
   if (day - 1 <= 0 && (await getSetting(env, 'audit_state')) === 'running') await finishAudit(env);
@@ -1226,6 +1244,10 @@ async function api(req, env, path) {
     if (keys) { const st = keys.map(k => env.DB.prepare('UPDATE products SET same_day=?1 WHERE key=?2').bind(v, k)); st.push(REV(env)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
     else await env.DB.batch([env.DB.prepare('UPDATE products SET same_day=?1').bind(v), REV(env)]);
     return json({ ok: true });
+  }
+  if (path === '/api/orders/customer') {
+    const r = await env.DB.prepare('SELECT data, updated_at FROM order_cust WHERE order_no=?1').bind(String(body.orderNo || '')).first();
+    return json({ ok: true, customer: r ? JSON.parse(r.data) : null });
   }
   if (path === '/api/ads') {
     const items = Array.isArray(body.items) ? body.items : null; if (!items || items.length > 1000) return bad('Reklam listesi geçersiz.');

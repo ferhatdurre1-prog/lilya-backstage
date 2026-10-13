@@ -619,6 +619,7 @@ function sheetOrder(){
     return `<div class="ln"><div class="pcell">${thumb(p || {name:l.name})}<div style="min-width:0"><div style="font-weight:600;overflow-wrap:anywhere">${esc(l.name || l.sku)}</div><div class="muted small"><span class="mono">${esc(l.sku)}</span> · ${fmtN(l.qty)} adet ${lst}</div><div class="muted small">Stoktan düşülen: ${fmtN(l.applied)} adet</div></div></div>
     <div>${l.status !== 'cancelled' && !l.ret && l.applied > 0 ? `<button class="btn sm" data-act="line-return" data-key="${esc(l.key)}">İade talebi</button>` : ''}</div></div>`; }).join('');
   const body = `<div class="card"><dl class="kv"><dt>Kanal</dt><dd>${chBadge(o.channel)}</dd><dt>Sipariş tarihi</dt><dd>${esc(fmtDate(o.date))}</dd><dt>Durum</dt><dd><span class="pill ${st[1]}">${st[0]}</span></dd><dt>Kaynak</dt><dd>${o.source==='manual'?'Elle girildi':o.source==='trendyol'?'Trendyol (otomatik)':'Dosyadan aktarıldı'}</dd>${o.baseline?'<dt>Not</dt><dd>Başlangıç tarihinden önce; stoğu etkilemedi</dd>':''}</dl></div>
+  ${customerCard(o)}
   ${orderProfitCard(o)}
   <div class="card"><h3>Kalemler</h3><div class="lines">${rows}</div></div>
   ${anyActive ? `<div class="card"><h3>İptal</h3><p class="muted small" style="margin:0">Siparişi iptal edersen, stoktan düşülmüş bütün adetler ortak stoğa geri eklenir.</p><div class="row"><button class="btn danger" data-act="cancel-order">Siparişi iptal et</button></div></div>` : ''}`;
@@ -1076,6 +1077,18 @@ function parseDesi(txt){
   for (const raw of String(txt||'').split(/\n/)) { const line = raw.trim(); if (!line) continue; const m = line.match(/^(\+|\d+(?:[.,]\d+)?)\s*(?:desi)?\s*[:=\-]\s*([\d.,]+)/i); if (!m) throw new Error(`Desi satırı anlaşılamadı: "${line}". Örnek: 1: 59,90`); const price = num(m[2]); if (!isFinite(price)) throw new Error(`Ücret okunamadı: "${line}"`); if (m[1] === '+') extra = price; else rows.push({desi:num(m[1]), price}); }
   rows.sort((a,b) => a.desi - b.desi); if (extra !== null) { if (!rows.length) throw new Error('"+" satırından önce en az bir desi satırı yaz.'); rows[rows.length-1].extra = extra; }
   return rows;
+}
+const CUST = {};
+function customerCard(o){
+  if (o.channel !== 'trendyol') return '';
+  const c = CUST[o.orderNo];
+  if (c === undefined) { CUST[o.orderNo] = null; api('/api/orders/customer', {orderNo:o.orderNo}).then(r => { CUST[o.orderNo] = r.customer || false; if (S.sheet && S.sheet.type === 'order') renderSheet(false); }).catch(() => { delete CUST[o.orderNo]; }); }
+  if (!c) return `<div class="card"><h3>Müşteri ve fatura bilgileri</h3><p class="muted small" style="margin:0">${c === false ? 'Bu sipariş için alıcı bilgisi henüz alınmadı; sipariş Trendyol\'dan bir sonraki çekişte gelir.' : 'Yükleniyor…'}</p></div>`;
+  const i = c.inv || {}, sh = c.ship || {};
+  const kv = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : '';
+  return `<div class="card"><div class="spread"><h3 style="margin:0">Müşteri ve fatura bilgileri</h3>${c.commercial ? '<span class="pill p-brass">Kurumsal fatura</span>' : ''}</div>
+    <dl class="kv">${kv('Alıcı', c.name)}${kv('Fatura adı', i.company || i.fullName)}${kv('Vergi dairesi', i.taxOffice)}${kv('Vergi no', i.taxNumber)}${kv('Fatura adresi', [i.address, i.district, i.city, i.postalCode].filter(Boolean).join(', '))}${kv('Teslimat', [sh.fullName !== i.fullName ? sh.fullName : '', sh.address, sh.district, sh.city].filter(Boolean).join(', '))}</dl>
+    <p class="muted small" style="margin:0">Yalnızca teslimat ve fatura kesimi için. Trendyol sözleşmesi gereği bu bilgiler reklam / kampanya / iletişim için kullanılamaz.</p></div>`;
 }
 function orderProfitCard(o){
   const D = S.prof && S.prof.data; const x = D && D.orders.find(y => y.id === o.id);
