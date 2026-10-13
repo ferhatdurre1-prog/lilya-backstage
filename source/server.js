@@ -76,6 +76,7 @@ async function init(env) {
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
+  try { await env.DB.prepare('ALTER TABLE order_cust ADD COLUMN sname TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_misc1'`).first())) {
@@ -339,7 +340,8 @@ async function recordCustomers(env, pkgs) {
     if (!d.name && !d.inv.fullName && !d.ship.fullName) continue;
     byNo.set(String(p.orderNumber), d);
   }
-  for (const [no, d] of byNo) st.push(env.DB.prepare(`INSERT INTO order_cust(order_no,channel,data,updated_at) VALUES(?1,'trendyol',?2,?3) ON CONFLICT(order_no) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at WHERE order_cust.data IS NOT excluded.data`).bind(no, JSON.stringify(d), now));
+  for (const [no, d] of byNo) { const sn = [d.name, d.inv.fullName, d.inv.company].filter(Boolean).join(' ').toLocaleLowerCase('tr-TR');
+    st.push(env.DB.prepare(`INSERT INTO order_cust(order_no,channel,data,updated_at,sname) VALUES(?1,'trendyol',?2,?3,?4) ON CONFLICT(order_no) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at, sname=excluded.sname WHERE order_cust.data IS NOT excluded.data OR order_cust.sname IS NOT excluded.sname`).bind(no, JSON.stringify(d), now, sn)); }
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
 }
 async function recordAuditPkgs(env, pkgs) {
@@ -942,6 +944,7 @@ async function computeProfit(env, from, to) {
   }
   const orderNos = o.results.filter(x => x.channel === 'trendyol').map(x => x.order_no);
   const fin = new Map((await selectIn(env, 'SELECT * FROM order_fin', 'order_no', orderNos)).map(x => [x.order_no, x]));
+  const cnames = new Map((await selectIn(env, "SELECT order_no, json_extract(data,'$.name') n FROM order_cust", 'order_no', orderNos)).map(x => [x.order_no, x.n || '']));
   // Trendyol'un ceza vb. kesinti faturaları: siparişe bağlı olanlar siparişe, bağlanamayanlar fatura tarihine göre döneme yazılır
   const miscByOrder = new Map();
   for (const m of await selectIn(env, 'SELECT order_no, type, amount FROM fin_misc', 'order_no', orderNos)) { if (isCompensation(m.type)) continue; const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
@@ -981,7 +984,7 @@ async function computeProfit(env, from, to) {
       if (!unsPenalty) continue;
       const mo0 = miscByOrder.get(ord.order_no); const pen = mo0 ? mo0.amount : unsPenalty;
       sum.penalty += pen; sum.profit -= pen; if (mo0) sum.penaltyActual++; else sum.penaltyEst++;
-      byOrder.push({ id: ord.id, orderNo: ord.order_no, channel: ord.channel, date: ord.date, actual: !!mo0, penaltyEst: !mo0, penaltyTypes: mo0 ? mo0.types.slice(0, 4) : ['Tedarik edememe'], cargoInfo: 'Tedarik edilemedi (iptal)', revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: R2(pen), service: 0, stopaj: 0, cost: 0, profit: R2(-pen), units: 0, retUnits: 0 });
+      byOrder.push({ cname: cnames.get(ord.order_no) || "", q: allLines.map(l => l.sku + " " + (l.name || "")).join(" ").slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ord.channel, date: ord.date, actual: !!mo0, penaltyEst: !mo0, penaltyTypes: mo0 ? mo0.types.slice(0, 4) : ['Tedarik edememe'], cargoInfo: 'Tedarik edilemedi (iptal)', revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: R2(pen), service: 0, stopaj: 0, cost: 0, profit: R2(-pen), units: 0, retUnits: 0 });
       const l0 = allLines.find(l => l.fin && l.fin.uns) || allLines[0];
       let bp = byProduct.get(l0.pkey); if (!bp) { const pr = prods.get(l0.pkey); bp = { key: l0.pkey, sku: l0.sku, name: (pr && pr.name) || l0.name, image: pr ? pr.image : '', costKnown: !!(pr && pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(l0.pkey, bp); }
       bp.penalty += pen; bp.profit -= pen;
@@ -1042,7 +1045,7 @@ async function computeProfit(env, from, to) {
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
-    byOrder.push({ id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, retCargoEst, undelivered, penaltyEst, penaltyTypes: mo ? mo.types.slice(0, 4) : null, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    byOrder.push({ cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, retCargoEst, undelivered, penaltyEst, penaltyTypes: mo ? mo.types.slice(0, 4) : null, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
     // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
@@ -1054,7 +1057,7 @@ async function computeProfit(env, from, to) {
     for (const x of rows) {
       const share = est ? x.revenue / est : 0, fshare = fullTot ? x.full / fullTot : x.l.qty / qtyTot;
       const k = x.l.pkey; let bp = byProduct.get(k);
-      if (!bp) { bp = { key: k, sku: x.l.sku, name: (x.pr && x.pr.name) || x.l.name, image: x.pr ? x.pr.image : '', costKnown: !!(x.pr && x.pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(k, bp); }
+      if (!bp) { bp = { key: k, sku: x.l.sku, barcode: (x.pr && x.pr.barcode) || '', name: (x.pr && x.pr.name) || x.l.name, image: x.pr ? x.pr.image : '', costKnown: !!(x.pr && x.pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(k, bp); }
       const lr = revenue * share, lc = commission * share, ls = stopaj * share;
       const res = { revenue: lr, commission: lc, cargo: cargo * fshare, retCargo: retCargo * (retTot ? rv(x) / retTot : x.retQ / retQTot), penalty: (penalty - unsAlloc) * (dTot ? dv(x) / dTot : fshare), service: service * fshare, stopaj: ls, cost: x.cost, units: x.qty, retUnits: x.retQ };
       res.profit = lr - lc - res.cargo - res.retCargo - res.penalty - res.service - ls - x.cost;
@@ -1097,7 +1100,7 @@ async function computePricing(env) {
 }
 
 /* ---------- API ---------- */
-function mapOrder(r) { return { id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
+function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
 function mapProduct(r) { return { sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
@@ -1113,7 +1116,7 @@ async function api(req, env, path) {
     if (new URL(req.url).searchParams.get('rev') === info.rev) return json({ ...info, same: true });
     const [p, o, r, m] = await env.DB.batch([
       env.DB.prepare('SELECT * FROM products ORDER BY name'),
-      env.DB.prepare('SELECT * FROM orders ORDER BY date DESC LIMIT 300'),
+      env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ORDER BY o.date DESC LIMIT 300`),
       env.DB.prepare('SELECT * FROM returns ORDER BY created_at DESC LIMIT 400'),
       env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600')]);
     return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove) });
@@ -1248,6 +1251,15 @@ async function api(req, env, path) {
     if (keys) { const st = keys.map(k => env.DB.prepare('UPDATE products SET same_day=?1 WHERE key=?2').bind(v, k)); st.push(REV(env)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
     else await env.DB.batch([env.DB.prepare('UPDATE products SET same_day=?1').bind(v), REV(env)]);
     return json({ ok: true });
+  }
+  if (path === '/api/orders/search') {
+    // Sipariş no, müşteri adı, ürün adı / stok kodu / barkod ile arama (son 300 siparişin dışındakiler dahil)
+    const q = String(body.q || '').trim(); if (q.length < 2) return json({ ok: true, orders: [] });
+    const ql = '%' + q.toLocaleLowerCase('tr-TR').replace(/[%_]/g, '') + '%', qr = '%' + q.replace(/[%_]/g, '') + '%';
+    const bc = await env.DB.prepare('SELECT sku FROM products WHERE barcode=?1').bind(q).first();
+    const { results } = await env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol'
+      WHERE o.order_no LIKE ?1 OR c.sname LIKE ?2 OR o.lines LIKE ?1 ${bc ? 'OR o.lines LIKE ?3' : ''} ORDER BY o.date DESC LIMIT 100`).bind(...(bc ? [qr, ql, '%' + bc.sku + '%'] : [qr, ql])).all();
+    return json({ ok: true, orders: results.map(mapOrder) });
   }
   if (path === '/api/orders/customer') {
     const r = await env.DB.prepare('SELECT data, updated_at FROM order_cust WHERE order_no=?1').bind(String(body.orderNo || '')).first();

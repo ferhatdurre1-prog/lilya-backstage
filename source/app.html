@@ -602,16 +602,23 @@ function viewOrders(){
   if (!S.orders.length) return head + info + `<div class="panel empty"><h4>Henüz sipariş yok</h4><p>Trendyol siparişleri bağlantı kurulunca her 10 saniyede kendiliğinden gelir; iptal olanlar stoğa geri eklenir. Diğer kanalların siparişlerini dosyadan aktarabilir ya da elle girebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar</button></div></div>`;
   const q = searchNorm(S.oq.trim());
   const used = [...new Set(S.orders.map(o => o.channel))];
-  let os = S.orders.filter(o => (!q || searchNorm(o.orderNo + ' ' + (o.lines||[]).map(l => l.sku + ' ' + l.name).join(' ')).includes(q)) && (S.ofilter === 'all' || orderStatus(o) === S.ofilter || (S.ofilter==='cancelled' && orderStatus(o)==='partial')) && (!S.och || o.channel === S.och));
-  const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="oq" type="search" placeholder="Sipariş no, stok kodu veya ürün" value="${esc(S.oq)}" aria-label="Sipariş ara" autocomplete="off"></div></div>
+  const pool = q && S.osearch && S.osearch.q === S.oq.trim() ? [...S.orders, ...S.osearch.orders.filter(x => !S.orders.some(y => y.id === x.id))] : S.orders;
+  const bcSku = q ? [...S.products.values()].filter(p => p.barcode && searchNorm(p.barcode) === q).map(p => searchNorm(p.sku)) : [];
+  let os = pool.filter(o => (!q || searchNorm(o.orderNo + ' ' + (o.cname||'') + ' ' + (o.lines||[]).map(l => l.sku + ' ' + l.name).join(' ')).includes(q) || (o.lines||[]).some(l => bcSku.includes(searchNorm(l.sku)))) && (S.ofilter === 'all' || orderStatus(o) === S.ofilter || (S.ofilter==='cancelled' && orderStatus(o)==='partial')) && (!S.och || o.channel === S.och));
+  const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="oq" type="search" placeholder="Sipariş no, müşteri adı, ürün, stok kodu veya barkod" value="${esc(S.oq)}" aria-label="Sipariş ara" autocomplete="off"></div></div>
   <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['cancelled','İptal'],['returned','İade var']].map(([id,l]) => `<button class="chip" data-act="ofilter" data-id="${id}" aria-pressed="${S.ofilter===id}">${l}</button>`).join('')}</div>
   ${used.length > 1 ? `<div class="chips"><button class="chip" data-act="och" data-id="" aria-pressed="${!S.och}">Tüm kanallar</button>${used.map(c => `<button class="chip" data-act="och" data-id="${c}" aria-pressed="${S.och===c}">${esc((CHANNELS[c]||{name:c}).name)}</button>`).join('')}</div>` : ''}</div>`;
-  const list = os.length ? `<div class="list">${os.slice(0,200).map(o => { const st = OST[orderStatus(o)]; const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0); return `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span></div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${(o.lines||[]).length} kalem · ${fmtN(units)} adet</span>${o.baseline?'<span class="pill p-mute">Başlangıç öncesi</span>':''}</div></div><div class="end"><span class="pill ${st[1]}">${st[0]}</span></div></button>`; }).join('')}${S.orders.length>=300?'<div class="more">Son 300 sipariş gösteriliyor</div>':''}</div>` : `<div class="panel empty"><h4>Eşleşen sipariş yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
+  const list = os.length ? `<div class="list">${os.slice(0,200).map(o => { const st = OST[orderStatus(o)]; const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0); return `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${(o.lines||[]).length} kalem · ${fmtN(units)} adet</span>${o.baseline?'<span class="pill p-mute">Başlangıç öncesi</span>':''}</div></div><div class="end"><span class="pill ${st[1]}">${st[0]}</span></div></button>`; }).join('')}${S.orders.length>=300?'<div class="more">Son 300 sipariş gösteriliyor</div>':''}</div>` : `<div class="panel empty"><h4>Eşleşen sipariş yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
   return head + info + tools + list;
 }
+function findOrder(id){ return S.orders.find(x => x.id === id) || (S.osearch && S.osearch.orders.find(x => x.id === id)) || (S.extraOrders && S.extraOrders[id]); }
 function sheetOrder(){
-  const o = S.orders.find(x => x.id === S.sheet.id);
-  if (!o) return {title:'Sipariş', body:'<div class="card"><p class="muted">Sipariş bulunamadı.</p></div>'};
+  const o = findOrder(S.sheet.id);
+  if (!o) {
+    const id = S.sheet.id, no = String(id).split('-').slice(2).join('-');
+    if (no && !(S.extraOrders && id in S.extraOrders)) { S.extraOrders = S.extraOrders || {}; S.extraOrders[id] = null; api('/api/orders/search', {q:no}).then(r => { const f = r.orders.find(x => x.id === id); S.extraOrders[id] = f || undefined; if (!f) delete S.extraOrders[id]; if (S.sheet && S.sheet.id === id) renderSheet(true); }).catch(() => { delete S.extraOrders[id]; }); }
+    return {title:'Sipariş', body:`<div class="card"><p class="muted">${S.extraOrders && S.extraOrders[id] === null ? 'Yükleniyor…' : 'Sipariş bulunamadı.'}</p></div>`};
+  }
   const st = OST[orderStatus(o)];
   const anyActive = (o.lines||[]).some(l => l.status !== 'cancelled');
   const rows = (o.lines||[]).map(l => { const p = S.products.get(l.pkey);
@@ -655,12 +662,12 @@ async function submitNewOrder(){
   });
 }
 async function cancelOrder(){
-  const o = S.orders.find(x => x.id === S.sheet.id); if (!o) return;
+  const o = findOrder(S.sheet.id); if (!o) return;
   if (!(await confirmBox(`#${esc(o.orderNo)} iptal edilecek ve düşülen adetler stoğa geri eklenecek.`, 'İptal et', true))) return;
   await run(async () => { await api('/api/orders/cancel', {id:o.id}); await refresh(true); toast('Sipariş iptal edildi, stok geri eklendi.'); });
 }
 async function lineReturn(lineKey){
-  const o = S.orders.find(x => x.id === S.sheet.id); if (!o) return;
+  const o = findOrder(S.sheet.id); if (!o) return;
   const l = o.lines.find(x => x.key === lineKey); if (!l) return;
   S.sheet = {type:'new-return', from:{channel:o.channel, orderNo:o.orderNo, orderId:o.id, lineKey, sku:l.sku, pkey:l.pkey, name:l.name, max:l.applied}}; renderSheet(true);
 }
@@ -910,12 +917,17 @@ function viewProfit(){
   if (s.missingPrice) h += `<div class="banner"><div><b>${fmtN(s.missingPrice)} sipariş satırında satış tutarı yok.</b> Eski ya da elle girilmiş siparişler olabilir; bu satırların cirosu 0 sayıldı.</div></div>`;
   const subs = [['products','Ürünler'],['orders','Siparişler'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi'],['audit','Kontrol']];
   h += `<div class="filters"><div class="chips">${subs.map(([id,l]) => `<button class="chip" data-act="psub" data-id="${id}" aria-pressed="${P.sub===id}">${l}${id==='losers'?` · ${D.products.filter(x=>x.profit<0).length}`:id==='winners'?` · ${D.products.filter(x=>x.profit>0).length}`:''}</button>`).join('')}</div></div>`;
+  if (P.sub !== 'audit') h += `<div class="toolbar" style="margin-bottom:10px"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="pq" type="search" placeholder="${P.sub==='orders'?'Sipariş no, müşteri adı, ürün, stok kodu veya barkod':'Ürün adı, stok kodu veya barkod'}" value="${esc(P.q||'')}" aria-label="Ara" autocomplete="off"></div></div>`;
+  const pq = searchNorm((P.q||'').trim());
   if (P.sub === 'pricing') h += viewPricing();
   else if (P.sub === 'audit') h += viewAudit();
   else if (P.sub === 'orders') {
-    h += `<div class="list">${D.orders.slice(0,300).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span></div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.retUnits?`<span class="pill p-warn">${fmtN(o.retUnits)} ${o.undelivered?'teslim edilemedi':'iade'}</span>`:''}${o.penalty?`<span class="pill p-bad">${o.penaltyTypes?esc(o.penaltyTypes[0]):'Kupon/ceza'} ${fmtTL(o.penalty)}${o.penaltyEst?' (tahmini)':''}</span>`:''}${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>${D.orders.length>300?'<p class="muted small">İlk 300 sipariş gösteriliyor.</p>':''}`;
+    const os = pq ? D.orders.filter(o => searchNorm(`${o.orderNo} ${o.cname||''} ${o.q||''}`).includes(pq)) : D.orders;
+    if (!os.length) h += `<div class="panel empty"><h4>Eşleşen sipariş yok</h4><p>Aramayı değiştir ya da başka bir dönem seç.</p></div>`;
+    h += `<div class="list">${os.slice(0,300).map(o => `<button class="item" data-act="order" data-id="${esc(o.id)}" style="grid-template-columns:1fr auto"><div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(o.units)} adet · ${fmtTL(o.revenue)}</span>${o.retUnits?`<span class="pill p-warn">${fmtN(o.retUnits)} ${o.undelivered?'teslim edilemedi':'iade'}</span>`:''}${o.penalty?`<span class="pill p-bad">${o.penaltyTypes?esc(o.penaltyTypes[0]):'Kupon/ceza'} ${fmtTL(o.penalty)}${o.penaltyEst?' (tahmini)':''}</span>`:''}${o.actual?'<span class="pill p-good">Gerçek</span>':'<span class="pill p-mute">Tahmini</span>'}</div></div><div class="end"><div class="qty" style="font-size:17px;${profitCls(o.profit)}">${tlS(o.profit)}</div><span class="muted small">${o.revenue?pct(o.profit/o.revenue*100):''}</span></div></button>`).join('')}</div>${D.orders.length>300?'<p class="muted small">İlk 300 sipariş gösteriliyor.</p>':''}`;
   } else {
     let ps = D.products.slice();
+    if (pq) ps = ps.filter(x => searchNorm(`${x.name} ${x.sku} ${x.barcode||''} ${(S.products.get(x.key)||{}).barcode||''}`).includes(pq));
     if (P.sub === 'winners') ps = ps.filter(x => x.profit > 0).sort((a,b) => b.profit - a.profit);
     else if (P.sub === 'losers') ps = ps.filter(x => x.profit < 0).sort((a,b) => a.profit - b.profit);
     else ps.sort(P.sort === 'units' ? (a,b) => b.units - a.units : P.sort === 'margin' ? (a,b) => (b.margin??-1e9) - (a.margin??-1e9) : P.sort === 'revenue' ? (a,b) => b.revenue - a.revenue : (a,b) => b.profit - a.profit);
@@ -1002,6 +1014,7 @@ function viewPricing(){
   if (!P.pricing && !P.pricingErr) { setTimeout(loadPricing, 0); return loading(); }
   if (P.pricingErr) return `<div class="banner bad"><div>${esc(P.pricingErr)}</div></div>`;
   const D = P.pricing; let items = D.items.slice();
+  const pq = searchNorm((P.q||'').trim()); if (pq) items = items.filter(x => searchNorm(`${x.name} ${x.sku} ${(S.products.get(x.key)||{}).barcode||''}`).includes(pq));
   if (!items.length) return `<div class="panel empty"><h4>Trendyol fiyatları henüz gelmedi</h4><p>Ürün listesi Trendyol'dan yeniden taranıyor; satış fiyatı ve komisyon oranları birkaç dakika içinde gelir.</p><button class="btn" data-act="pricing-reload">Yenile</button></div>`;
   const pf = P.pfilter || 'all';
   if (pf === 'loss') items = items.filter(x => x.profit !== null && x.profit < 0); else if (pf === 'nocost') items = items.filter(x => x.profit === null);
@@ -1513,7 +1526,8 @@ let qTimer;
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
-  if (t.id === 'oq') { S.oq = t.value; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
+  if (t.id === 'oq') { S.oq = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { render(); const q = S.oq.trim(); if (q.length >= 2) api('/api/orders/search', {q}).then(r => { if (S.oq.trim() === q) { S.osearch = {q, orders: r.orders}; render(); } }).catch(() => {}); }, 300); }
+  if (t.id === 'pq') { profS().q = t.value; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
 document.addEventListener('change', e => {
   const t = e.target;
