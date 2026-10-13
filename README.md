@@ -3,7 +3,7 @@
 Lilya Home için stok, sipariş ve envanter yönetimi.
 
 - Trendyol ve Shopify'da aynı stok koduna sahip ürünler **tek ortak depo stoğunu** kullanır.
-- Trendyol siparişleri **her 10 saniyede** otomatik çekilir; uygulama kapalıyken de çalışır.
+- Trendyol siparişleri **dakikada bir** otomatik çekilir; uygulama kapalıyken de çalışır.
 - İptal edilen siparişlerin stoğu geri eklenir. İade talebi stoğu değiştirmez; ürün depoya ulaşıp kabul edilince stok artar.
 - Alış fiyatıyla ürün bazında ve depo toplamında stok değeri gösterilir.
 
@@ -13,7 +13,7 @@ Lilya Home için stok, sipariş ve envanter yönetimi.
 
 1. Yukarıdaki düğmeye bas, Cloudflare hesabınla giriş yap.
 2. İstenen alanlara uygulama şifreni ve Trendyol bilgilerini (Satıcı ID, API Key, API Secret) gir.
-3. Kurulum bitince Cloudflare panelinden **Workers Paid** paketine geç (10 saniyelik eşitleme için gerekli).
+3. Kurulum bitince Cloudflare panelinden **Workers Paid** paketine geç (ücretsiz plandaki günlük veritabanı yazma sınırına takılmamak için önerilir).
 4. Verilen `workers.dev` adresini Safari'de aç, giriş yap ve **Ana Ekrana Ekle**.
 
 ## Geliştirme
