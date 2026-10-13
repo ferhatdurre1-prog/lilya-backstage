@@ -477,6 +477,7 @@ function sheetProduct(first){
       <label class="f">Birim alış fiyatı (TL)<input class="input num" id="pi-cost" inputmode="decimal" value="${p.cost!=null?esc(String(p.cost).replace('.',',')):''}" placeholder="Örn. 75,00"></label>
       <label class="f">Düşük stok sınırı<input class="input num" id="pi-min" inputmode="numeric" value="${esc(p.min)}"></label>
       <fieldset style="grid-column:1/-1;border:0;padding:0;margin:0;display:grid;gap:6px"><legend class="small" style="color:var(--ink-2);font-weight:500;margin-bottom:6px">Satıldığı kanallar</legend><div class="chips">${Object.keys(CHANNELS).map(c => `<label class="chip" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" name="pi-ch" value="${c}" ${p.channels.includes(c)?'checked':''}>${esc(CHANNELS[c].name)}</label>`).join('')}</div></fieldset>
+      <label class="chk small" style="grid-column:1/-1"><input type="checkbox" id="pi-sameday" ${p.sameDay?'checked':''}>Trendyol'da "Bugün Kargoda" etiketi var (saat ${esc(String((S.settings.fees||{}).serviceCutoff ?? 15))}:00'dan önceki siparişlerde hizmet bedeli ${esc(String((S.settings.fees||{}).serviceFast ?? 5.99).replace('.',','))} TL)</label>
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Bilgileri kaydet</button></div>
     </form>
   </div>
@@ -539,7 +540,7 @@ async function submitInfo(){
   if (costRaw && (!isFinite(cost) || cost < 0)) return toast('Alış fiyatını sayı olarak yaz. Örn. 75,50', true);
   const min = intOr($('#pi-min').value, NaN); if (!isFinite(min) || min < 0) return toast('Düşük stok sınırı 0 veya pozitif tam sayı olmalı.', true);
   const channels = [...document.querySelectorAll('input[name="pi-ch"]:checked')].map(i => i.value);
-  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), cost, min, channels}); await refresh(true); toast('Ürün bilgileri kaydedildi.'); });
+  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), cost, min, channels, sameDay: $('#pi-sameday').checked}); await refresh(true); toast('Ürün bilgileri kaydedildi.'); });
 }
 
 /* ============ Siparişler ============ */
@@ -1018,6 +1019,9 @@ function feesCard(fees){
         <span class="muted small">Son satırdaki <b>+: ücret</b>, tablodaki son desiden sonraki her desi için eklenir.</span>
       </div>
       <label class="f">Trendyol hizmet bedeli (TL / paket)<input class="input num" id="fe-sty" inputmode="decimal" value="${esc(String(fees.serviceTy).replace('.',','))}"></label>
+      <label class="f">Hizmet bedeli · Bugün Kargoda (TL)<input class="input num" id="fe-sfast" inputmode="decimal" value="${esc(String(fees.serviceFast ?? 5.99).replace('.',','))}"></label>
+      <label class="f">Bugün Kargoda son sipariş saati<input class="input num" id="fe-scut" inputmode="numeric" value="${esc(String(fees.serviceCutoff ?? 15))}"></label>
+      <div style="grid-column:1/-1" class="row small"><span class="muted">"Bugün Kargoda" etiketli ürün: <b>${fmtN([...S.products.values()].filter(p => p.sameDay).length)}</b> / ${fmtN(S.products.size)}. Etiketli üründe, saat ${esc(String(fees.serviceCutoff ?? 15))}:00'dan önce gelen siparişe ${esc(String(fees.serviceFast ?? 5.99).replace('.',','))} TL, sonrakilere ve etiketsiz ürünlere ${esc(String(fees.serviceTy).replace('.',','))} TL yazılır.</span><button class="btn sm" type="button" data-act="sameday-all" data-id="1">Tüm ürünlere etiket ver</button><button class="btn sm ghost" type="button" data-act="sameday-all" data-id="0">Hepsinden kaldır</button></div>
       <label class="f">Shopify kargo (TL / sipariş)<input class="input num" id="fe-csh" inputmode="decimal" value="${esc(String(fees.cargoSh).replace('.',','))}"></label>
       <label class="f">Stopaj (%)<input class="input num" id="fe-stp" inputmode="decimal" value="${esc(String(fees.stopaj).replace('.',','))}"></label>
       <p class="muted small" style="grid-column:1/-1;margin:0">Min. adet kuralı (Fiyat analizi): birim fiyat 25 TL altı 6 adet, 25–35 TL 4, 35–50 TL 3, 50–75 TL 2, üzeri 1 adet.</p>
@@ -1418,6 +1422,7 @@ document.addEventListener('click', async e => {
     case 'audit-fix': try { const r = await api('/api/audit/fix', {}); toast(`${fmtN(r.queued)} sipariş onarım sırasına alındı.`); } catch(e) { toast(errText(e), true); } profS().auditAt = 0; render(); break;
     case 'psort': profS().sort = id; render(); break;
     case 'goto-missing-cost': S.vfilter = 'missing'; setTab('value'); break;
+    case 'sameday-all': { const on = id === '1'; if (await confirmBox(on ? 'Tüm ürünlerde "Bugün Kargoda" etiketi var olarak işaretlensin mi? Etiketi olmayanları sonra ürün kartından kapatabilirsin.' : 'Tüm ürünlerden "Bugün Kargoda" işareti kaldırılsın mı?', on ? 'İşaretle' : 'Kaldır', !on)) await run(async () => { await api('/api/products/sameday', {on}); profS().key = ''; await refresh(true); toast('Kaydedildi.'); }); break; }
     case 'ad-del': { if (await confirmBox(`${esc(id)} günündeki reklam kaydı silinsin mi?`, 'Sil', true)) await saveAds([{day:id, amount:0}], 'manuel', 'Reklam kaydı silindi.'); break; }
     case 'fin-sync': { S.syncing = true; render(); try { const r = await api('/api/finance/sync', {}); toast(`Trendyol kesintileri okundu: ${fmtN(r.result.orders)} sipariş.`); } catch(e) { toast(errText(e), true); } S.syncing = false; await refresh(true); profS().key = ''; render(); break; }
     case 'open-costs': S.costImp = null; openSheet('costs'); break;
@@ -1445,7 +1450,7 @@ document.addEventListener('submit', async e => {
   else if (id === 'f-ret') submitReturn();
   else if (id === 'f-period') { const P = profS(); P.cf = $('#pf-from').value; P.ct = $('#pf-to').value; if (!P.cf || !P.ct) return toast('İki tarihi de seç.', true); P.data = null; P.key = ''; render(); }
   else if (id === 'f-ad') { const day = $('#ad-day').value, amount = num($('#ad-amt').value); if (!day) return toast('Gün seç.', true); if (!isFinite(amount) || amount < 0) return toast('Harcamayı sayı olarak yaz. Örn. 350,50', true); await saveAds([{day, amount}], 'manuel', amount ? `${day} için ${fmtTL(amount)} reklam gideri kaydedildi.` : `${day} reklam kaydı silindi.`); }
-  else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeCargoT3:v('#fe-ct3'), feeServiceTy:v('#fe-sty'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); body.desiMode = $('#fe-desimode').checked; try { body.desiTables = {tex: parseDesi($('#fe-desi-tex').value), ptt: parseDesi($('#fe-desi-ptt').value)}; } catch(err) { return toast(err.message, true); } if (!body.desiTables.tex.length || !body.desiTables.ptt.length) return toast('İki desi tablosu da dolu olmalı.', true); await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
+  else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeCargoT3:v('#fe-ct3'), feeServiceTy:v('#fe-sty'), feeServiceFast:v('#fe-sfast'), serviceCutoff:v('#fe-scut'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (!(body.serviceCutoff >= 0 && body.serviceCutoff <= 24)) return toast('Son sipariş saati 0–24 arasında olmalı.', true); if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); body.desiMode = $('#fe-desimode').checked; try { body.desiTables = {tex: parseDesi($('#fe-desi-tex').value), ptt: parseDesi($('#fe-desi-ptt').value)}; } catch(err) { return toast(err.message, true); } if (!body.desiTables.tex.length || !body.desiTables.ptt.length) return toast('İki desi tablosu da dolu olmalı.', true); await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
   else if (id === 'f-start') { const v = $('#st-date').value; if (!v) return toast('Bir tarih seç.', true); await saveSetting({startedAt:new Date(v).toISOString()}, 'Başlangıç tarihi kaydedildi.'); if (S.imp && S.imp.preview) computePreview(); }
 });
 let qTimer;
