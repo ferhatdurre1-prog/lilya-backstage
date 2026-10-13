@@ -1,7 +1,7 @@
 /* Lilya Backstage — Cloudflare Worker
    Gerekli bağlamalar: D1 veritabanı "DB"
    Gizli değişkenler: APP_PASSWORD, TRENDYOL_SELLER_ID, TRENDYOL_API_KEY, TRENDYOL_API_SECRET
-   Zamanlayıcı (Cron): "* * * * *"  → dakikada bir eşitleme */
+   Zamanlayıcı (Cron): "* * * * *"  → her dakika içinde 10 saniye arayla 6 eşitleme */
 
 const APP_VERSION = '1.0.0';
 const TY_BASE = 'https://apigw.trendyol.com/integration/';
@@ -718,10 +718,15 @@ async function pollOnce(env, full) {
 async function cronRun(env) {
   await init(env);
   if (!tyConfigured(env)) return;
+  const t0 = Date.now();
   if (!(await tryLock(env, 90000))) return;
   try {
-    // Dakikada bir tam eşitleme (önceden 10 saniyede bir, 6 tur). D1 yazma sayısını ~6 kat azaltır.
-    await pollOnce(env, true);
+    for (let i = 0; i < 6; i++) {
+      const wait = t0 + i * 10000 - Date.now();
+      if (wait > 0) await sleep(wait);
+      if (Date.now() - t0 > 55000) break;
+      await pollOnce(env, i === 0);
+    }
   } finally { await unlock(env); }
 }
 

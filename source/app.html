@@ -357,7 +357,7 @@ function banners(){
   if (S.conn === 'err') h += `<div class="banner bad"><div><b>Sunucuya ulaşılamıyor.</b> Gösterilen bilgiler son başarılı yüklemeye ait. İnternet bağlantını kontrol et.</div></div>`;
   const st = tyState();
   if (st.cls === 'err') h += `<div class="banner bad"><div><b>Trendyol eşitlemesi hata verdi:</b> ${esc(st.err || '')}</div><button class="btn sm" data-act="open-import">Ayrıntı</button></div>`;
-  else if (!(S.sync && S.sync.trendyol && S.sync.trendyol.configured)) h += `<div class="banner"><div><b>Trendyol bağlantısı kurulmadı.</b> Cloudflare'de Trendyol bilgileri girilince siparişler dakikada bir kendiliğinden gelir.</div></div>`;
+  else if (!(S.sync && S.sync.trendyol && S.sync.trendyol.configured)) h += `<div class="banner"><div><b>Trendyol bağlantısı kurulmadı.</b> Cloudflare'de Trendyol bilgileri girilince siparişler her 10 saniyede kendiliğinden gelir.</div></div>`;
   return h;
 }
 function loading(){ return `<div class="list" aria-busy="true"><div class="skel" style="border-top:0"></div><div class="skel"></div><div class="skel"></div></div>`; }
@@ -557,7 +557,7 @@ function viewOrders(){
   const last = S.settings && S.settings.lastImport;
   const info = `<p class="muted small" style="margin:10px 0 14px">${startedAt() ? `Stok takibi başlangıcı: <b>${esc(fmtDate(startedAt(), false))}</b>. ` : ''}${last ? `Son aktarım: ${esc(last.label)} · ${esc(fmtDate(last.at))}` : 'Henüz sipariş dosyası aktarılmadı.'}</p>`;
   if (!S.loaded.orders) return head + info + loading();
-  if (!S.orders.length) return head + info + `<div class="panel empty"><h4>Henüz sipariş yok</h4><p>Trendyol siparişleri bağlantı kurulunca dakikada bir kendiliğinden gelir; iptal olanlar stoğa geri eklenir. Diğer kanalların siparişlerini dosyadan aktarabilir ya da elle girebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar</button></div></div>`;
+  if (!S.orders.length) return head + info + `<div class="panel empty"><h4>Henüz sipariş yok</h4><p>Trendyol siparişleri bağlantı kurulunca her 10 saniyede kendiliğinden gelir; iptal olanlar stoğa geri eklenir. Diğer kanalların siparişlerini dosyadan aktarabilir ya da elle girebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar</button></div></div>`;
   const q = searchNorm(S.oq.trim());
   const used = [...new Set(S.orders.map(o => o.channel))];
   let os = S.orders.filter(o => (!q || searchNorm(o.orderNo + ' ' + (o.lines||[]).map(l => l.sku + ' ' + l.name).join(' ')).includes(q)) && (S.ofilter === 'all' || orderStatus(o) === S.ofilter || (S.ofilter==='cancelled' && orderStatus(o)==='partial')) && (!S.och || o.channel === S.och));
@@ -1120,7 +1120,7 @@ function tyCardLive(){
   const t = (S.sync && S.sync.trendyol) || {}; const st = tyState();
   if (!t.configured) return `<p class="muted small" style="margin:0">Cloudflare'de <span class="mono">TRENDYOL_SELLER_ID</span>, <span class="mono">TRENDYOL_API_KEY</span> ve <span class="mono">TRENDYOL_API_SECRET</span> girildiğinde otomatik eşitleme başlar.</p>`;
   return `<dl class="kv"><dt>Durum</dt><dd><span class="pill ${st.cls==='ok'?'p-good':st.cls==='err'?'p-bad':'p-warn'}">${esc(st.text)}</span></dd>
-    <dt>Siparişler</dt><dd>Dakikada bir, uygulama kapalıyken de</dd>
+    <dt>Siparişler</dt><dd>Her 10 saniyede, uygulama kapalıyken de</dd>
     <dt>Kesintiler (kâr)</dt><dd>${t.finAt ? 'Son okuma ' + esc(ago(t.finAt)) : '6 saatte bir okunur'}</dd>
     <dt>Stok → Trendyol</dt><dd>${S.settings.pushStock===false ? 'Kapalı' : t.pushAt ? 'Son gönderim ' + esc(ago(t.pushAt)) + ' · ' + fmtN(t.pushCount) + ' ürün' : 'Değişiklik olunca gönderilir'}</dd><dt>İadeler</dt><dd>Her dakika</dd><dt>Ürün listesi</dt><dd>${t.productsAt ? '6 saatte bir · son ' + esc(ago(t.productsAt)) : 'İlk tarama sürüyor'}</dd></dl>
     ${st.cls==='err' ? `<div class="banner bad" style="margin:0"><div>${esc(st.err||'')}</div></div>` : ''}
