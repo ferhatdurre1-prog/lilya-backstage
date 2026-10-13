@@ -21,7 +21,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS audit_pkg(pkg_id TEXT PRIMARY KEY, order_no TEXT, day TEXT, units INTEGER, revenue REAL, paid REAL, status TEXT, seen_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS audit_pkg_day ON audit_pkg(day)`,
   `CREATE TABLE IF NOT EXISTS order_fin(order_no TEXT PRIMARY KEY, revenue REAL, commission REAL, net REAL, cargo REAL, service REAL, updated_at TEXT)`,
-  `INSERT OR IGNORE INTO settings(k,v) VALUES('rev','1'),('lock_sync','0'),('auto_accept','1'),('fee_cargo_ty','46.48'),('fee_cargo_t1','46.48'),('fee_cargo_t2','84.50'),('fee_cargo_t3','98.35'),('cargo_desi_mode','0'),('desi_table','[]'),('fee_service_ty','13.19'),('fee_cargo_sh','0'),('stopaj','1')`
+  `INSERT OR IGNORE INTO settings(k,v) VALUES('rev','1'),('lock_sync','0'),('auto_accept','1'),('fee_cargo_ty','46.49'),('fee_cargo_t1','46.49'),('fee_cargo_t2','84.49'),('fee_cargo_t3','98.35'),('cargo_desi_mode','0'),('desi_table','[]'),('fee_service_ty','13.19'),('fee_cargo_sh','0'),('stopaj','1')`
 ];
 
 /* ---------- küçük yardımcılar ---------- */
@@ -90,6 +90,10 @@ async function init(env) {
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_und1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_und1','1')`), setStmt(env, 'fin_backfill_day', '13')]); } catch (e) {}
+  }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_barem2'`).first())) {
+    // Trendyol kargo faturasındaki gerçek barem tutarları: 46,49 / 84,49 (KDV dahil)
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_barem2','1')`), env.DB.prepare(`UPDATE settings SET v='46.49' WHERE k IN ('fee_cargo_t1','fee_cargo_ty') AND v IN ('46.48','46.5')`), env.DB.prepare(`UPDATE settings SET v='84.49' WHERE k='fee_cargo_t2' AND v IN ('84.50','84.5')`), REV(env)]); } catch (e) {}
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   READY = true;
@@ -634,6 +638,7 @@ async function checkTrendyolPushBatch(env) {
   await env.DB.batch([setStmt(env, 'ty_push_fail', msg), setStmt(env, 'ty_push_batch', '')]);
   return { failed: failed.length };
 }
+const ESTIMATED_PEN_RE = /yanlış ürün|eksik ürün|kusurlu|hasarlı|ayıplı|tedarik/;
 const AUTO_ACC_NOTE = 'Trendyol otomatik onayladı; ürün depoya ulaşınca stoğa eklemek için onayla';
 // Kusurlu ürün iadesi hakkı kapsamındaki sebepler (müşteri memnuniyet kuponu satıcıya yansıtılır)
 const DEFECT_RE = /yanlış ürün|eksik gönderil|parça|aksesuar|kusurlu|hasarlı|defolu|ayıplı|bozuk|kırık|çalışmıyor/;
@@ -721,7 +726,7 @@ async function syncTrendyolFinance(env, force, deadline) {
       ret_cargo=CASE WHEN excluded.ret_cargo IS NULL THEN order_fin.ret_cargo ELSE COALESCE(order_fin.ret_cargo,0)+excluded.ret_cargo END,
       service=COALESCE(excluded.service, order_fin.service), updated_at=excluded.updated_at`)
     .bind(no, a.sale ? Math.round(a.revenue * 100) / 100 : null, a.sale ? Math.round(a.commission * 100) / 100 : null, a.sale ? Math.round(a.net * 100) / 100 : null, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.service, now, a.sale ? 1 : 0, a.retCargo === null ? null : Math.round(a.retCargo * 100) / 100));
-  // Barem ücretlerine (46,48 / 84,50) eşit olmayan faturalar desiye göre ücretlenmiştir → desi tablosunu öğren
+  // Barem ücretlerine (46,49 / 84,49) eşit olmayan faturalar desiye göre ücretlenmiştir → desi tablosunu öğren
   const prev = (() => { try { return JSON.parse((s.desi_learned) || '{}'); } catch (e) { return {}; } })();
   for (const [d, arr] of Object.entries(learned)) {
     const desiPriced = arr.filter(a => Math.abs(a - fees0.cargoT1) > 0.02 && Math.abs(a - fees0.cargoT2) > 0.02);
@@ -869,7 +874,7 @@ async function loadFees(env) {
   const merged = [...manual]; for (const x of learned) if (!merged.some(m => m.desi === x.desi)) merged.push(x);
   merged.sort((a, b) => a.desi - b.desi);
   if (merged.length && manual.length && manual[manual.length - 1].extra && merged[merged.length - 1] !== manual[manual.length - 1]) merged[merged.length - 1] = { ...merged[merged.length - 1], extra: manual[manual.length - 1].extra };
-  return { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: merged, desiManual: manual, desiLearned: learned, serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
+  return { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: merged, desiManual: manual, desiLearned: learned, serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
 }
 async function computeProfit(env, from, to) {
   const fee = await loadFees(env);
@@ -1005,6 +1010,11 @@ async function computeProfit(env, from, to) {
     }
   }
   const isAd = (t) => /reklam|ads/i.test(String(t || ''));
+  // Sistemin iade nedeninden / iptal durumundan zaten tahmin ettiği ceza türleri, siparişe bağlanamadıysa ikinci kez düşülmez
+  const isEstPen = (t) => ESTIMATED_PEN_RE.test(String(t || '').toLocaleLowerCase('tr-TR'));
+  const penInvoices = miscFree.filter(x => isEstPen(x.type)).reduce((a, x) => a + (x.amount || 0), 0);
+  for (let i = miscFree.length - 1; i >= 0; i--) if (isEstPen(miscFree[i].type)) miscFree.splice(i, 1);
+  sum.penInvoices = R2(penInvoices);
   sum.ads = adRows.reduce((a, x) => a + (x.amount || 0), 0); sum.adDays = adRows.length;
   // Günlük reklam girişi varsa reklam faturaları ayrıca düşülmez (çift sayılmasın); yoksa faturalar fatura tarihine göre düşülür
   const adInvoices = miscFree.filter(x => isAd(x.type)).reduce((a, x) => a + (x.amount || 0), 0);
@@ -1041,7 +1051,7 @@ function mapProduct(r) { return { id: r.key, sku: r.sku, name: r.name, barcode: 
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
   const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.48), cargoT2: Number(s.fee_cargo_t2 ?? 84.5), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null } }, now: iso(), version: APP_VERSION };
 }
 async function api(req, env, path) {
   const method = req.method;
@@ -1165,6 +1175,21 @@ async function api(req, env, path) {
     return json(await computeProfit(env, iso(from), iso(to)));
   }
   if (path === '/api/pricing') return json(await computePricing(env));
+  if (path === '/api/finance/details') {
+    // Trendyol panelinden indirilen fatura "detay" Excel'leri: sipariş bazında gerçek hizmet bedeli ve ceza tutarları
+    const rows = Array.isArray(body.rows) ? body.rows : null; if (!rows || rows.length > 20000) return bad('Detay satırları geçersiz.');
+    const inv = String(body.invoice || 'x').replace(/[^0-9A-Za-z-]/g, '').slice(0, 40) || 'x'; const kind = body.kind; const st = []; const now = iso();
+    if (kind === 'service') {
+      const by = new Map(); for (const r of rows) { const no = String(r.orderNo || '').trim(); const a = Number(r.amount); if (!no || !Number.isFinite(a)) continue; by.set(no, Math.round(((by.get(no) || 0) + a) * 100) / 100); }
+      for (const [no, a] of by) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,service,updated_at) VALUES(?1,?2,?3) ON CONFLICT(order_no) DO UPDATE SET service=excluded.service, updated_at=excluded.updated_at WHERE order_fin.service IS NOT excluded.service`).bind(no, a, now));
+    } else if (kind === 'penalty') {
+      rows.forEach((r, i) => { const no = String(r.orderNo || '').trim(); const a = Number(r.amount); if (!no || !Number.isFinite(a) || !a) return;
+        st.push(env.DB.prepare(`INSERT INTO fin_misc(id,order_no,date,type,amount,descr) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount, type=excluded.type, order_no=excluded.order_no`)
+          .bind(('xl|' + inv + '|' + no + '|' + i).slice(0, 120), no, now, String(r.type || 'Ceza').slice(0, 80), Math.round(a * 100) / 100, 'Detay dosyasından')); });
+    } else return bad('Bilinmeyen detay türü.');
+    st.push(REV(env)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    return json({ ok: true, saved: st.length - 1 });
+  }
   if (path === '/api/ads') {
     const items = Array.isArray(body.items) ? body.items : null; if (!items || items.length > 1000) return bad('Reklam listesi geçersiz.');
     const ch = ['trendyol', 'shopify', 'hepsiburada', 'temu', 'diger'].includes(body.channel) ? body.channel : 'trendyol';

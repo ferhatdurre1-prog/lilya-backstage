@@ -834,7 +834,7 @@ function profitCls(n){ return n > 0 ? 'color:var(--good)' : n < 0 ? 'color:var(-
 function viewProfit(){
   const P = profS(); setTimeout(() => loadProfit(false), 0);
   const D = P.data, s = D && D.summary;
-  const fees = (S.settings && S.settings.fees) || {cargoT1:46.48, cargoT2:84.5, cargoT3:98.35, desiMode:true, desiTables:{tex:[],ptt:[]}, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
+  const fees = (S.settings && S.settings.fees) || {cargoT1:46.49, cargoT2:84.49, cargoT3:98.35, desiMode:true, desiTables:{tex:[],ptt:[]}, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
   let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti − ceza ve kesintiler. İadesi onaylanan ürünler siparişin verildiği günden düşülür.</p></div></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
@@ -851,6 +851,7 @@ function viewProfit(){
     <div class="spread" style="border-top:1px solid var(--line);padding-top:10px"><b>= Net kâr</b><b class="num" style="${profitCls(s.profit)}">${tlS(s.profit)}</b></div>
     ${s.retOrders ? `<p class="muted small" style="margin:0">${fmtN(s.retOrders)} siparişte ${fmtN(s.retUnits)} adet iade onaylandı: satışı, komisyonu ve stopajı düşüldü, ürün maliyeti stoğa geri döndü; gidiş kargosu, hizmet bedeli ve iade kargosu zarar olarak kaldı.${s.undOrders ? ` ${fmtN(s.undOrders)} sipariş teslim edilemediği için döndü; dönüş kargosu Trendyol'a ait, yalnızca taşıyıcının başarısız teslimat ek bedeli yazıldı (PTT: paketin desi fiyatının %30'u, barem değil; TEX: yok).` : ''}${s.retCargoEst ? ` ${fmtN(s.retCargoEst)} siparişin iade kargo faturası henüz gelmedi; iadeler barem desteği almadığı için desi fiyatıyla tahmin edildi.` : ''}</p>` : ''}
     ${s.penalty ? `<p class="muted small" style="margin:0">Ceza ve kupon: ${s.defOrders ? `${fmtN(s.defOrders)} siparişte kusurlu / eksik / yanlış ürün nedenli iade var (Trendyol iade ekranındaki iade nedeninden); Trendyol müşteriye memnuniyet kuponu tanımlayıp tutarını senden keser.` : ''}${s.unsOrders ? ` ${fmtN(s.unsOrders)} siparişte tedarik edilemeyen (satıcı iptali) ürün var.` : ''} Tutarlar sözleşme ceza tablosuna göre (27.07.2026).${s.penaltyEst ? ` ${fmtN(s.penaltyEst)} sipariş tabloya göre tahmini,` : ''}${s.penaltyActual ? ` ${fmtN(s.penaltyActual)} sipariş Trendyol faturasından.` : ''}</p>` : ''}
+    ${s.penInvoices ? `<p class="muted small" style="margin:0">Bu dönemde siparişe bağlanamayan ${fmtTL(s.penInvoices)} ceza faturası var (yanlış / eksik / kusurlu ürün, tedarik edememe). Bunlar iade nedenlerinden zaten tahmin edildiği için ikinci kez düşülmedi. Faturanın "Detay indir" dosyasını aşağıdan yüklersen tahminin yerine gerçek tutar siparişe yazılır.</p>` : ''}
     ${(D.otherFees||[]).length ? `<p class="muted small" style="margin:0">Diğer Trendyol kesintileri (siparişe bağlanamayan faturalar, fatura tarihine göre): ${D.otherFees.map(x => `${esc(x.type)} ${fmtTL(x.amount)}`).join(' · ')}</p>` : ''}</div>`;
   const RP = D.report;
   if (RP) h += `<div class="card" style="margin-bottom:14px"><div class="spread"><h3 style="margin:0">Satış özeti</h3><span class="muted small">Trendyol Satış Raporu düzeninde</span></div>
@@ -884,7 +885,30 @@ function viewProfit(){
         <td class="r num">${fmtN(x.units)}</td><td class="r num">${fmtTL(x.revenue)}</td><td class="r num" style="${profitCls(x.profit)}"><b>${tlS(x.profit)}</b></td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
       <p class="muted small">Sipariş başı kargo, iade kargosu ve hizmet bedeli ürünlere sipariş içindeki paylarına göre dağıtılır. İadesi onaylanan adetler satıştan düşülür; kargo ve hizmet bedeli zararı iade edilen ürüne yazılır.</p>`;
   }
-  return h + adsCard(D) + feesCard(fees);
+  return h + adsCard(D) + detailsCard() + feesCard(fees);
+}
+function detailsCard(){
+  return `<div class="card" style="margin-top:18px"><h3 style="margin:0">Trendyol fatura detayları</h3>
+    <p class="muted small" style="margin:0">Trendyol'da bir faturanın <b>"Detay indir"</b> Excel'ini buraya yükle; sipariş bazında gerçek tutar kâra yazılır. Desteklenenler: <b>Platform Hizmet Bedeli</b> (Bugün Kargoda gönderilerde 5,99 TL, diğerlerinde 13,19 TL) ve <b>ceza faturaları</b> (Eksik Ürün, Yanlış Ürün, Kusurlu Ürün, Tedarik Edememe…). Kargo faturaları zaten otomatik okunuyor. Aynı dosyayı tekrar yüklemek çift saymaz.</p>
+    <div class="row"><label class="btn" style="cursor:pointer">Detay dosyası yükle<input type="file" id="det-file" accept=".xlsx,.xls,.csv" hidden multiple></label></div></div>`;
+}
+async function importDetails(files){
+  for (const file of files) {
+    try {
+      const f = await readFile(file); if (!f.rows) throw new Error('Excel dosyası seç.');
+      const H = f.headers, has = n => H.includes(n);
+      const inv = ((file.name.match(/_(\d{5,})_detay/) || [])[1]) || file.name.replace(/\W+/g, '').slice(0, 30);
+      let kind, rows;
+      if (has('Ek Ücret') && has('Sipariş No')) { kind = 'service'; rows = f.rows.map(r => ({orderNo: String(r['Sipariş No']).trim(), amount: num(r['Ek Ücret'])})); }
+      else if (has('Kesilen Bedel') && has('Sipariş No')) { kind = 'penalty'; rows = f.rows.map(r => ({orderNo: String(r['Sipariş No']).trim(), amount: num(r['Kesilen Bedel']), type: r['Fatura Tipi'] || 'Ceza'})); }
+      else if (has('Gönderi Ücreti (KDV Dahil)')) { toast(`${file.name}: kargo faturaları Trendyol'dan otomatik okunuyor, yüklemeye gerek yok.`); continue; }
+      else throw new Error('Bu dosya tanınmadı. Sütunlar: ' + H.slice(0, 10).join(', '));
+      rows = rows.filter(r => r.orderNo && isFinite(r.amount));
+      const total = rows.reduce((a, r) => a + r.amount, 0);
+      if (!(await confirmBox(`<b>${esc(file.name)}</b>: ${kind === 'service' ? 'Platform hizmet bedeli' : 'Ceza faturası'} · <b>${fmtN(rows.length)} satır</b>, toplam <b>${fmtTL(total)}</b>. Siparişlere yazılsın mı?`, 'Kaydet'))) continue;
+      await run(async () => { const r = await api('/api/finance/details', {kind, invoice: inv, rows}); profS().key = ''; await refresh(true); toast(`${fmtN(r.saved)} sipariş güncellendi.`); });
+    } catch(e) { toast(file.name + ': ' + errText(e), true); }
+  }
 }
 function todayTR(){ return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10); }
 function adsCard(D){
@@ -1434,6 +1458,7 @@ document.addEventListener('change', e => {
   if (t.dataset && t.dataset.cost) saveCost(t);
   if (t.id === 'imp-file') onImportFile(t.files[0]);
   if (t.id === 'ad-file' && t.files[0]) { importAds(t.files[0]); t.value = ''; }
+  if (t.id === 'det-file' && t.files.length) { importDetails([...t.files]); t.value = ''; }
   if (t.id === 'cost-file') onCostFile(t.files[0]);
   if (t.id === 'cost-setstock') { S.costImp.setStock = t.checked; recomputeCosts(); }
   if (t.id === 'fe-desimode') { const w = $('#fe-desi-wrap'); if (w) w.hidden = !t.checked; }
