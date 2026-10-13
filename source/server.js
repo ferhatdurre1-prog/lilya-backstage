@@ -898,8 +898,8 @@ async function hmac(secret, msg) {
   const sig = await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(msg));
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
-// Oturum: kullanılmadan 30 dakika geçerse kapanır; kullandıkça kendiliğinden uzar
-const SESSION_MS = 30 * 60000;
+// Oturum: bir kez giriş yapılan cihazda 120 gün açık kalır; kullandıkça kendiliğinden uzar
+const SESSION_MS = 120 * 86400000;
 async function authed(req, env) {
   const c = req.headers.get('cookie') || ''; const m = c.match(/(?:^|;\s*)lb=([^;]+)/); if (!m) return false;
   const [exp, sig] = decodeURIComponent(m[1]).split('.'); if (!exp || !sig || Number(exp) < Date.now()) return false;
@@ -1696,7 +1696,7 @@ export default {
         if (!exp) return bad('Oturum gerekli.', 401);
         const res = await api(req, env, path, ctx);
         // Kullandıkça oturum uzar
-        if (exp - Date.now() < SESSION_MS - 60000) { try { res.headers.append('set-cookie', await loginCookie(env)); } catch (e) {} }
+        if (exp - Date.now() < SESSION_MS - 86400000) { try { res.headers.append('set-cookie', await loginCookie(env)); } catch (e) {} }
         return res;
       }
       return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });

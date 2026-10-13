@@ -337,7 +337,7 @@ const TAB_SHORT = {reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipa
 
 /* ============ Durum ============ */
 const S = {
-  conn:'wait', authed:(() => { try { return sessionStorage.getItem('lb_live') === '1' && localStorage.getItem('lb_seen') === '1' ? true : false; } catch(e) { return false; } })(), rev:null, skew:0,
+  conn:'wait', authed:(() => { try { return localStorage.getItem('lb_seen') === '1' ? true : null; } catch(e) { return null; } })(), rev:null, skew:0,
   loaded:{products:false, orders:false, returns:false, moves:false, settings:false},
   products:new Map(), orders:[], returns:[], moves:[], settings:{}, sync:{trendyol:{configured:false}},
   tab: initialTab(), q:'', filter:'active', psort:(() => { try { return localStorage.getItem('lb_psort') || 'name_asc'; } catch(e) { return 'name_asc'; } })(), ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
@@ -379,7 +379,7 @@ async function refresh(force){
 }
 let pollTimer = null;
 function startPolling(){
-  if (S.authed !== false) refresh(true);
+  refresh(true);
   if (pollTimer) return;
   pollTimer = setInterval(() => { if (document.visibilityState === 'visible' && S.authed) refresh(false); }, 10000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.authed) refresh(false); });
@@ -448,12 +448,8 @@ document.addEventListener('visibilitychange', loadMarket);
 let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
-  // 5 dakikadan uzun arka planda kaldıysa kilitlenir: tekrar giriş (Face ID) istenir, ana ekranla açılır
-  if (hiddenAt && Date.now() - hiddenAt > 5 * 60000 && S.authed) {
-    S.logoutP = fetch('/api/logout', {method:'POST', credentials:'same-origin'}).catch(() => {});
-    try { sessionStorage.removeItem('lb_live'); } catch(e) {}
-    S.authed = false; S.sheet = null; $('#sheet-root').innerHTML = ''; S.drawer = false; renderDrawer(); S.tab = 'home'; S.authInfo = null; S.faceTried = false; render();
-  }
+  // 5 dakikadan uzun arka planda kaldıysa ana ekranla açılır (giriş istenmez)
+  if (hiddenAt && Date.now() - hiddenAt > 5 * 60000 && S.authed && S.tab !== 'home' && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) { S.drawer = false; renderDrawer(); setTab('home'); }
   hiddenAt = 0;
 });
 
@@ -506,7 +502,7 @@ async function loadAuthInfo(){
   } catch(e) { S.authInfo = {hasUser:true, passkeys:0}; }
   S.authInfoLoading = false; if (S.authed === false) { render(); setTimeout(() => { const u = $('#lg-user'); if (u && !S.authInfo.passkeys) u.focus(); }, 30);
     // Face ID kuruluysa açılışta kendiliğinden sorulur (tarayıcı izin vermezse düğmeye dokunmak yeter)
-    if (S.authInfo.passkeys && S.waOk && !S.faceTried) { S.faceTried = true; faceIdLogin().catch(() => {}); } }
+  }
 }
 const bufB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const b64Buf = (s) => { s = s.replace(/-/g,'+').replace(/_/g,'/'); const b = atob(s + '==='.slice((s.length + 3) % 4)); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u.buffer; };
@@ -546,7 +542,7 @@ function sheetSecurity(){
   if (!L) { api('/api/passkey/list', {}).then(d => { if (S.sheet && S.sheet.type === 'security') { S.sheet.list = d; renderSheet(false); } }).catch(() => {}); return {title:'Güvenlik', body: loading()}; }
   const fmt = (t) => t ? new Date(t).toLocaleString('tr-TR', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) : '—';
   return {title:'Güvenlik', body: `<div class="card"><div class="spread"><div><div class="small muted">Kullanıcı adı</div><b>${esc(L.user || '—')}</b></div></div>
-    <p class="muted small" style="margin:0">Şifre, Cloudflare'deki uygulama şifresidir. Uygulama her açılışta ve 30 dakika kullanılmayınca kilitlenir.</p></div>
+    <p class="muted small" style="margin:0">Şifre, Cloudflare'deki uygulama şifresidir. Bir kez giriş yaptığın cihazda uygulama açık kalır, tekrar giriş istemez. Yeni bir cihazda ya da çıkış yaptıktan sonra giriş gerekir; Face ID kuruluysa yüzünle girebilirsin.</p></div>
     <div class="card"><h3 style="margin:0">Face ID</h3>
     ${L.items.length ? `<div class="list" style="box-shadow:none">${L.items.map(x => `<div class="item" style="cursor:default"><div class="ki" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)">🔐</div><div class="main"><div class="ttl">${esc(x.label || 'Cihaz')}</div><div class="meta"><span>Kuruldu ${esc(fmt(x.created_at))}</span><span>· Son giriş ${esc(fmt(x.used_at))}</span></div></div><div class="end"><button class="btn sm ghost" data-act="wa-del" data-id="${esc(x.id)}">Kaldır</button></div></div>`).join('')}</div>` : `<p class="muted small" style="margin:0">Henüz Face ID kurulmadı.</p>`}
     ${S.waOk ? `<button class="btn primary" data-act="wa-add">Bu cihazda Face ID'yi kur</button>` : `<p class="muted small" style="margin:0">Bu cihaz ya da tarayıcı Face ID / parmak izi girişini desteklemiyor.</p>`}</div>`};
@@ -2067,7 +2063,7 @@ document.addEventListener('submit', async e => {
   const id = e.target.id;
   if (id === 'f-login') {
     const btn = e.target.querySelector('button'); btn.disabled = true;
-    try { if (S.logoutP) await S.logoutP; await api('/api/login', {username:$('#lg-user').value, password:$('#lg-pass').value}); S.authInfo = null; await afterLogin(); setTimeout(offerFaceId, 400); }
+    try { if (S.logoutP) await S.logoutP; await api('/api/login', {username:$('#lg-user').value, password:$('#lg-pass').value}); S.authInfo = null; await afterLogin(); }
     catch(err) { toast(errText(err), true); }
     btn.disabled = false; return;
   }
@@ -2123,8 +2119,6 @@ document.addEventListener('error', e => { const t = e.target; if (t && t.tagName
   if (ev === 'dragover') d.classList.add('over'); else d.classList.remove('over');
   if (ev === 'drop' && e.dataTransfer.files[0]) onImportFile(e.dataTransfer.files[0]);
 }));
-// Her açılışta giriş istenir: yeni açılışta sunucudaki oturum da kapatılır
-if (S.authed === false) { S.logoutP = fetch('/api/logout', {method:'POST', credentials:'same-origin'}).catch(() => {}); }
 // Son görülen bant ve hava durumu açılışta hemen gösterilir
 try { if (S.authed) { const m = JSON.parse(localStorage.getItem('lb_mkt') || 'null'); if (m) renderTicker(m); const w = JSON.parse(localStorage.getItem('lb_wx') || 'null'); if (w) renderWeather(w, !!wxCoords()); } } catch(e) {}
 render();
