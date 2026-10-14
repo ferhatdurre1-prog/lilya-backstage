@@ -367,7 +367,7 @@ async function refresh(force){
       let last = null; try { last = JSON.parse(sessionStorage.getItem('lb_reload') || 'null'); } catch(e) {}
       if (!last || last.b !== d.build || Date.now() - last.t > 120000) { try { sessionStorage.setItem('lb_reload', JSON.stringify({b: d.build, t: Date.now()})); } catch(e) {} location.reload(); return; }
     }
-    S.settings = d.settings || {}; S.sync = d.sync || S.sync; S.skew = Date.parse(d.now) - Date.now();
+    S.settings = d.settings || {}; S.sync = d.sync || S.sync; if (d.usage) S.usage = d.usage; S.skew = Date.parse(d.now) - Date.now();
     if (!d.same) {
       S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
       for (const k in S.loaded) S.loaded[k] = true;
@@ -382,7 +382,9 @@ let pollTimer = null;
 function startPolling(){
   refresh(true);
   if (pollTimer) return;
-  pollTimer = setInterval(() => { if (document.visibilityState === 'visible' && S.authed) refresh(false); }, 10000);
+  // Maliyet koruması: tasarruf modunda uygulama da daha seyrek sorar
+  let lastPoll = 0;
+  pollTimer = setInterval(() => { const lv = (S.usage && S.usage.level) || 0, every = lv >= 2 ? 60000 : lv === 1 ? 30000 : 10000; if (document.visibilityState === 'visible' && S.authed && Date.now() - lastPoll >= every - 500) { lastPoll = Date.now(); refresh(false); } }, 10000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.authed) refresh(false); });
 }
 function allMoves(){ return S.moves; }
@@ -1871,10 +1873,33 @@ function tyCardLive(){
     ${t.pushErr ? `<div class="banner bad" style="margin:0"><div><b>Stok gönderimi:</b> ${esc(t.pushErr.slice(27))}</div></div>` : ''}
     ${t.pushFail ? `<div class="banner" style="margin:0"><div><b>Trendyol bazı stokları kabul etmedi:</b> ${esc(t.pushFail)}</div></div>` : ''}`;
 }
+function usageCard(){
+  const U = S.usage; if (!U) return '';
+  const nm = {req:'İstek (sayfa + arka plan)', cpu:'İşlemci süresi', wr:'Veritabanı yazma (satır)', rd:'Veritabanı okuma (satır)'};
+  const big = (x) => x >= 1e9 ? (x/1e9).toLocaleString('tr-TR',{maximumFractionDigits:2}) + ' milyar' : x >= 1e6 ? (x/1e6).toLocaleString('tr-TR',{maximumFractionDigits:2}) + ' milyon' : fmtN(Math.round(x));
+  const unit = (k, x) => k === 'cpu' ? big(x) + ' ms' : big(x);
+  const lvTxt = ['Normal: her şey paket içinde, ek ücret yok.', 'Tasarruf modu: ay sonu tahmini paketin %60\'ını geçtiği için eşitleme 20 sn\'de bir, raporlar daha seyrek.', 'Sıkı tasarruf: tahmin %85\'i geçti; eşitleme dakikada bir, ağır işler seyrek.', 'Durdurma: bir kalem paketin %95\'ine ulaştı; ek ücret çıkmasın diye eşitleme 5 dakikada bir.'][U.level || 0];
+  const col = ['var(--good)', 'var(--warn)', 'var(--orange)', 'var(--bad)'][U.level || 0];
+  const rows = ['req','cpu','wr','rd'].map(k => { const m = U.metrics[k] || {}; if (m.used === null || m.used === undefined) return `<div><div class="spread small"><span>${nm[k]}</span><span class="muted">${U.hasToken ? 'ölçülüyor…' : 'ölçülmüyor'}</span></div></div>`;
+    const pu = Math.min(100, m.pctUsed * 100), pp = Math.min(100, m.pctProj * 100), c = m.pctProj >= .85 ? 'var(--bad)' : m.pctProj >= .6 ? 'var(--warn)' : 'var(--good)';
+    return `<div><div class="spread small"><span>${nm[k]}</span><span class="num">${unit(k, m.used)} / ${unit(k, m.included)}</span></div>
+      <div style="position:relative;height:8px;border-radius:5px;background:var(--surface-2);margin-top:5px;overflow:hidden"><div style="position:absolute;inset:0 auto 0 0;width:${pp}%;background:${c};opacity:.25"></div><div style="position:absolute;inset:0 auto 0 0;width:${pu}%;background:${c}"></div></div>
+      <div class="small muted" style="margin-top:3px">Bu ay %${(m.pctUsed*100).toFixed(1).replace('.',',')} kullanıldı · ay sonu tahmini %${(m.pctProj*100).toFixed(0)}</div></div>`; }).join('');
+  return `<div class="card" style="gap:12px"><div class="spread"><h3 style="margin:0">Aylık kullanım · 5 $ paket</h3><span class="pill" style="background:${col};color:#fff">${['Normal','Tasarruf','Sıkı','Durdurma'][U.level || 0]}</span></div>
+    <p class="small" style="margin:0;color:${col};font-weight:600">${lvTxt}</p>${rows}
+    ${!U.hasToken ? `<details><summary class="small" style="cursor:pointer;color:var(--accent);font-weight:600">İşlemci süresini de ölçmek için Cloudflare anahtarı ekle (önerilir)</summary><ol class="small" style="margin:8px 0 0;padding-left:18px;display:grid;gap:5px">
+      <li>dash.cloudflare.com → sağ üstte profil → <b>Profilim</b> → <b>API Belirteçleri</b> → <b>Belirteç Oluştur</b> → <b>Özel belirteç</b>.</li>
+      <li>İzin: <b>Hesap → Hesap Analizi (Account Analytics) → Okuma</b>. Başka izin verme. Oluştur'a bas, belirteci kopyala.</li>
+      <li>Hesap kimliği: Workers ve Pages sayfasının sağında yazan <b>Account ID</b>.</li>
+      <li>Workers ve Pages → lilya-backstage → Ayarlar → Değişkenler ve Gizli Bilgiler → iki gizli değişken ekle: <b>CF_API_TOKEN</b> (belirteç) ve <b>CF_ACCOUNT_ID</b> (hesap kimliği).</li>
+      <li>Belirteci buraya yazma. Eklendikten sonra en geç 1 saat içinde gerçek rakamlar burada görünür.</li></ol></details>` : (U.cfErr ? `<p class="small" style="margin:0;color:var(--bad)">Cloudflare kullanım verisi alınamadı: ${esc(String(U.cfErr).slice(27))}</p>` : `<p class="small muted" style="margin:0">Rakamlar Cloudflare'in kendi ölçümünden (saatte bir güncellenir)${U.cf ? ' · ' + esc(fmtDate(U.cf.at)) : ''}.</p>`)}
+    <p class="small muted" style="margin:0">Cloudflare'de ayrıca <b>Bildirimler → Kullanıma dayalı faturalandırma</b> uyarısı kurarsan, ek ücret ihtimalinde e-posta da gelir.</p></div>`;
+}
 function sheetImport(){
   const I = S.imp, st = startedAt(), set = S.settings || {};
   const stage = !I ? `<label class="drop" id="drop" for="imp-file"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--brand)"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 002 2h12a2 2 0 002-2v-4"/></svg><b>Dosya seç ya da buraya bırak</b><span class="muted small">Excel (.xlsx), CSV veya yedek (.json)</span></label><input type="file" id="imp-file" accept=".xlsx,.xls,.csv,.json,.txt" hidden>` : importPreview(I);
   return {title:'Bağlantılar & Yedek', body:`
+  ${usageCard()}
   <div class="card"><div class="spread"><h3 style="margin:0">${chBadge('trendyol')} Otomatik eşitleme</h3><button class="btn sm" data-act="sync-now" ${S.syncing||!(S.sync.trendyol&&S.sync.trendyol.configured)?'disabled':''}>${S.syncing?'Eşitleniyor…':'Şimdi eşitle'}</button></div>
     <div id="ty-live">${tyCardLive()}</div>
     <label class="chk small"><input type="checkbox" id="set-push" ${set.pushStock!==false?'checked':''}><span>Ortak stok değişince Trendyol'daki stoğu da güncelle (sayım, giriş/çıkış, sipariş, iade, Excel)</span></label>

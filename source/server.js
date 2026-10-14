@@ -920,7 +920,8 @@ async function heavySteps(env, budget, result, step, left, t) {
   {
     // Ağır işler seyrek çalışır; veritabanını sürekli meşgul edip ekranları yavaşlatmasın
     const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at']); const now = Date.now();
-    const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms;
+    const lvl = (GUARD_CACHE && GUARD_CACHE.v && GUARD_CACHE.v.level) || 0, mult = lvl >= 2 ? 6 : lvl === 1 ? 3 : 1;
+    const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms * mult;
     const ok = (need) => qLeft(env) > need;
     if (left() > 30000 && ok(150)) await step('claims', () => syncTrendyolClaims(env));
     if (left() > 30000 && ok(150) && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
@@ -970,6 +971,57 @@ async function pollOnce(env, full, budget, mode) {
   result.ms = Date.now() - t;
   return result;
 }
+/* ---------- Maliyet koruması: aylık kullanım sayacı + otomatik tasarruf ----------
+   Workers Paid (5 $) dahil kullanım: 10 milyon istek, 30 milyon ms işlemci, D1 50 milyon satır yazma, 25 milyar satır okuma.
+   Kullanım ay sonuna göre öngörülür; dahil miktarı aşacak gibiyse uygulama kendini yavaşlatır, %95'te neredeyse durur. */
+const INCLUDED = { req: 10e6, cpu: 30e6, wr: 50e6, rd: 25e9 };
+const USE = { req: 0, wr: 0, rd: 0, at: Date.now() };
+let GUARD_CACHE = null;
+const monthKey = () => trDay(Date.now()).slice(0, 7);
+async function flushUsage(env, extra) {
+  const add = { req: USE.req + ((extra && extra.req) || 0), wr: USE.wr + ((extra && extra.wr) || 0), rd: USE.rd + ((extra && extra.rd) || 0) };
+  USE.req = 0; USE.wr = 0; USE.rd = 0; USE.at = Date.now();
+  const m = monthKey(), st = [env.DB.prepare(`INSERT OR IGNORE INTO settings(k,v) VALUES(?1,?2)`).bind(`u:${m}:since`, String(Date.now()))];
+  for (const k of ['req', 'wr', 'rd']) { if (!add[k]) continue; const key = `u:${m}:${k}`; st.push(env.DB.prepare(`INSERT OR IGNORE INTO settings(k,v) VALUES(?1,'0')`).bind(key), env.DB.prepare(`UPDATE settings SET v=CAST(CAST(v AS INTEGER)+?2 AS TEXT) WHERE k=?1`).bind(key, Math.round(add[k]))); }
+  if (st.length) await env.DB.batch(st);
+}
+// Cloudflare'in gerçek kullanım verisi (isteğe bağlı: CF_API_TOKEN + CF_ACCOUNT_ID gizli değişkenleri). Saatte bir.
+async function fetchCfUsage(env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return null;
+  const now = new Date(), m0 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const q = `query($a:String!,$s:Time!,$e:Time!,$sd:Date!,$ed:Date!){viewer{accounts(filter:{accountTag:$a}){w:workersInvocationsAdaptive(limit:10000,filter:{datetime_geq:$s,datetime_leq:$e}){sum{requests cpuTimeUs}} d:d1AnalyticsAdaptiveGroups(limit:10000,filter:{date_geq:$sd,date_leq:$ed}){sum{rowsRead rowsWritten}}}}}`;
+  const vars = { a: env.CF_ACCOUNT_ID, s: m0.toISOString(), e: now.toISOString(), sd: m0.toISOString().slice(0, 10), ed: now.toISOString().slice(0, 10) };
+  const r = await fetch('https://api.cloudflare.com/client/v4/graphql', { method: 'POST', headers: { Authorization: 'Bearer ' + env.CF_API_TOKEN, 'content-type': 'application/json' }, body: JSON.stringify({ query: q, variables: vars }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || (j.errors && j.errors.length)) throw new Error(((j.errors && j.errors[0] && j.errors[0].message) || ('HTTP ' + r.status)).slice(0, 200));
+  const acc = (((j.data || {}).viewer || {}).accounts || [])[0] || {};
+  const sum = (arr, k) => (arr || []).reduce((a, x) => a + (Number((x.sum || {})[k]) || 0), 0);
+  return { month: monthKey(), at: iso(), req: sum(acc.w, 'requests'), cpu: Math.round(sum(acc.w, 'cpuTimeUs') / 1000), rd: sum(acc.d, 'rowsRead'), wr: sum(acc.d, 'rowsWritten') };
+}
+// Kullanım durumu ve tasarruf seviyesi: 0 normal, 1 tasarruf (%60+ öngörü), 2 sıkı (%85+), 3 durdurma (%95 kullanıldı)
+async function usageGuard(env, fresh) {
+  if (!fresh && GUARD_CACHE && Date.now() - GUARD_CACHE.t < 60000) return GUARD_CACHE.v;
+  const m = monthKey();
+  const g = await getSettings(env, [`u:${m}:req`, `u:${m}:wr`, `u:${m}:rd`, `u:${m}:since`, 'cf_usage', 'cf_usage_err', 'usage_avg']);
+  const now = new Date(Date.now() + TY_TZ); const dim = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  const frac = Math.max(1 / 48, ((now.getUTCDate() - 1) + (now.getUTCHours() * 60 + now.getUTCMinutes()) / 1440) / dim);
+  const est = { req: Number(g[`u:${m}:req`]) || 0, wr: Number(g[`u:${m}:wr`]) || 0, rd: Number(g[`u:${m}:rd`]) || 0, cpu: null };
+  // Sayaç ayın ortasında başladıysa: başlangıçtan beri görülen hızla ayın başından bugüne tahmin (gerçek veri yoksa)
+  const since = Number(g[`u:${m}:since`]) || 0, monthStart = Date.now() - frac * dim * 86400000;
+  if (since > monthStart + 3600000 && Date.now() - since > 600000) { const k = (Date.now() - monthStart) / (Date.now() - since); for (const x of ['req', 'wr', 'rd']) est[x] = Math.round(est[x] * k); }
+  let cf = null; try { cf = JSON.parse(g.cf_usage || 'null'); } catch (e) {}
+  if (cf && cf.month !== m) cf = null;
+  const used = { req: Math.max(est.req, cf ? cf.req : 0), wr: Math.max(est.wr, cf ? cf.wr : 0), rd: Math.max(est.rd, cf ? cf.rd : 0), cpu: cf ? cf.cpu : null };
+  const metrics = {}; let level = 0;
+  for (const k of ['req', 'cpu', 'wr', 'rd']) {
+    if (used[k] === null) { metrics[k] = { used: null, included: INCLUDED[k] }; continue; }
+    const proj = used[k] / frac, pctUsed = used[k] / INCLUDED[k], pctProj = proj / INCLUDED[k];
+    metrics[k] = { used: used[k], proj: Math.round(proj), included: INCLUDED[k], pctUsed, pctProj };
+    const lv = pctUsed >= 0.95 ? 3 : pctProj >= 0.85 ? 2 : pctProj >= 0.6 ? 1 : 0; if (lv > level) level = lv;
+  }
+  const v = { month: m, level, metrics, cf: cf ? { at: cf.at } : null, cfErr: g.cf_usage_err || '', hasToken: !!(env.CF_API_TOKEN && env.CF_ACCOUNT_ID) };
+  GUARD_CACHE = { t: Date.now(), v }; return v;
+}
 async function cronRun(env) {
   await init(env);
   if (!tyConfigured(env)) return;
@@ -983,6 +1035,9 @@ async function cronRun(env) {
       await setSetting(env, 'cron_gaps', JSON.stringify(gaps.slice(0, 10)));
     }
   } catch (e) {}
+  // Maliyet koruması: seviye 3'te yalnızca 5 dakikada bir, tek sipariş kontrolü
+  const guard = await usageGuard(env, true);
+  if (guard.level >= 3 && new Date().getUTCMinutes() % 5 !== 0) { await flushUsage(env, { req: 1 }); return; }
   if (!(await tryLock(env, 90000))) { await setSetting(env, 'cron_busy', iso()); return; }
   await setSetting(env, 'cron_at', String(t0));
   const diag = { at: iso(t0), polls: 0, slow: {}, errs: {} };
@@ -990,8 +1045,10 @@ async function cronRun(env) {
     // Tek çalışma, sorgu sayacıyla: önce siparişler (her 10 sn), ağır işler bütçe kalırsa; hiçbir iş sınırı aşamaz
     const counter = { n: 0 }; const envc = { ...env, DB: countingDB(env.DB, counter), __q: counter };
     const absorb = (r) => { for (const [k, v] of Object.entries((r && r.steps) || {})) { if (typeof v === 'number') { if (!(diag.slow[k] >= v)) diag.slow[k] = v; } else diag.errs[k] = v; } if (r && r.error) diag.errs.orders = r.error; };
-    for (let i = 0; i < 6; i++) {
-      const wait = t0 + i * 10000 - Date.now();
+    const POLLS = guard.level >= 2 ? 1 : guard.level === 1 ? 3 : 6, GAP = 60000 / POLLS;
+    diag.level = guard.level;
+    for (let i = 0; i < POLLS; i++) {
+      const wait = t0 + i * GAP - Date.now();
       if (wait > 0) await sleep(wait);
       if (Date.now() - t0 > 52000) break;
       if (qLeft(envc) < 130) { diag.errs.budget = 'sorgu bütçesi doldu (' + counter.n + ')'; break; }
@@ -999,13 +1056,17 @@ async function cronRun(env) {
       try { absorb(await pollOnce(envc, false, Date.now() + 9000, 'light')); } catch (e) { diag.errs.orders = String(e.message || e).slice(0, 150); }
       diag.polls++;
       // Ağır işler ilk turdan sonra; kalan 5 sipariş turu için ilk turun kullandığı kadar (+pay) yer bırakılır
-      if (i === 0) { const reserve = 5 * Math.min(170, Math.max(45, counter.n - q0 + 25)); try { envc.__q = { get n() { return counter.n + reserve; } }; absorb(await pollOnce(envc, true, t0 + 50000, 'heavy')); } catch (e) { diag.errs.heavy = String(e.message || e).slice(0, 150); } envc.__q = counter; }
+      if (i === 0 && (guard.level < 2 || new Date().getUTCMinutes() % 15 === 0)) { const reserve = (POLLS - 1) * Math.min(170, Math.max(45, counter.n - q0 + 25)); try { envc.__q = { get n() { return counter.n + reserve; } }; absorb(await pollOnce(envc, true, t0 + 50000, 'heavy')); } catch (e) { diag.errs.heavy = String(e.message || e).slice(0, 150); } envc.__q = counter; }
     }
     // Raporlar: kalan bütçeyle birkaç gün
     // Raporlar 5 dakikada bir, az sayıda gün (eksik gün varken daha fazla); değişmeyen gün yazılmaz
     const sAt = Number(await envc.DB.prepare(`SELECT v FROM settings WHERE k='run_stats_at'`).first().then(r => r && r.v)) || 0;
-    if (qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= 5 * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
+    const statsEvery = guard.level >= 2 ? 60 : guard.level === 1 ? 20 : 5;
+    if (guard.level < 3 && qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= statsEvery * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
     diag.queries = counter.n; diag.wr = counter.w || 0; diag.rd = counter.r || 0;
+    try { await flushUsage(env, { req: 1, wr: diag.wr, rd: diag.rd }); } catch (e) {}
+    // Cloudflare gerçek kullanım verisi saatte bir (anahtar varsa)
+    try { const last = Number(await getSetting(env, 'cf_usage_run')) || 0; if (Date.now() - last > 3600000 && env.CF_API_TOKEN && env.CF_ACCOUNT_ID) { await setSetting(env, 'cf_usage_run', String(Date.now())); try { const u = await fetchCfUsage(env); if (u) await env.DB.batch([setStmt(env, 'cf_usage', JSON.stringify(u)), setStmt(env, 'cf_usage_err', '')]); } catch (e) { await setSetting(env, 'cf_usage_err', iso() + ' · ' + String(e.message || e)); } } } catch (e) {}
     // Aylık kullanım tahmini için son 60 turun ortalaması
     try { const u = JSON.parse((await getSetting(env, 'usage_avg')) || '{"w":0,"r":0,"n":0}'); const k = Math.min(60, u.n + 1); u.w = u.w + (diag.wr - u.w) / k; u.r = u.r + (diag.rd - u.r) / k; u.n = k; u.at = iso(); await setSetting(env, 'usage_avg', JSON.stringify(u)); } catch (e) {}
   } finally {
@@ -1322,7 +1383,8 @@ function mapProduct(r) { return { sameDay: r.same_day === 1, id: r.key, sku: r.s
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
   const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
+  let usage = null; try { usage = await usageGuard(env, false); } catch (e) {}
+  return { usage, rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
 }
 /* ---------- piyasa bandı (döviz, borsa, emtia) ---------- */
 const MKT_SYMS = { USD: 'USDTRY=X', EUR: 'EURTRY=X', BIST: 'XU100.IS', GOLD: 'GC=F', SILVER: 'SI=F', BRENT: 'BZ=F' };
@@ -1808,7 +1870,7 @@ export default {
       if (!env.APP_PASSWORD) return new Response('Kurulum eksik: APP_PASSWORD gizli değişkeni tanımlanmalı.', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       // Sayfa ve simgeler veritabanını beklemeden hemen gönderilir
       if (!path.startsWith('/api/') && path !== '/perf' && path !== '/__stats' && path !== '/__run' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png' && path !== '/icon-192.png' && path !== '/icon-512.png')
-        return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
+        { USE.req++; return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } }); }
       if (path.startsWith('/api/') && path !== '/api/logout' || path === '/perf' || path === '/__stats' || path === '/__run') await init(env);
       if (path === '/manifest.webmanifest') return new Response(JSON.stringify({ name: 'Lilya Backstage', short_name: 'Backstage', start_url: '/', display: 'standalone', background_color: '#f5f6f8', theme_color: '#0a0b10', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] }), { headers: { 'content-type': 'application/manifest+json' } });
       if (path === '/icon.svg' || path === '/apple-touch-icon.png') return new Response(ICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
@@ -1867,13 +1929,16 @@ export default {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
         const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err', 'run_err', 'ty_orders_exact', 'ty_orders_hwm', 'ty_ok', 'usage_avg']);
         const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
-        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, queries: dg.queries, wr: dg.wr, rd: dg.rd, slow: dg.slow, errs: dg.errs || {} }, usage: g.usage_avg ? JSON.parse(g.usage_avg) : null, runErr: g.run_err || null, exact: g.ty_orders_exact || null, hwm: g.ty_orders_hwm ? iso(Number(g.ty_orders_hwm)) : null, tyOk: g.ty_ok || null, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, queries: dg.queries, wr: dg.wr, rd: dg.rd, slow: dg.slow, errs: dg.errs || {} }, usage: g.usage_avg ? JSON.parse(g.usage_avg) : null, guard: await usageGuard(env, true), runErr: g.run_err || null, exact: g.ty_orders_exact || null, hwm: g.ty_orders_hwm ? iso(Number(g.ty_orders_hwm)) : null, tyOk: g.ty_ok || null, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
         const exp = await authed(req, env);
         if (!exp) return bad('Oturum gerekli.', 401);
-        const res = await api(req, env, path, ctx);
+        const uc = { n: 0 }; const envU = { ...env, DB: countingDB(env.DB, uc) };
+        const res = await api(req, envU, path, ctx);
+        USE.req++; USE.wr += uc.w || 0; USE.rd += uc.r || 0;
+        if (Date.now() - USE.at > 60000) ctx.waitUntil(flushUsage(env).catch(() => {}));
         // Kullandıkça oturum uzar
         if (exp - Date.now() < SESSION_MS - 86400000) { try { res.headers.append('set-cookie', await loginCookie(env)); } catch (e) {} }
         return res;
