@@ -1384,7 +1384,7 @@ function drawLabelPages(p, W, H, sid){
   const orderLabel = String(p.orderNo), custName = (p.to.name || '').toLocaleUpperCase('tr-TR');
   const dateStr = p.date ? new Date(p.date).toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
   const colQty = mm(11), colAmt = mm(19), pad = mm(1.6), nameW = cw - colQty - colAmt - 2 * pad - mm(1);
-  const PER = 3, footH = mm(5.5), gap = mm(1.4);
+  const PER = 4, footH = mm(5.5), gap = mm(1.2);
   const items = p.lines.map(l => ({l, name: [l.name, l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ') + (l.sku ? ` (${l.sku})` : '')}));
   const chunks = []; for (let i = 0; i < items.length; i += PER) chunks.push(items.slice(i, i + PER)); if (!chunks.length) chunks.push([]);
   const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
