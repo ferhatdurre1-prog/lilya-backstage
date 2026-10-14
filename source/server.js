@@ -978,7 +978,7 @@ async function cronRun(env) {
   try {
     // Her eşitleme ve ağır işler ayrı çalışmada (kendi sorgu sınırı); hiçbiri diğerini durduramaz
     const run = async (mode, budget) => {
-      if (env.SELF) { const r = await env.SELF.fetch('https://self/__run', { method: 'POST', headers: { 'x-run': await hmac(env.APP_PASSWORD, 'stats-run'), 'content-type': 'application/json' }, body: JSON.stringify({ mode, budget }) }); const j = await r.json().catch(() => ({ error: 'run ' + r.status })); if (!r.ok && !j.error) j.error = 'run ' + r.status; return j; }
+      if (env.SELF) { const r = await env.SELF.fetch('https://self/__run', { method: 'POST', headers: { 'x-run': await hmac(env.APP_PASSWORD, 'stats-run'), 'content-type': 'application/json' }, body: JSON.stringify({ mode, budget }) }); const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (e) { j = { error: 'run ' + r.status }; try { await setSetting(env, 'run_err', iso() + ' · ' + mode + ' ' + r.status + ' · ' + txt.replace(/\s+/g, ' ').slice(0, 400)); } catch (x) {} } if (!r.ok && !j.error) j.error = 'run ' + r.status; return j; }
       return pollOnce(env, mode === 'heavy', budget, mode);
     };
     const absorb = (r) => { for (const [k, v] of Object.entries((r && r.steps) || {})) { if (typeof v === 'number') { if (!(diag.slow[k] >= v)) diag.slow[k] = v; } else diag.errs[k] = v; } if (r && r.error) diag.errs.orders = r.error; };
@@ -1843,9 +1843,9 @@ export default {
       }
       if (path === '/perf') {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err']);
+        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err', 'run_err', 'ty_orders_exact', 'ty_orders_hwm', 'ty_ok']);
         const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
-        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: dg.errs || {} }, runErr: g.run_err || null, exact: g.ty_orders_exact || null, hwm: g.ty_orders_hwm ? iso(Number(g.ty_orders_hwm)) : null, tyOk: g.ty_ok || null, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
