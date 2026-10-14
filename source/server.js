@@ -1387,24 +1387,35 @@ async function homeData(env, ctx, force) {
   const today = trDay(Date.now());
   const cached = JSON.parse((await getSetting(env, 'home_cache')) || 'null');
   const fresh = cached && cached.day === today && Date.now() - cached.at < 90000;
-  if (!fresh || force) {
+  if ((!fresh || force) && cached && cached.day === today) {
     const busy = Number(await getSetting(env, 'home_busy')) || 0;
     if (Date.now() - busy > 180000) { await setSetting(env, 'home_busy', String(Date.now())); const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {})); if (ctx && ctx.waitUntil) ctx.waitUntil(job); }
   }
   if (cached && cached.day === today) return cached;
-  return { pending: true, err: (await getSetting(env, 'home_err')) || '' };
+  try { return await computeHome(env); } catch (e) { return { pending: true, err: String(e.message || e).slice(0, 200) }; }
 }
+// Hızlı: geçmiş günler kayıtlı günlük sonuçlardan (raporlar), sadece bugün ve "dün bu saate kadar" canlı hesaplanır
 async function computeHome(env) {
   const t00 = Date.now(), today = trDay(t00);
-  const dayStart = (d) => Date.parse(d + 'T00:00:00+03:00');
-  const t0 = dayStart(today), to = t0 + 86400000, w0 = t0 - 6 * 86400000, m0 = dayStart(today.slice(0, 8) + '01');
-  // Her gün, Kâr ekranındaki "o gün" hesabıyla birebir aynı yapılır (siparişe bağlanamayan kesintiler, reklam, tazmin dahil)
-  const dayList = []; for (let i = 6; i >= 0; i--) dayList.push(t0 - i * 86400000);
-  // Dün bu saate kadar: bugünle adil karşılaştırma için dünün aynı saatine kadarki ciro/kâr/sipariş
+  const t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', w0d = addDay(today, -6);
+  const fromD = m0d < w0d ? m0d : w0d, yday = addDay(today, -1);
   const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
-  const [M, YS, ...D] = await Promise.all([computeProfit(env, iso(m0), iso(to)), computeProfit(env, iso(t0 - 86400000), iso(ySame)), ...dayList.map(a => computeProfit(env, iso(a), iso(a + 86400000)))]);
-  const days = D.map((r, i) => ({ d: trDay(dayList[i]), rev: r.summary.revenue, prof: r.summary.profit, n: r.summary.orders, u: r.summary.units }));
-  const out = { day: today, at: Date.now(), ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days, month: { revenue: M.summary.revenue, profit: M.summary.profit, margin: M.summary.margin }, losers: M.products.filter(x => x.profit < 0).length };
+  const [T, YS, statsR, pdR] = await Promise.all([
+    computeProfit(env, iso(t0), iso(t0 + 86400000)),
+    computeProfit(env, iso(t0 - 86400000), iso(ySame)),
+    env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all(),
+    env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all()]);
+  const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
+  // Kaydı olmayan geçmiş gün varsa canlı hesaplanıp kaydedilir
+  for (let d = fromD; d < today; d = addDay(d, 1)) if (!byDay.has(d)) { try { await snapshotDay(env, d); const r = await env.DB.prepare('SELECT data FROM daily_stats WHERE day=?1').bind(d).first(); if (r) byDay.set(d, JSON.parse(r.data)); } catch (e) {} }
+  const days = [];
+  for (let i = 6; i >= 0; i--) { const d = addDay(today, -i); const x = i === 0 ? T.summary : (byDay.get(d) || {}); days.push({ d, rev: Number(x.revenue) || 0, prof: Number(x.profit) || 0, n: Number(x.orders) || 0, u: Number(x.units) || 0 }); }
+  let mRev = T.summary.revenue, mProf = T.summary.profit;
+  for (const [d, x] of byDay) if (d >= m0d) { mRev += Number(x.revenue) || 0; mProf += Number(x.profit) || 0; }
+  const pp = new Map(pdR.results.map(x => [x.pkey, x.p || 0])); for (const x of T.products) pp.set(x.key, (pp.get(x.key) || 0) + (x.profit || 0));
+  const R2 = (n) => Math.round(n * 100) / 100;
+  const out = { day: today, at: Date.now(), ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
+    month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
   await setSetting(env, 'home_cache', JSON.stringify(out)); await setSetting(env, 'home_err', '');
   return out;
 }
@@ -1465,10 +1476,13 @@ async function api(req, env, path, ctx) {
     const st = path === '/api/expenses/update'
       ? env.DB.prepare('UPDATE expenses SET day=?1, name=?2, amount=?3 WHERE id=?4').bind(day, name, Math.round(amount * 100) / 100, Number(body.id) || 0)
       : env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at) VALUES(?1,?2,?3,?4)').bind(day, name, Math.round(amount * 100) / 100, iso());
+    const old = path === '/api/expenses/update' ? await env.DB.prepare('SELECT day FROM expenses WHERE id=?1').bind(Number(body.id) || 0).first() : null;
     await env.DB.batch([st, setStmt(env, 'home_cache', ''), REV(env)]);
+    // Raporlar ve ana ekran hemen güncel olsun
+    try { await snapshotDay(env, day); if (old && old.day && old.day !== day) await snapshotDay(env, old.day); } catch (e) {}
     return json({ ok: true });
   }
-  if (path === '/api/expenses/delete') { await env.DB.batch([env.DB.prepare('DELETE FROM expenses WHERE id=?1').bind(Number(body.id) || 0), setStmt(env, 'home_cache', ''), REV(env)]); return json({ ok: true }); }
+  if (path === '/api/expenses/delete') { const old = await env.DB.prepare('SELECT day FROM expenses WHERE id=?1').bind(Number(body.id) || 0).first(); await env.DB.batch([env.DB.prepare('DELETE FROM expenses WHERE id=?1').bind(Number(body.id) || 0), setStmt(env, 'home_cache', ''), REV(env)]); try { if (old && old.day) await snapshotDay(env, old.day); } catch (e) {} return json({ ok: true }); }
   if (path === '/api/reports') {
     const { results } = await env.DB.prepare('SELECT day, data, computed_at FROM daily_stats ORDER BY day').all();
     const first = await getSetting(env, 'stats_first'), today = trDay(Date.now());

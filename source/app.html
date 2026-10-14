@@ -817,14 +817,14 @@ function viewHome(){
   let h = '';
   if (H) {
     const D = H.days, T = D[D.length - 1], Y = D[D.length - 2] || {rev:0, prof:0}, M = H.month, YS = H.ySame || null;
-    const kpi = (k, icon, c, cs, v, sub, vstyle='') => `<div class="kpi" style="--c:${c};--cs:${cs}"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
+    const kpi = (k, icon, c, cs, v, sub, vstyle='', go='') => `<div class="kpi" data-act="home-go" data-id="${go}" style="--c:${c};--cs:${cs};cursor:pointer"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
     const vs = (a, b) => { if (!b) return ''; const d = (a - b) / Math.abs(b) * 100; if (!isFinite(d)) return ''; return ` <span class="${d >= 0 ? 'up' : 'dn'}">${d >= 0 ? '▲' : '▼'} %${Math.abs(d).toFixed(0)}</span>`; };
     const pc = (n) => n < 0 ? 'var(--bad)' : 'var(--good)', pcs = (n) => n < 0 ? 'var(--bad-soft)' : 'var(--good-soft)';
     h += `<div class="home-grid">
-      ${kpi('Bugün ciro', 'value', 'var(--blue)', 'var(--blue-soft)', fmtTL(T.rev), YS ? `Dün bu saatte ${fmtTL(YS.rev)}${vs(T.rev, YS.rev)}` : (Y.rev ? `Dün ${fmtTL(Y.rev)}` : 'Dün satış yok'), 'color:var(--blue)')}
-      ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : (Y.prof ? `Dün ${tlS(Y.prof)}` : ''), profitCls(T.prof))}
-      ${kpi('Bugün sipariş', 'orders', 'var(--orange)', 'var(--warn-soft)', fmtN(T.n), `${fmtN(T.u)} adet${YS ? ` · dün bu saatte ${fmtN(YS.n)}${vs(T.n, YS.n)}` : ''}`, 'color:var(--orange)')}
-      ${kpi('Bu ay net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit) || 'color:var(--violet)')}
+      ${kpi('Bugün ciro', 'value', 'var(--blue)', 'var(--blue-soft)', fmtTL(T.rev), YS ? `Dün bu saatte ${fmtTL(YS.rev)}${vs(T.rev, YS.rev)}` : (Y.rev ? `Dün ${fmtTL(Y.rev)}` : 'Dün satış yok'), 'color:var(--blue)', 'today-products')}
+      ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : (Y.prof ? `Dün ${tlS(Y.prof)}` : ''), profitCls(T.prof), 'today-products')}
+      ${kpi('Bugün sipariş', 'orders', 'var(--orange)', 'var(--warn-soft)', fmtN(T.n), `${fmtN(T.u)} adet${YS ? ` · dün bu saatte ${fmtN(YS.n)}${vs(T.n, YS.n)}` : ''}`, 'color:var(--orange)', 'today-orders')}
+      ${kpi('Bu ay net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit) || 'color:var(--violet)', 'month-products')}
     </div>` + homeChart(D);
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
@@ -860,16 +860,17 @@ function homeChart(D){
   g += `<line x1="0" x2="${Wd}" y1="${zero}" y2="${zero}" stroke="var(--line-strong)" stroke-width="1"/>`;
   days.forEach((x, i) => { const cx = gw * i + gw / 2, today = i === days.length - 1;
     const rh = x.rev * scale, ph = Math.abs(x.prof) * scale, py = x.prof >= 0 ? zero - ph : zero;
-    g += `<g><title>${esc(x.d.toLocaleDateString('tr-TR',{weekday:'long', day:'numeric', month:'long'}))}: ciro ${esc(fmtTL(x.rev))}, net kâr ${esc(fmtTL(x.prof))}, ${x.n} sipariş</title>
+    const dd = x.d.toISOString ? new Date(x.d.getTime() - x.d.getTimezoneOffset() * 60000).toISOString().slice(0,10) : '';
+    g += `<g data-act="rep-open" data-id="${dd}|${dd}" style="cursor:pointer"><rect x="${cx - gw/2}" y="0" width="${gw}" height="${base + 40}" fill="transparent"/><title>${esc(x.d.toLocaleDateString('tr-TR',{weekday:'long', day:'numeric', month:'long'}))}: ciro ${esc(fmtTL(x.rev))}, net kâr ${esc(fmtTL(x.prof))}, ${x.n} sipariş</title>
       <rect x="${cx - bw - 1}" y="${zero - rh}" width="${bw}" height="${Math.max(rh, x.rev ? 1 : 0)}" rx="4" fill="url(#gRev)"/>
       <rect x="${cx + 1}" y="${py}" width="${bw}" height="${Math.max(ph, x.prof ? 1 : 0)}" rx="4" fill="${x.prof < 0 ? 'url(#gLoss)' : 'url(#gProf)'}"/>
       ${x.rev ? `<text x="${cx}" y="${zero - rh - 5}" text-anchor="middle" font-size="9.5" font-weight="700" fill="var(--blue)">${short(x.rev)}</text>` : ''}
       <text x="${cx}" y="${base + 22}" text-anchor="middle" font-size="10.5" fill="${today ? 'var(--ink)' : 'var(--ink-3)'}" font-weight="${today ? 700 : 400}">${today ? 'Bugün' : esc(x.d.toLocaleDateString('tr-TR',{weekday:'short'}))}</text>
       <text x="${cx}" y="${base + 35}" text-anchor="middle" font-size="9.5" fill="var(--ink-3)">${x.d.getDate()}</text></g>`; });
-  return `<div class="card chart7"><div class="spread"><h3 style="margin:0">Son 7 gün</h3><span class="pill" style="background:var(--warn-soft);color:var(--orange)">${fmtN(tot.n)} sipariş</span></div>
+  return `<div class="card chart7"><div class="spread"><h3 style="margin:0">Son 7 gün</h3><button class="pill" data-act="home-go" data-id="reports" style="background:var(--warn-soft);color:var(--orange);border:0;cursor:pointer">${fmtN(tot.n)} sipariş ›</button></div>
     <div class="spread" style="margin:8px 0 2px"><div><div class="small muted">Ciro</div><b class="num" style="color:var(--blue);font-size:18px">${fmtTL(tot.rev)}</b></div><div style="text-align:right"><div class="small muted">Net kâr</div><b class="num" style="${profitCls(tot.prof)};font-size:18px">${tlS(tot.prof)}</b></div></div>
     <div class="lg"><span><i style="background:var(--blue)"></i>Ciro</span><span><i style="background:var(--good)"></i>Net kâr</span><span><i style="background:var(--bad)"></i>Zarar</span></div>
-    <svg viewBox="0 0 ${Wd} ${base + 40}" role="img" aria-label="Son 7 günün ciro ve net kâr grafiği">${g}</svg></div>`;
+    <svg viewBox="0 0 ${Wd} ${base + 40}" role="img" aria-label="Son 7 günün ciro ve net kâr grafiği">${g}</svg><p class="muted small" style="margin:0">Bir güne dokununca o günün ayrıntısı açılır.</p></div>`;
 }
 // Ana ekran özeti: son değer telefonda saklanır, açılışta anında gösterilir; arkada en fazla dakikada bir yenilenir.
 function homeMaybeLoad(force){
@@ -2097,6 +2098,8 @@ document.addEventListener('click', async e => {
       try { await api('/api/qna/answer', {id, text}); Q.data.items = Q.data.items.filter(x => x.id !== id); delete Q.drafts[id]; toast('Cevap gönderildi.'); refresh(true); }
       catch(e) { toast(errText(e), true); }
       delete Q.busy[id]; render(); break; }
+    case 'home-go': { if (id === 'reports') { repS().gran = 'day'; setTab('reports'); break; }
+      const P = profS(); const [per, sub] = id.split('-'); P.period = per === 'month' ? 'month' : 'today'; P.sub = sub === 'orders' ? 'orders' : 'products'; P.opage = 1; P.data = null; P.key = ''; setTab('profit'); break; }
     case 'rep-quick': { const R = repS(); [R.cf, R.ct] = id.split('|'); render(); break; }
     case 'rep-metric': openSheet('repmetric', {k: id, id}); break;
     case 'rep-drill': openSheet('repdrill', {key: id, id}); break;
