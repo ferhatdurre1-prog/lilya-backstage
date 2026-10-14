@@ -88,6 +88,7 @@ async function init0(env) {
   }
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
+  for (const c of ['claim_id TEXT', 'item_id TEXT', 'customer TEXT', 'amount REAL', 'reason TEXT', 'cnote TEXT', 'cargo TEXT', 'cargo_link TEXT']) { try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ' + c).run(); } catch (e) {} }
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE order_cust ADD COLUMN sname TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS product_info(main_id TEXT PRIMARY KEY, title TEXT, descr TEXT, attrs TEXT, image TEXT, updated_at TEXT, note TEXT)').run();
@@ -573,10 +574,75 @@ async function queueSuspectOrders(env) {
   return out;
 }
 const CLAIM_OPEN = new Set(['Created', 'WaitingInAction', 'WaitingFraudCheck', 'InAnalysis', 'Unresolved']);
+function claimItems(claims) {
+  const items = [];
+  for (const c of claims) {
+    const claimId = String(c.id || c.claimId || '');
+    const customer = [c.customerFirstName, c.customerLastName].filter(Boolean).join(' ').trim().slice(0, 80);
+    for (const it of (c.items || [])) {
+      const ol = it.orderLine || {};
+      for (const ci of (it.claimItems || [])) {
+        const stName = (ci.claimItemStatus && ci.claimItemStatus.name) || '';
+        const mapped = stName === 'Accepted' ? 'accepted' : (stName === 'Rejected' || stName === 'Cancelled') ? 'rejected' : 'requested';
+        const reason = (ci.customerClaimItemReason && ci.customerClaimItemReason.name) || (ci.trendyolClaimItemReason && ci.trendyolClaimItemReason.name) || '';
+        items.push({ id: 'ty-' + safeSeg(String(ci.id)), itemId: String(ci.id), claimId, customer, amount: numOrNull(ol.price), reason, cnote: String(ci.customerNote || '').slice(0, 300), cargo: String(c.cargoProviderName || '').slice(0, 60), cargoLink: String(c.cargoTrackingLink || '').slice(0, 300), orderNo: String(c.orderNumber || ''), sku: ol.merchantSku || '', barcode: ol.barcode || '', name: ol.productName || '', ext: stName, mapped, autoAcc: ci.autoAccepted === true, claimDate: c.claimDate ? iso(Number(c.claimDate)) : iso(), note: reason });
+      }
+    }
+  }
+  return items;
+}
+async function applyClaimItems(env, items, s) {
+  const auto = s.auto_accept !== '0';
+  let added = 0, accepted = 0;
+  if (!items.length) return { added, accepted };
+  const bmap = await barcodeMap(env, items.filter(x => !x.sku).map(x => x.barcode));
+  const existing = new Map((await selectIn(env, 'SELECT id, status, ext_status, claim_id FROM returns', 'id', items.map(x => x.id))).map(r => [r.id, r]));
+  const meta = (it) => [it.claimId, it.itemId, it.customer, it.amount, it.reason, it.cnote, it.cargo, it.cargoLink];
+  for (const it of items) {
+    const r = resolveLine(it, bmap); if (!r) continue;
+    const sku = r.sku || it.sku || it.barcode;
+    const ex = existing.get(it.id); const now2 = iso();
+    const preStart = s.started_at && it.claimDate < s.started_at;
+    const stmts = [];
+    try {
+      if (!ex) {
+        // Trendyol iadeyi kendiliğinden onayladıysa (ör. 8 iş günü dolduğu için) ürün depoya ulaşmamış olabilir: stok elle onaylanır
+        const finalStatus = it.mapped === 'accepted' ? (preStart || (auto && !it.autoAcc) ? 'accepted' : 'requested') : it.mapped;
+        if (finalStatus === 'requested' && it.mapped === 'accepted' && it.autoAcc) it.note = AUTO_ACC_NOTE + (it.note ? ' · ' + it.note : '');
+        stmts.push(...ensureProduct(env, r.pkey, { sku, name: it.name, barcode: it.barcode }, 'trendyol'));
+        stmts.push(env.DB.prepare(`INSERT INTO returns(id,channel,order_no,order_id,line_key,pkey,sku,name,qty,status,source,note,ext_status,created_at,decided_at,ext_at,claim_id,item_id,customer,amount,reason,cnote,cargo,cargo_link) VALUES(?1,'trendyol',?2,?3,'',?4,?5,?6,1,?7,'trendyol',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)`)
+          .bind(it.id, it.orderNo, orderId('trendyol', it.orderNo), r.pkey, sku, it.name, finalStatus, preStart && finalStatus === 'accepted' ? 'Başlangıç öncesi; stok değişmedi' : it.note, it.ext, it.claimDate, finalStatus !== 'requested' ? now2 : null, now2, ...meta(it)));
+        if (finalStatus === 'accepted' && !preStart) { stmts.push(...changeQty(env, r.pkey, 1, { type: 'ret', channel: 'trendyol', ref: it.orderNo, note: 'Trendyol iadesi kabul edildi' })); accepted++; }
+        stmts.push(REV(env)); await env.DB.batch(stmts); added++;
+        continue;
+      }
+      // Trendyol ayrıntıları (müşteri, tutar, sebep, kargo) eski kayıtlara bir kez eklenir
+      if (!ex.claim_id || ex.claim_id === '-') stmts.push(env.DB.prepare(`UPDATE returns SET claim_id=?2, item_id=?3, customer=?4, amount=?5, reason=?6, cnote=?7, cargo=?8, cargo_link=?9 WHERE id=?1`).bind(it.id, ...meta(it)));
+      if (ex.status === 'requested' && (it.mapped !== 'requested' || ex.ext_status !== it.ext)) {
+        if (it.mapped === 'accepted' && auto && !it.autoAcc) {
+          stmts.push(guardStmt(env, `(SELECT status FROM returns WHERE id=?1)='requested'`, it.id),
+            env.DB.prepare(`UPDATE returns SET status='accepted', ext_status=?2, decided_at=?3, ext_at=?3 WHERE id=?1`).bind(it.id, it.ext, now2),
+            ...changeQty(env, r.pkey, 1, { type: 'ret', channel: 'trendyol', ref: it.orderNo, note: 'Trendyol iadesi kabul edildi' }), unguard(env));
+          accepted++;
+        } else if (it.mapped === 'rejected') {
+          stmts.push(env.DB.prepare(`UPDATE returns SET status='rejected', ext_status=?2, decided_at=?3, ext_at=?3 WHERE id=?1 AND status='requested'`).bind(it.id, it.ext, now2));
+        } else if (ex.ext_status !== it.ext) {
+          const addNote = it.mapped === 'accepted' && it.autoAcc;
+          stmts.push(env.DB.prepare(`UPDATE returns SET ext_status=?2, ext_at=?3${addNote ? ", note=CASE WHEN note LIKE 'Trendyol otomatik%' THEN note ELSE ?4 || CASE WHEN note<>'' THEN ' · ' || note ELSE '' END END" : ''} WHERE id=?1`).bind(...(addNote ? [it.id, it.ext, now2, AUTO_ACC_NOTE] : [it.id, it.ext, now2])));
+        }
+      } else if (ex.status !== 'requested' && ex.ext_status !== it.ext) {
+        // burada karar verilmiş iadenin Trendyol durumu da güncel görünsün (stok değişmez)
+        stmts.push(env.DB.prepare(`UPDATE returns SET ext_status=?2, ext_at=?3 WHERE id=?1`).bind(it.id, it.ext, now2));
+      }
+      if (stmts.length) { stmts.push(REV(env)); await env.DB.batch(stmts); }
+    } catch (e) { /* yarış durumunda bir sonraki turda yeniden denenir */ }
+  }
+  return { added, accepted };
+}
 async function syncTrendyolClaims(env) {
   const sid = env.TRENDYOL_SELLER_ID, now = Date.now();
   const s = await getSettings(env, ['ty_claims_hwm', 'auto_accept', 'started_at', 'ty_shift']);
-  const hwm = Number(s.ty_claims_hwm) || 0, auto = s.auto_accept !== '0', shift = Number(s.ty_shift) || 0;
+  const hwm = Number(s.ty_claims_hwm) || 0;
   const { start, end } = tyWindow(hwm, 13, now);
   const claims = []; let maxMod = hwm;
   for (let page = 0; page < 10; page++) {
@@ -586,57 +652,53 @@ async function syncTrendyolClaims(env) {
     claims.push(...(r.content || []));
     if (page + 1 >= (r.totalPages || 0)) break;
   }
-  const items = [];
-  for (const c of claims) {
-    if (c.lastModifiedDate && c.lastModifiedDate > maxMod) maxMod = c.lastModifiedDate;
-    for (const it of (c.items || [])) {
-      const ol = it.orderLine || {};
-      for (const ci of (it.claimItems || [])) {
-        const stName = (ci.claimItemStatus && ci.claimItemStatus.name) || '';
-        const mapped = stName === 'Accepted' ? 'accepted' : (stName === 'Rejected' || stName === 'Cancelled') ? 'rejected' : 'requested';
-        items.push({ id: 'ty-' + safeSeg(String(ci.id)), orderNo: String(c.orderNumber || ''), sku: ol.merchantSku || '', barcode: ol.barcode || '', name: ol.productName || '', ext: stName, mapped, autoAcc: ci.autoAccepted === true, claimDate: c.claimDate ? iso(Number(c.claimDate)) : iso(), note: (ci.customerClaimItemReason && ci.customerClaimItemReason.name) || (ci.trendyolClaimItemReason && ci.trendyolClaimItemReason.name) || '' });
-      }
-    }
-  }
-  let added = 0, accepted = 0;
-  if (items.length) {
-    const bmap = await barcodeMap(env, items.filter(x => !x.sku).map(x => x.barcode));
-    const existing = new Map((await selectIn(env, 'SELECT id, status, ext_status FROM returns', 'id', items.map(x => x.id))).map(r => [r.id, r]));
-    for (const it of items) {
-      const r = resolveLine(it, bmap); if (!r) continue;
-      const sku = r.sku || it.sku || it.barcode;
-      const ex = existing.get(it.id); const now2 = iso();
-      const preStart = s.started_at && it.claimDate < s.started_at;
-      const stmts = [];
-      try {
-        if (!ex) {
-          // Trendyol iadeyi kendiliğinden onayladıysa (ör. 8 iş günü dolduğu için) ürün depoya ulaşmamış olabilir: stok elle onaylanır
-          const finalStatus = it.mapped === 'accepted' ? (preStart || (auto && !it.autoAcc) ? 'accepted' : 'requested') : it.mapped;
-          if (finalStatus === 'requested' && it.mapped === 'accepted' && it.autoAcc) it.note = AUTO_ACC_NOTE + (it.note ? ' · ' + it.note : '');
-          stmts.push(...ensureProduct(env, r.pkey, { sku, name: it.name, barcode: it.barcode }, 'trendyol'));
-          stmts.push(env.DB.prepare(`INSERT INTO returns(id,channel,order_no,order_id,line_key,pkey,sku,name,qty,status,source,note,ext_status,created_at,decided_at,ext_at) VALUES(?1,'trendyol',?2,?3,'',?4,?5,?6,1,?7,'trendyol',?8,?9,?10,?11,?12)`)
-            .bind(it.id, it.orderNo, orderId('trendyol', it.orderNo), r.pkey, sku, it.name, finalStatus, preStart && finalStatus === 'accepted' ? 'Başlangıç öncesi; stok değişmedi' : it.note, it.ext, it.claimDate, finalStatus !== 'requested' ? now2 : null, now2));
-          if (finalStatus === 'accepted' && !preStart) { stmts.push(...changeQty(env, r.pkey, 1, { type: 'ret', channel: 'trendyol', ref: it.orderNo, note: 'Trendyol iadesi kabul edildi' })); accepted++; }
-          stmts.push(REV(env)); await env.DB.batch(stmts); added++;
-        } else if (ex.status === 'requested' && (it.mapped !== 'requested' || ex.ext_status !== it.ext)) {
-          if (it.mapped === 'accepted' && auto && !it.autoAcc) {
-            stmts.push(guardStmt(env, `(SELECT status FROM returns WHERE id=?1)='requested'`, it.id),
-              env.DB.prepare(`UPDATE returns SET status='accepted', ext_status=?2, decided_at=?3, ext_at=?3 WHERE id=?1`).bind(it.id, it.ext, now2),
-              ...changeQty(env, r.pkey, 1, { type: 'ret', channel: 'trendyol', ref: it.orderNo, note: 'Trendyol iadesi kabul edildi' }), unguard(env), REV(env));
-            accepted++;
-          } else if (it.mapped === 'rejected') {
-            stmts.push(env.DB.prepare(`UPDATE returns SET status='rejected', ext_status=?2, decided_at=?3 WHERE id=?1 AND status='requested'`).bind(it.id, it.ext, now2), REV(env));
-          } else if (ex.ext_status !== it.ext) {
-            const addNote = it.mapped === 'accepted' && it.autoAcc;
-            stmts.push(env.DB.prepare(`UPDATE returns SET ext_status=?2, ext_at=?3${addNote ? ", note=CASE WHEN note LIKE 'Trendyol otomatik%' THEN note ELSE ?4 || CASE WHEN note<>'' THEN ' · ' || note ELSE '' END END" : ''} WHERE id=?1`).bind(...(addNote ? [it.id, it.ext, now2, AUTO_ACC_NOTE] : [it.id, it.ext, now2])), REV(env));
-          }
-          if (stmts.length) await env.DB.batch(stmts);
-        }
-      } catch (e) { /* yarış durumunda bir sonraki turda yeniden denenir */ }
-    }
-  }
+  for (const c of claims) if (c.lastModifiedDate && c.lastModifiedDate > maxMod) maxMod = c.lastModifiedDate;
+  const res = await applyClaimItems(env, claimItems(claims), s);
   await setSetting(env, 'ty_claims_hwm', String(claims.length ? maxMod : (hwm || Math.min(end, now))));
-  return { claims: claims.length, added, accepted };
+  // Ayrıntısı eksik açık iadeler (bu güncellemeden önce kaydedilenler) sipariş numarasıyla tamamlanır: turda en fazla 8 sipariş
+  let filled = 0;
+  try {
+    const { results } = await env.DB.prepare(`SELECT DISTINCT order_no FROM returns WHERE channel='trendyol' AND id LIKE 'ty-%' AND claim_id IS NULL AND order_no<>'' ORDER BY (status='requested') DESC, created_at DESC LIMIT 8`).all();
+    for (const { order_no } of results) {
+      let list = [];
+      try { const r = await ty(env, `order/sellers/${sid}/claims`, { orderNumber: order_no, size: 50, page: 0 }); list = r.content || []; } catch (e) { if (e.status === 429) break; }
+      const its = claimItems(list);
+      if (its.length) { await applyClaimItems(env, its, s); filled++; }
+      await env.DB.prepare(`UPDATE returns SET claim_id='-' WHERE channel='trendyol' AND id LIKE 'ty-%' AND order_no=?1 AND claim_id IS NULL`).bind(order_no).run();
+    }
+  } catch (e) {}
+  return { claims: claims.length, added: res.added, accepted: res.accepted, filled };
+}
+/* Trendyol'da iade onayı / ret talebi (yalnızca "Aksiyon bekliyor" durumundakiler) */
+async function tySend(env, method, path, params, body) {
+  const url = new URL(TY_BASE + path);
+  for (const [k, v] of Object.entries(params || {})) if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+  const h = tyHeaders(env); const init = { method, headers: { ...h } };
+  if (body instanceof FormData) init.body = body;
+  else if (body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(body); }
+  const r = await fetch(url.toString(), init);
+  const txt = await r.text();
+  if (!r.ok) {
+    let msg = txt; try { const j = JSON.parse(txt); msg = (j.errors && j.errors.map(x => x.message).join(' · ')) || j.message || j.exception || txt; } catch (e) {}
+    const e = new Error(`Trendyol ${r.status}: ${String(msg).slice(0, 240)}`); e.status = r.status; throw e;
+  }
+  return txt;
+}
+let CLAIM_REASONS = null;
+async function claimIssueReasons(env) {
+  if (CLAIM_REASONS && Date.now() - CLAIM_REASONS.t < 6 * 3600000) return CLAIM_REASONS.v;
+  const r = await ty(env, 'order/claim-issue-reasons', {});
+  const list = (Array.isArray(r) ? r : (r.content || r.claimIssueReasons || [])).map(x => ({ id: Number(x.id), name: String(x.name || '') })).filter(x => x.id && x.name);
+  CLAIM_REASONS = { t: Date.now(), v: list }; return list;
+}
+const CLAIM_NOFILE = new Set([451, 1651, 2101]);
+async function loadClaimGroup(env, ids) {
+  ids = [...new Set((Array.isArray(ids) ? ids : [ids]).map(String))].slice(0, 50);
+  if (!ids.length) return { err: 'İade seçilmedi.' };
+  const rows = await selectIn(env, 'SELECT * FROM returns', 'id', ids);
+  if (rows.length !== ids.length) return { err: 'İade bulunamadı.', code: 404 };
+  if (rows.some(r => r.status !== 'requested')) return { err: 'Bu iade zaten işlenmiş.', code: 409 };
+  return { rows };
 }
 // Soru cevaplama için ürün bilgisi (açıklama + özellikler), ana ürün koduna göre
 const stripHtml = (h) => String(h || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|li|div|h\d)>/gi, '\n').replace(/<li[^>]*>/gi, '• ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
@@ -1378,7 +1440,7 @@ async function computePricing(env) {
 
 /* ---------- API ---------- */
 function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
-function mapReturn(r) { return { extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
+function mapReturn(r) { return { claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
 function mapProduct(r) { return { sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
@@ -1520,7 +1582,8 @@ async function weatherData(req, body) {
 }
 async function api(req, env, path, ctx) {
   const method = req.method;
-  const body = method === 'POST' ? await req.json().catch(() => ({})) : {};
+  const multipart = (req.headers.get('content-type') || '').includes('multipart/form-data');
+  const body = method === 'POST' && !multipart ? await req.json().catch(() => ({})) : {};
   if (path === '/api/state') {
     const info = await syncInfo(env);
     if (new URL(req.url).searchParams.get('rev') === info.rev) return json({ ...info, same: true });
@@ -1676,14 +1739,55 @@ async function api(req, env, path, ctx) {
     st.push(REV(env)); await env.DB.batch(st); return json({ ok: true, id });
   }
   if (path === '/api/returns/decide') {
-    const r = await env.DB.prepare('SELECT * FROM returns WHERE id=?1').bind(String(body.id || '')).first();
-    if (!r) return bad('İade bulunamadı.', 404);
-    if (r.status !== 'requested') return bad('Bu iade zaten işlenmiş.', 409);
-    const now = iso();
-    const st = [guardStmt(env, `(SELECT status FROM returns WHERE id=?1)='requested'`, r.id), env.DB.prepare('UPDATE returns SET status=?1, decided_at=?2 WHERE id=?3').bind(body.accept ? 'accepted' : 'rejected', now, r.id)];
-    if (body.accept) st.push(...ensureProduct(env, r.pkey, { sku: r.sku, name: r.name }, null), ...changeQty(env, r.pkey, r.qty, { type: 'ret', channel: r.channel, ref: r.order_no, note: 'Depoya ulaştı, kabul edildi' }));
-    st.push(unguard(env), REV(env));
-    try { await env.DB.batch(st); } catch (e) { return bad('Bu iade az önce başka bir yerden işlendi.', 409); }
+    const g = await loadClaimGroup(env, body.ids || body.id); if (g.err) return bad(g.err, g.code || 400);
+    const rows = g.rows, now = iso();
+    // Trendyol'da "Aksiyon bekliyor" olanlar önce Trendyol'da onaylanır; Trendyol kabul etmezse burada hiçbir şey değişmez
+    let tyApproved = 0;
+    if (body.accept && body.trendyol) {
+      const byClaim = new Map();
+      for (const r of rows) if (r.channel === 'trendyol' && r.ext_status === 'WaitingInAction' && r.claim_id && r.claim_id !== '-' && r.item_id) { const l = byClaim.get(r.claim_id) || []; l.push(r.item_id); byClaim.set(r.claim_id, l); }
+      if (!byClaim.size) return bad('Bu iade Trendyol\'da onaylanabilir durumda değil.', 409);
+      if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
+      for (const [cid, list] of byClaim) {
+        try { await tySend(env, 'PUT', `order/sellers/${env.TRENDYOL_SELLER_ID}/claims/${encodeURIComponent(cid)}/items/approve`, null, { claimLineItemIdList: list, params: {} }); tyApproved += list.length; }
+        catch (e) { return bad((tyApproved ? `${tyApproved} kalem onaylandı, kalanında hata: ` : 'Trendyol onayı başarısız: ') + e.message, 502); }
+      }
+    }
+    const st = [];
+    for (const r of rows) {
+      st.push(guardStmt(env, `(SELECT status FROM returns WHERE id=?1)='requested'`, r.id),
+        env.DB.prepare(`UPDATE returns SET status=?1, decided_at=?2${tyApproved && r.ext_status === 'WaitingInAction' ? ", ext_status='WaitingFraudCheck', ext_at=?2" : ''} WHERE id=?3`).bind(body.accept ? 'accepted' : 'rejected', now, r.id));
+      if (body.accept) st.push(...ensureProduct(env, r.pkey, { sku: r.sku, name: r.name }, null), ...changeQty(env, r.pkey, r.qty, { type: 'ret', channel: r.channel, ref: r.order_no, note: tyApproved ? 'Depoya ulaştı, Trendyol\'da onaylandı' : 'Depoya ulaştı, kabul edildi' }));
+      st.push(unguard(env));
+    }
+    st.push(REV(env));
+    try { await env.DB.batch(st); } catch (e) { return bad(tyApproved ? 'Trendyol\'da onaylandı ama stok güncellenemedi; sayfayı yenileyip "Depoya ulaştı" ile stoğu ekle.' : 'Bu iade az önce başka bir yerden işlendi.', 409); }
+    return json({ ok: true, tyApproved });
+  }
+  if (path === '/api/returns/reasons') {
+    if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
+    try { return json({ reasons: await claimIssueReasons(env), noFile: [...CLAIM_NOFILE] }); } catch (e) { return bad('Ret sebepleri alınamadı: ' + e.message, 502); }
+  }
+  if (path === '/api/returns/ty-reject') {
+    if (!multipart) return bad('Geçersiz istek.');
+    const fd = await req.formData();
+    let ids = []; try { ids = JSON.parse(String(fd.get('ids') || '[]')); } catch (e) {}
+    const g = await loadClaimGroup(env, ids); if (g.err) return bad(g.err, g.code || 400);
+    const rows = g.rows; const cid = rows[0].claim_id;
+    if (!cid || cid === '-' || rows.some(r => r.claim_id !== cid || r.ext_status !== 'WaitingInAction' || !r.item_id)) return bad('Ret talebi yalnızca Trendyol\'da "Aksiyon bekliyor" durumundaki iadeler için gönderilebilir.', 409);
+    const reasonId = Number(fd.get('reasonId')); const desc = String(fd.get('description') || '').trim().slice(0, 500);
+    if (!reasonId) return bad('Ret sebebini seç.');
+    if (!desc) return bad('Açıklama yaz.');
+    const files = fd.getAll('files').filter(f => f && typeof f === 'object' && f.size > 0);
+    if (!files.length && !CLAIM_NOFILE.has(reasonId)) return bad('Bu ret sebebi için fotoğraf ya da belge eklemen gerekiyor.');
+    if (files.some(f => f.size > 5 * 1024 * 1024)) return bad('Her dosya en fazla 5 MB olabilir.');
+    const out = new FormData(); for (const f of files.slice(0, 5)) out.append('files', f, f.name || 'ek');
+    let reasonName = String(reasonId); try { const l = await claimIssueReasons(env); const m = l.find(x => x.id === reasonId); if (m) reasonName = m.name; } catch (e) {}
+    try { await tySend(env, 'POST', `order/sellers/${env.TRENDYOL_SELLER_ID}/claims/${encodeURIComponent(cid)}/issue`, { claimIssueReasonId: reasonId, claimItemIdList: rows.map(r => r.item_id).join(','), description: desc }, out); }
+    catch (e) { return bad('Trendyol ret talebi başarısız: ' + e.message, 502); }
+    const now = iso(), note = ('Ret talebi gönderildi: ' + reasonName).slice(0, 300);
+    // Stok değişmez; Trendyol talebi sonuçlandırınca (Reddedildi / Onaylandı) durum eşitlemeyle güncellenir
+    await env.DB.batch([...rows.map(r => env.DB.prepare(`UPDATE returns SET ext_status='InAnalysis', ext_at=?2, note=?3 WHERE id=?1 AND status='requested'`).bind(r.id, now, note)), REV(env)]);
     return json({ ok: true });
   }
   if (path === '/api/settings') {

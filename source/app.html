@@ -180,6 +180,14 @@ label.f{display:grid;gap:5px;font-size:13px;color:var(--ink-2);font-weight:500;m
 .list{display:grid;gap:0;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
 .item{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:11px 14px;border:0;border-top:1px solid var(--line);background:none;text-align:left;cursor:pointer;width:100%}
 .item:first-child{border-top:0}
+.rlist{display:grid;gap:12px}
+.rcard{border:1px solid var(--line);border-radius:16px;background:var(--surface);overflow:hidden}
+.rhead{display:flex;justify-content:space-between;gap:10px;padding:12px 14px 8px;align-items:flex-start}
+.rno{font-weight:700;font-size:15px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.rdl{background:var(--warn-soft);color:var(--warn);font-size:13px;padding:7px 14px}
+.rdl.bad{background:var(--bad-soft);color:var(--bad)}
+.rqty{position:absolute;top:-6px;left:-6px;min-width:20px;height:20px;border-radius:10px;background:var(--ink);color:var(--surface);font-size:11.5px;font-weight:700;display:grid;place-items:center;padding:0 5px}
+.ink{color:var(--ink)}
 .item:hover{background:var(--surface-2)}
 .item .main{min-width:0;display:grid;gap:3px}
 .item .ttl{font-weight:600;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.3}
@@ -341,7 +349,7 @@ const S = {
   conn:'wait', authed:(() => { try { return localStorage.getItem('lb_seen') === '1' ? true : null; } catch(e) { return null; } })(), rev:null, skew:0,
   loaded:{products:false, orders:false, returns:false, moves:false, settings:false},
   products:new Map(), orders:[], returns:[], moves:[], settings:{}, sync:{trendyol:{configured:false}},
-  tab: initialTab(), q:'', filter:'active', psort:(() => { try { return localStorage.getItem('lb_psort') || 'name_asc'; } catch(e) { return 'name_asc'; } })(), ch:'', oq:'', ofilter:'all', och:'', rfilter:'requested', vsort:'value', vfilter:'all', mfilter:'all',
+  tab: initialTab(), q:'', filter:'active', psort:(() => { try { return localStorage.getItem('lb_psort') || 'name_asc'; } catch(e) { return 'name_asc'; } })(), ch:'', oq:'', ofilter:'all', och:'', rfilter:'action', vsort:'value', vfilter:'all', mfilter:'all',
   sheet:null, imp:null, busy:false, syncing:false
 };
 function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=sessionStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'home'; }
@@ -596,7 +604,7 @@ function render(){
   $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#hdr-actions').hidden = !logged; $('#burger').hidden = !logged;
   if (S.authed === false) { $('#view').innerHTML = viewLogin(); setTimeout(() => { const i = $('#lg-pass'); if (i) i.focus(); }, 30); return; }
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
-  const pending = S.returns.filter(r => r.status === 'requested').length;
+  const pending = retActionCount();
   const counts = {returns: pending};
   const NAV = TABS.filter(([id]) => NAV_MAIN.includes(id));
   $('#tabs').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
@@ -613,7 +621,7 @@ function render(){
 /* ============ Sol menü ============ */
 function renderDrawer(){
   const root = $('#drawer-root'); if (!S.drawer) { root.innerHTML = ''; return; }
-  const pending = S.returns.filter(r => r.status === 'requested').length;
+  const pending = retActionCount();
   const item = (id, label, icon, cnt) => `<button class="di" data-act="dnav" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon||id]}</svg>${label}${cnt?`<span class="cnt">${cnt}</span>`:''}</button>`;
   root.innerHTML = `<div class="drawer-scrim" data-act="menu-close"></div><nav class="drawer" aria-label="Menü">
     <div class="dh"><div class="mark" aria-hidden="true">L</div><div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1 style="font-size:20px">Backstage</h1></div></div>
@@ -1204,24 +1212,104 @@ function retDeadline(r){
   const d = new Date(r.extAt); let n = 0; while (n < 2) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) n++; }
   return d.getTime() - Date.now();
 }
+function dlText(ms){ if (ms <= 0) return 'Süre doldu'; const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; const p2 = n => String(n).padStart(2, '0'); return (d ? d + ' gün ' : '') + `${p2(h)}:${p2(m)}:${p2(x)}`; }
 function deadlinePill(r){
   const ms = retDeadline(r); if (ms === null) return '';
   if (ms <= 0) return '<span class="pill p-bad">İşlem süresi doldu</span>';
   const h = Math.floor(ms / 3600000);
   return `<span class="pill ${h < 24 ? 'p-bad' : 'p-warn'}">Trendyol'da işlem için ${h < 24 ? h + ' saat' : Math.floor(h / 24) + ' gün ' + (h % 24) + ' saat'}</span>`;
 }
+// Trendyol ekranındaki gibi: aynı iade talebindeki aynı ürünün adetleri tek kartta toplanır
+const RTABS = [['action','Aksiyon bekleyen'],['created','Talep oluşturulan'],['stock','Stoğa eklenecek'],['analysis','İncelemede'],['accepted','Onaylanan'],['rejected','Reddedilen'],['all','Tümü']];
+function retBucket(r){
+  if (r.status === 'accepted') return 'accepted';
+  if (r.status === 'rejected') return 'rejected';
+  if (r.extStatus === 'Created') return 'created';
+  if (['InAnalysis','Unresolved','WaitingFraudCheck'].includes(r.extStatus)) return 'analysis';
+  if (r.extStatus === 'Accepted') return 'stock';
+  return 'action';
+}
+function retGroups(){
+  const m = new Map();
+  for (const r of S.returns) {
+    const base = r.claimId || (String(r.id).startsWith('ty-') ? 'o:' + r.orderNo + '|' + r.createdAt : r.id);
+    const k = [base, r.pkey, r.status, r.extStatus].join('|');
+    let g = m.get(k);
+    if (!g) { g = {key:k, rows:[], qty:0, amount:null, r, bucket:retBucket(r)}; m.set(k, g); }
+    g.rows.push(r); g.qty += Number(r.qty) || 0;
+    if (r.amount !== null && r.amount !== undefined) g.amount = (g.amount || 0) + Number(r.amount) * (Number(r.qty) || 1);
+  }
+  return [...m.values()];
+}
+function retActionCount(){ return retGroups().filter(g => g.bucket === 'action' || g.bucket === 'stock').reduce((s, g) => s + g.qty, 0); }
+function retCard(g){
+  const r = g.r, p = S.products.get(r.pkey), ids = esc(JSON.stringify(g.rows.map(x => x.id)));
+  const ms = retDeadline(r), tyAct = r.channel === 'trendyol' && r.extStatus === 'WaitingInAction' && r.canTy && r.status === 'requested';
+  const st = r.status === 'requested' ? (r.extStatus ? [TYC[r.extStatus] || r.extStatus, g.bucket === 'action' || g.bucket === 'stock' ? 'p-warn' : 'p-mute'] : RST.requested) : RST[r.status] || ['?','p-mute'];
+  let btns = '';
+  if (r.status === 'requested') {
+    if (tyAct) btns = `<button class="btn sm" data-act="ret-tyreject" data-id="${ids}">Reddet</button><button class="btn sm primary" data-act="ret-tyaccept" data-id="${ids}">Onayla · stoğa ekle</button>`;
+    else if (g.bucket === 'action' || g.bucket === 'stock') btns = `<button class="btn sm" data-act="ret-reject" data-id="${ids}">Reddet</button><button class="btn sm primary" data-act="ret-accept" data-id="${ids}">Depoya ulaştı</button>`;
+  }
+  const note = r.note && r.note !== r.reason ? r.note : '';
+  const thumbHtml = `<div style="position:relative">${thumb(p || {name:r.name})}${g.qty > 1 ? `<span class="rqty">${fmtN(g.qty)}</span>` : ''}</div>`;
+  return `<div class="rcard">
+    <div class="rhead"><div><div class="rno">${r.orderNo ? '#' + esc(r.orderNo) : 'Sipariş no yok'} ${chBadge(r.channel)}</div>${r.customer ? `<div class="small">${esc(r.customer)}</div>` : ''}</div>
+      <div class="small muted" style="text-align:right">İade talep tarihi: <b class="ink">${esc(fmtDate(r.createdAt))}</b>${g.amount !== null ? `<br>Fatura tutarı: <b class="ink">${fmtTL(g.amount)}</b>` : ''}</div></div>
+    ${ms !== null ? `<div class="rdl ${ms < 24 * 3600000 ? 'bad' : ''}">Otomatik onaya kalan süre: <b data-dl="${esc(r.extAt)}">${dlText(ms)}</b></div>` : ''}
+    <div class="item ret" style="cursor:default;border-top:0">${thumbHtml}<div class="main"><div class="ttl">${esc(r.name || r.sku)}</div>
+      <div class="meta"><span>Stok kodu: <span class="mono">${esc(r.sku)}</span></span></div>
+      ${r.reason ? `<div class="meta"><span>İade sebebi: <b class="ink">${esc(r.reason)}</b></span></div>` : ''}
+      ${r.cnote ? `<div class="meta"><span>Müşteri notu: ${esc(r.cnote)}</span></div>` : ''}
+      ${note ? `<div class="meta">${esc(note)}</div>` : ''}
+      ${r.cargo ? `<div class="meta"><span>İade kargosu: ${r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)}</span></div>` : ''}</div>
+      <div class="end"><div class="qty" style="font-size:18px">${fmtN(g.qty)}<small>adet</small></div><span class="pill ${st[1]}">${esc(st[0])}</span>${btns ? `<div class="row" style="justify-content:flex-end">${btns}</div>` : ''}</div></div>
+  </div>`;
+}
 function viewReturns(){
-  const c = {requested:0, accepted:0, rejected:0}; S.returns.forEach(r => c[r.status] = (c[r.status]||0) + 1);
-  const urgent = S.returns.filter(r => { const ms = retDeadline(r); return ms !== null && ms < 24 * 3600000; }).length;
-  const head = `<div class="spread"><div><h2 class="sec">İadeler</h2><p class="lead small">İade talebi stoğu değiştirmez. Ürün depoya ulaşıp kabul edildiğinde stok artar.</p></div><button class="btn primary" data-act="new-return">İade kaydı aç</button></div>
-  <div class="filters" style="margin-top:14px"><div class="chips">${[['requested','Bekleyen'],['accepted','Kabul edilen'],['rejected','Reddedilen'],['all','Tümü']].map(([id,l]) => `<button class="chip" data-act="rfilter" data-id="${id}" aria-pressed="${S.rfilter===id}">${l}${id!=='all'?` · ${c[id]||0}`:''}</button>`).join('')}</div></div>`;
+  if (S.rfilter === 'requested') S.rfilter = 'action';
+  const gs = retGroups(); const c = {}; gs.forEach(g => c[g.bucket] = (c[g.bucket] || 0) + g.qty); c.all = gs.reduce((s, g) => s + g.qty, 0);
+  const urgent = gs.filter(g => { const ms = retDeadline(g.r); return ms !== null && ms < 24 * 3600000; }).length;
+  const tabs = RTABS.filter(([id]) => id !== 'stock' && id !== 'analysis' || c[id] || S.rfilter === id);
+  const head = `<div class="spread"><div><h2 class="sec">İadeler</h2><p class="lead small">Trendyol iadeleri kendiliğinden gelir. Ürün depoya ulaşınca onayla: Trendyol'da da onaylanır ve stok artar.</p></div><button class="btn primary" data-act="new-return">İade kaydı aç</button></div>
+  <div class="filters" style="margin-top:14px"><div class="chips">${tabs.map(([id,l]) => `<button class="chip" data-act="rfilter" data-id="${id}" aria-pressed="${S.rfilter===id}">${l} · ${fmtN(c[id]||0)}</button>`).join('')}</div></div>`;
   if (!S.loaded.returns) return head + loading();
-  const warn = urgent ? `<div class="banner bad"><div><b>${fmtN(urgent)} iade için Trendyol'daki işlem süren 24 saatten az.</b> Depoya ulaşan iadelere 2 iş günü içinde onay ya da ret vermezsen Trendyol iadeyi kendiliğinden onaylar.</div></div>` : '';
-  const rs = S.returns.filter(r => S.rfilter === 'all' || r.status === S.rfilter);
-  if (!rs.length) return head + `<div class="panel empty"><h4>${S.rfilter==='requested'?'Bekleyen iade yok':'Kayıt yok'}</h4><p>Pazaryerinde "iade" durumundaki siparişler aktarıldığında burada talep olarak görünür. Ürün depoya geldiğinde "Depoya ulaştı" ile stoğa eklersin.</p></div>`;
-  return head + warn + `<div class="list">${rs.map(r => { const p = S.products.get(r.pkey), st = RST[r.status] || ['?','p-mute'];
-    return `<div class="item ret" style="cursor:default">${thumb(p || {name:r.name})}<div class="main"><div class="ttl">${esc(r.name || r.sku)}</div><div class="meta"><span class="mono">${esc(r.sku)}</span>${chBadge(r.channel)}${r.orderNo?`<span class="mono">#${esc(r.orderNo)}</span>`:''}<span>${esc(fmtDate(r.createdAt, false))}</span>${r.extStatus?`<span>Trendyol: ${esc(TYC[r.extStatus]||r.extStatus)}</span>`:''}${deadlinePill(r)}</div>${r.note?`<div class="meta">${esc(r.note)}</div>`:''}</div>
-    <div class="end"><div class="qty" style="font-size:18px">${fmtN(r.qty)}<small>adet</small></div><span class="pill ${st[1]}">${st[0]}</span>${r.status==='requested'?`<div class="row" style="justify-content:flex-end"><button class="btn sm" data-act="ret-reject" data-id="${esc(r.id)}">Reddet</button><button class="btn sm primary" data-act="ret-accept" data-id="${esc(r.id)}">Depoya ulaştı</button></div>`:''}</div></div>`; }).join('')}</div>`;
+  const warn = urgent ? `<div class="banner bad"><div><b>${fmtN(urgent)} iade için Trendyol'daki işlem süren 24 saatten az.</b> Süre dolarsa Trendyol iadeyi kendiliğinden onaylar.</div></div>` : '';
+  const rs = gs.filter(g => S.rfilter === 'all' || g.bucket === S.rfilter)
+    .sort((a, b) => { const da = retDeadline(a.r), db = retDeadline(b.r); if (da !== null || db !== null) return (da === null ? Infinity : da) - (db === null ? Infinity : db); return String(b.r.createdAt).localeCompare(String(a.r.createdAt)); });
+  const empty = {action:'Aksiyon bekleyen iade yok', created:'Yolda olan iade talebi yok', stock:'Stoğa eklenecek iade yok', analysis:'İncelemede iade yok'}[S.rfilter] || 'Kayıt yok';
+  if (!rs.length) return head + `<div class="panel empty"><h4>${empty}</h4><p>Trendyol'da iade talebi açıldığında burada "Talep oluşturulan" olarak görünür. Ürün depoya ulaşınca "Aksiyon bekleyen"e geçer; onaylayınca stok artar.</p></div>`;
+  return head + warn + `<div class="rlist">${rs.map(retCard).join('')}</div>`;
+}
+setInterval(() => { document.querySelectorAll('[data-dl]').forEach(el => { const r = {status:'requested', extStatus:'WaitingInAction', extAt:el.dataset.dl}; el.textContent = dlText(retDeadline(r)); }); }, 1000);
+function retIds(id){ try { const a = JSON.parse(id); return Array.isArray(a) ? a : [id]; } catch(e) { return [id]; } }
+function sheetTyReject(){
+  const sh = S.sheet, rows = sh.ids.map(i => S.returns.find(x => x.id === i)).filter(Boolean), r = rows[0] || {};
+  if (!sh.reasons) {
+    if (!sh.loading) { sh.loading = true; api('/api/returns/reasons', {}).then(d => { if (S.sheet === sh) { sh.reasons = d.reasons; sh.noFile = d.noFile; renderSheet(true); } }).catch(e => { toast(errText(e), true); closeSheetForce(); }); }
+    return {title:'Trendyol\'da reddet', body: loading()};
+  }
+  return {title:'Trendyol\'da reddet', sub:`<span class="mono">#${esc(r.orderNo||'')}</span><span>${esc(r.name||'')}</span><span>${fmtN(rows.reduce((s,x)=>s+(Number(x.qty)||0),0))} adet</span>`, body:`<form id="f-tyrej" class="card" style="gap:12px">
+    <p class="small muted" style="margin:0">Trendyol'a ret talebi gönderilir. Trendyol inceler; sonuç burada kendiliğinden güncellenir. Stok değişmez.</p>
+    <label class="f">Ret sebebi<select class="input" id="tr-reason" required><option value="">Seç</option>${sh.reasons.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>
+    <label class="f">Açıklama<textarea class="input" id="tr-desc" rows="3" maxlength="500" required placeholder="Örn. Ürün kullanılmış ve kutusu yırtık geldi."></textarea></label>
+    <label class="f">Fotoğraf / belge<input class="input" id="tr-files" type="file" multiple accept="image/*,application/pdf,video/*"><span class="small muted">Çoğu sebep için zorunlu (dosya başına en fazla 5 MB). "Ürünü analize alacağım" ve "İade paketi tarafıma teslim edilmedi" için gerekmez.</span></label>
+    <div class="row"><button class="btn primary" type="submit">Ret talebini gönder</button></div>
+  </form>`};
+}
+async function submitTyReject(){
+  const sh = S.sheet; const reasonId = Number($('#tr-reason').value), desc = $('#tr-desc').value.trim(), files = [...$('#tr-files').files];
+  if (!reasonId) return toast('Ret sebebini seç.', true);
+  if (!desc) return toast('Açıklama yaz.', true);
+  if (!files.length && !(sh.noFile || []).includes(reasonId)) return toast('Bu sebep için fotoğraf ya da belge ekle.', true);
+  if (files.some(f => f.size > 5 * 1024 * 1024)) return toast('Her dosya en fazla 5 MB olabilir.', true);
+  if (!(await confirmBox('Trendyol\'a ret talebi gönderilecek. Emin misin?', 'Gönder', true))) return;
+  await run(async () => {
+    const fd = new FormData(); fd.append('ids', JSON.stringify(sh.ids)); fd.append('reasonId', String(reasonId)); fd.append('description', desc); files.forEach(f => fd.append('files', f, f.name));
+    let res; try { res = await fetch('/api/returns/ty-reject', {method:'POST', credentials:'same-origin', body:fd}); } catch(e) { throw new Error('Sunucuya ulaşılamadı. İnternet bağlantını kontrol et.'); }
+    const d = await res.json().catch(() => ({})); if (!res.ok) throw new Error(d.error || ('Sunucu hatası (' + res.status + ')'));
+    await refresh(true); closeSheetForce(); toast('Ret talebi Trendyol\'a gönderildi.');
+  });
 }
 function sheetNewReturn(){
   const f = S.sheet.from || {};
@@ -1247,11 +1335,12 @@ async function submitReturn(){
     await refresh(true); toast('İade talebi kaydedildi.'); closeSheetForce(); setTab('returns');
   });
 }
-async function returnDecision(id, accept){
-  const r = S.returns.find(x => x.id === id); if (!r) return;
-  if (accept && !(await confirmBox(`<b>${fmtN(r.qty)} adet</b> ${esc(r.name)} depoya ulaştı ve kabul edildi. Ortak stoğa eklensin mi?`, 'Stoğa ekle'))) return;
-  if (!accept && !(await confirmBox('İade reddedilecek; stok değişmez.', 'Reddet', true))) return;
-  await run(async () => { await api('/api/returns/decide', {id, accept}); await refresh(true); toast(accept ? `${fmtN(r.qty)} adet stoğa eklendi.` : 'İade reddedildi.'); });
+async function returnDecision(id, accept, viaTy){
+  const ids = retIds(id), rows = ids.map(i => S.returns.find(x => x.id === i)).filter(Boolean); if (!rows.length) return;
+  const r = rows[0], qty = rows.reduce((s, x) => s + (Number(x.qty) || 0), 0);
+  if (accept && !(await confirmBox(viaTy ? `<b>${fmtN(qty)} adet</b> ${esc(r.name)} iadesi <b>Trendyol'da onaylanacak</b> (müşteriye para iadesi yapılır) ve ortak stoğa eklenecek. Devam edilsin mi?` : `<b>${fmtN(qty)} adet</b> ${esc(r.name)} depoya ulaştı ve kabul edildi. Ortak stoğa eklensin mi?`, viaTy ? 'Onayla' : 'Stoğa ekle'))) return;
+  if (!accept && !(await confirmBox('İade burada reddedilecek; stok değişmez. Trendyol\'a bir şey gönderilmez.', 'Reddet', true))) return;
+  await run(async () => { const d = await api('/api/returns/decide', {ids, accept, trendyol: !!viaTy}); await refresh(true); toast(accept ? (d.tyApproved ? `Trendyol'da onaylandı, ${fmtN(qty)} adet stoğa eklendi.` : `${fmtN(qty)} adet stoğa eklendi.`) : 'İade reddedildi.'); });
 }
 
 /* ============ Stok değeri ============ */
@@ -2036,12 +2125,12 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
-    if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return') return; // formları bozma
+    if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return; // formları bozma
     const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; const hadFocus = document.activeElement && document.activeElement.id === 'bdq'; b.innerHTML = r.body; enhanceTables(b); applyBdFilter(); if (hadFocus) { const i = $('#bdq'); if (i) { i.focus(); const L = i.value.length; try { i.setSelectionRange(L, L); } catch(e){} } } existing.scrollTop = st; return;
   }
   root.innerHTML = `<div class="scrim" data-act="scrim"><aside class="sheet" role="dialog" aria-modal="true" aria-label="${esc(String(r.title).replace(/<[^>]+>/g,''))}" data-type="${sh.type}" data-id="${esc(sh.id||'')}">
@@ -2101,6 +2190,8 @@ document.addEventListener('click', async e => {
     case 'new-return': openSheet('new-return'); break;
     case 'ret-accept': await returnDecision(id, true); break;
     case 'ret-reject': await returnDecision(id, false); break;
+    case 'ret-tyaccept': await returnDecision(id, true, true); break;
+    case 'ret-tyreject': openSheet('ty-reject', {ids: retIds(id)}); break;
     case 'open-import': S.imp = null; openSheet('import'); break;
     case 'imp-reset': S.imp = null; renderSheet(false); break;
     case 'imp-run': await runImport(); break;
@@ -2182,6 +2273,7 @@ document.addEventListener('submit', async e => {
   else if (id === 'f-info') submitInfo();
   else if (id === 'f-order') submitNewOrder();
   else if (id === 'f-ret') submitReturn();
+  else if (id === 'f-tyrej') submitTyReject();
   else if (id === 'f-period') { const P = profS(); P.cf = $('#pf-from').value; P.ct = $('#pf-to').value; if (!P.cf || !P.ct) return toast('İki tarihi de seç.', true); P.data = null; P.key = ''; render(); }
   else if (id === 'f-ad') { const day = $('#ad-day').value, amount = num($('#ad-amt').value); if (!day) return toast('Gün seç.', true); if (!isFinite(amount) || amount < 0) return toast('Harcamayı sayı olarak yaz. Örn. 350,50', true); await saveAds([{day, amount}], 'manuel', amount ? `${day} için ${fmtTL(amount)} reklam gideri kaydedildi.` : `${day} reklam kaydı silindi.`); }
   else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeCargoT3:v('#fe-ct3'), feeServiceTy:v('#fe-sty'), feeServiceFast:v('#fe-sfast'), serviceCutoff:v('#fe-scut'), baremMaxDesi:v('#fe-bmd'), feeCargoSh:v('#fe-csh'), stopaj:v('#fe-stp')}; if (!(body.serviceCutoff >= 0 && body.serviceCutoff <= 24)) return toast('Son sipariş saati 0–24 arasında olmalı.', true); if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); body.desiMode = $('#fe-desimode').checked; try { body.desiTables = {tex: parseDesi($('#fe-desi-tex').value), ptt: parseDesi($('#fe-desi-ptt').value)}; } catch(err) { return toast(err.message, true); } if (!body.desiTables.tex.length || !body.desiTables.ptt.length) return toast('İki desi tablosu da dolu olmalı.', true); await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
