@@ -1154,7 +1154,7 @@ function orderStatus(o){
 const OST = {active:['Aktif','p-good'], cancelled:['İptal','p-bad'], returned:['İade var','p-warn'], partial:['Kısmi iptal','p-warn']};
 function viewOrders(){
   const head = `<div class="spread"><div><h2 class="sec">Siparişler</h2><p class="lead small">Her sipariş satırı ortak stoktan düşer; iptal edilen satırlar stoğa geri eklenir.</p></div>
-    <div class="row"><button class="btn" data-act="open-import">Bağlantılar</button><button class="btn primary" data-act="new-order">Manuel sipariş</button></div></div>`;
+    <div class="row"><button class="btn" data-act="labels">Kargo etiketi yazdır</button><button class="btn" data-act="open-import">Bağlantılar</button><button class="btn primary" data-act="new-order">Manuel sipariş</button></div></div>`;
   const last = S.settings && S.settings.lastImport;
   const info = `<p class="muted small" style="margin:10px 0 14px">${startedAt() ? `Stok takibi başlangıcı: <b>${esc(fmtDate(startedAt(), false))}</b>. ` : ''}${last ? `Son aktarım: ${esc(last.label)} · ${esc(fmtDate(last.at))}` : 'Henüz sipariş dosyası aktarılmadı.'}</p>`;
   if (!S.loaded.orders) return head + info + loading();
@@ -1340,6 +1340,76 @@ async function retBulkApprove(){
     }
     await refresh(true);
     toast(fail.length ? `${fmtN(ok)} iade onaylandı, ${fmtN(fail.length)} tanesinde hata: ${fail.slice(0, 2).join(' · ')}` : `${fmtN(ok)} iade Trendyol'da onaylandı ve stoğa eklendi.`, !!fail.length);
+  });
+}
+/* ============ Kargo etiketi (PDF, termal yazıcı) ============ */
+function lblSize(v){ if (v) { try { localStorage.setItem('lb_label', JSON.stringify(v)); } catch(e) {} return v; } try { const x = JSON.parse(localStorage.getItem('lb_label') || 'null'); if (x && x.w > 20 && x.h > 20) return x; } catch(e) {} return {w:100, h:100}; }
+function sheetLabels(){
+  const L = S.sheet;
+  if (!L.data) {
+    if (!L.loading) { L.loading = true; api('/api/labels/pending', {}).then(d => { if (S.sheet === L) { L.data = d.packages; L.loading = false; d.packages.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); } }).catch(e => { L.loading = false; toast(errText(e), true); closeSheetForce(); }); }
+    return {title:'Kargo etiketi yazdır', body: loading()};
+  }
+  const z = lblSize(), presets = [[100,100],[100,150],[150,150]], isPreset = presets.some(([w,h]) => w === z.w && h === z.h);
+  const st = {Created:'Yeni', Picking:'İşleme alındı', Invoiced:'Faturalandı'};
+  const rows = L.data.map(p => `<button class="item" type="button" data-act="lbl-sel" data-id="${esc(p.pkgId)}" style="grid-template-columns:auto 1fr auto"><span class="rsel" aria-pressed="${L.sel.has(p.pkgId)}"></span><div class="main"><div class="ttl"><span class="mono">#${esc(p.orderNo)}</span> ${esc(p.to.name)}</div><div class="meta"><span>${esc(p.provider || 'Kargo firması yok')}</span><span>${esc(p.to.district)}${p.to.city ? ' / ' + esc(p.to.city) : ''}</span>${p.tracking ? '' : '<span class="pill p-bad">Takip no yok</span>'}</div><div class="meta">${esc(p.lines.map(l => l.qty + '× ' + (l.sku || l.name)).join(', ').slice(0, 120))}</div></div><div class="end"><span class="pill p-warn">${esc(st[p.status] || p.status)}</span></div></button>`).join('');
+  return {title:'Kargo etiketi yazdır', sub:`<span>${fmtN(L.data.length)} bekleyen paket</span>`, body:`<div class="card" style="gap:10px">
+      <div><b>Kağıt ölçüsü</b> <span class="muted small">(etiket yazıcının kağıdı)</span></div>
+      <div class="chips">${presets.map(([w,h]) => `<button class="chip" type="button" data-act="lbl-size" data-id="${w}x${h}" aria-pressed="${z.w===w && z.h===h}">${w}×${h} mm</button>`).join('')}<span class="chip" aria-pressed="${!isPreset}" style="display:inline-flex;gap:6px;align-items:center">Özel <input class="input num" id="lbl-w" inputmode="numeric" value="${z.w}" style="width:56px;padding:4px 6px" aria-label="Genişlik mm">×<input class="input num" id="lbl-h" inputmode="numeric" value="${z.h}" style="width:56px;padding:4px 6px" aria-label="Yükseklik mm"> mm</span></div>
+      <p class="muted small" style="margin:0">Etiket seçtiğin ölçüye göre ölçeklenir. Yazdırırken yazıcıda "gerçek boyut / %100" seç.</p></div>
+    ${L.data.length ? `<div class="rbulk"><button class="btn sm" data-act="lbl-all">${L.sel.size === L.data.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(L.sel.size)} / ${fmtN(L.data.length)} seçili</span><button class="btn sm primary" data-act="lbl-pdf" ${L.sel.size ? '' : 'disabled'}>PDF oluştur</button></div><div class="list">${rows}</div>` : `<div class="panel empty"><h4>Bekleyen paket yok</h4><p>Trendyol'da "Yeni" ya da "İşleme alındı" durumundaki paketler burada listelenir.</p><button class="btn" data-act="lbl-reload">Yenile</button></div>`}`};
+}
+const loadScript = (src) => new Promise((ok, no) => { if (document.querySelector(`script[src="${src}"]`)) return ok(); const el = document.createElement('script'); el.src = src; el.onload = ok; el.onerror = () => no(new Error('Kütüphane yüklenemedi. İnternet bağlantını kontrol et.')); document.head.appendChild(el); });
+function wrapText(ctx, text, maxW){ const out = []; for (const para of String(text || '').split('\n')) { let line = ''; for (const w of para.split(/\s+/)) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width <= maxW || !line) line = t; else { out.push(line); line = w; } } if (line) out.push(line); } return out; }
+// Etiketi tuval üzerine çizer: 8 nokta/mm (203 dpi termal yazıcı); her şey kağıdın kısa kenarına göre ölçeklenir
+function drawLabel(p, W, H){
+  const D = 8, cv = document.createElement('canvas'); cv.width = Math.round(W * D); cv.height = Math.round(H * D);
+  const c = cv.getContext('2d'), u = Math.min(W, H) / 100, mm = (v) => v * D * u, m = mm(3.5), cw = cv.width - 2 * m;
+  c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top';
+  const F = (size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
+  const line = (y) => { c.lineWidth = mm(0.35); c.beginPath(); c.moveTo(m, y); c.lineTo(cv.width - m, y); c.stroke(); };
+  let y = m;
+  F(5.2, true); c.fillText((p.provider || 'Kargo').replace(/ Marketplace$/i, ''), m, y);
+  F(4, true); const on = '#' + p.orderNo; c.fillText(on, cv.width - m - c.measureText(on).width, y + mm(0.8));
+  y += mm(7); line(y); y += mm(2.5);
+  const bh = Math.max(mm(14), cv.height * 0.2);
+  if (p.tracking && window.JsBarcode) {
+    const bc = document.createElement('canvas');
+    try { JsBarcode(bc, p.tracking, {format:'CODE128', displayValue:false, margin:0, height:100, width:4}); c.imageSmoothingEnabled = false; c.drawImage(bc, m, y, cw, bh); } catch(e) {}
+    y += bh + mm(1.5); F(4.2, true); const tw = c.measureText(p.tracking).width; c.fillText(p.tracking, m + (cw - tw) / 2, y); y += mm(6);
+  } else { F(4.5, true); c.fillText('Takip numarası yok', m, y + bh / 3); y += bh + mm(2); }
+  line(y); y += mm(2.5);
+  F(3, true); c.fillText('ALICI', m, y); y += mm(4);
+  F(5, true); for (const l of wrapText(c, p.to.name, cw).slice(0, 2)) { c.fillText(l, m, y); y += mm(5.8); }
+  F(3.8, false); for (const l of wrapText(c, p.to.address, cw).slice(0, 4)) { c.fillText(l, m, y); y += mm(4.6); }
+  F(4.4, true); c.fillText([p.to.district, p.to.city].filter(Boolean).join(' / ').toLocaleUpperCase('tr-TR'), m, y); y += mm(5.6);
+  if (p.to.phone) { F(3.6, false); c.fillText('Tel: ' + p.to.phone, m, y); y += mm(4.6); }
+  y += mm(1); line(y); y += mm(2.5);
+  const foot = mm(5.5), lines = p.lines.map(l => `${l.qty}× ${l.sku}${l.name ? ' · ' + l.name : ''}`);
+  F(3.2, false); let shown = 0; const room = cv.height - m - foot - y;
+  const maxLines = Math.max(0, Math.floor(room / mm(4)));
+  for (const t of lines) { if (shown >= maxLines - (lines.length - shown > maxLines - shown ? 1 : 0)) break; let s2 = t; while (c.measureText(s2).width > cw && s2.length > 4) s2 = s2.slice(0, -2); if (s2 !== t) s2 = s2.slice(0, -1) + '…'; c.fillText(s2, m, y); y += mm(4); shown++; }
+  if (shown < lines.length && maxLines > 0) { c.fillText(`+${lines.length - shown} ürün daha`, m, y); }
+  F(3, false); const ft = `Gönderen: Lilya Home${p.desi ? ' · ' + String(p.desi).replace('.', ',') + ' desi' : ''} · Paket ${p.pkgId}`;
+  c.fillText(ft, m, cv.height - m - mm(3.4));
+  return cv;
+}
+async function makeLabelsPdf(){
+  const L = S.sheet; if (!L || !L.data) return;
+  const w = Number(($('#lbl-w') || {}).value) || lblSize().w, h = Number(($('#lbl-h') || {}).value) || lblSize().h;
+  if (!(w >= 30 && w <= 300 && h >= 30 && h <= 300)) return toast('Kağıt ölçüsü 30–300 mm arasında olmalı.', true);
+  lblSize({w, h});
+  const list = L.data.filter(p => L.sel.has(p.pkgId)); if (!list.length) return toast('En az bir paket seç.', true);
+  await run(async () => {
+    toast('PDF hazırlanıyor…');
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
+    const doc = new window.jspdf.jsPDF({unit:'mm', format:[w, h], orientation: w > h ? 'landscape' : 'portrait', compress:true});
+    list.forEach((p, i) => { if (i) doc.addPage([w, h], w > h ? 'landscape' : 'portrait'); doc.addImage(drawLabel(p, w, h).toDataURL('image/png'), 'PNG', 0, 0, w, h, undefined, 'FAST'); });
+    const name = `kargo-etiketleri-${todayTR()}-${list.length}.pdf`, blob = doc.output('blob'), file = new File([blob], name, {type:'application/pdf'});
+    if (navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
+    const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast(`${fmtN(list.length)} etiket PDF olarak hazırlandı.`);
   });
 }
 function retIds(id){ try { const a = JSON.parse(id); return Array.isArray(a) ? a : [id]; } catch(e) { return [id]; } }
@@ -2204,12 +2274,13 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
-    if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return; // formları bozma
+    if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
+    if (sh.type === 'labels' && document.activeElement && /^lbl-[wh]$/.test(document.activeElement.id)) return; // formları bozma
     const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; const hadFocus = document.activeElement && document.activeElement.id === 'bdq'; b.innerHTML = r.body; enhanceTables(b); applyBdFilter(); if (hadFocus) { const i = $('#bdq'); if (i) { i.focus(); const L = i.value.length; try { i.setSelectionRange(L, L); } catch(e){} } } existing.scrollTop = st; return;
   }
   root.innerHTML = `<div class="scrim" data-act="scrim"><aside class="sheet" role="dialog" aria-modal="true" aria-label="${esc(String(r.title).replace(/<[^>]+>/g,''))}" data-type="${sh.type}" data-id="${esc(sh.id||'')}">
@@ -2270,6 +2341,12 @@ document.addEventListener('click', async e => {
     case 'ret-accept': await returnDecision(id, true); break;
     case 'ret-reject': await returnDecision(id, false); break;
     case 'ret-shape': openSheet('ret-shape'); break;
+    case 'labels': openSheet('labels', {sel: new Set()}); break;
+    case 'lbl-sel': { const L = S.sheet; if (!L || !L.data) break; L.sel.has(id) ? L.sel.delete(id) : L.sel.add(id); renderSheet(false); break; }
+    case 'lbl-all': { const L = S.sheet; if (!L || !L.data) break; if (L.sel.size === L.data.length) L.sel.clear(); else L.data.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); break; }
+    case 'lbl-size': { const [w, h] = id.split('x').map(Number); lblSize({w, h}); renderSheet(false); break; }
+    case 'lbl-pdf': await makeLabelsPdf(); break;
+    case 'lbl-reload': if (S.sheet) { S.sheet.data = null; S.sheet.loading = false; renderSheet(false); } break;
     case 'ret-tab': S.rfilter = id; S.drawer = false; renderDrawer(); setTab('returns'); break;
     case 'ret-sel': { const k = JSON.stringify(retIds(id)), s2 = retSel(); s2.has(k) ? s2.delete(k) : s2.add(k); render(); break; }
     case 'ret-selall': { const s2 = retSel(); const all = retGroups().filter(g => g.bucket === 'action' && g.r.extStatus === 'WaitingInAction' && g.r.canTy).map(g => JSON.stringify(g.rows.map(x => x.id))); if (s2.size === all.length) s2.clear(); else all.forEach(k => s2.add(k)); render(); break; }

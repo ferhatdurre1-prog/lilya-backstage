@@ -1938,6 +1938,29 @@ async function api(req, env, path, ctx) {
     try { const r = await ty(env, `order/sellers/${env.TRENDYOL_SELLER_ID}/claims/items/${encodeURIComponent(row.item_id)}/audit`, {}); out.audit = clean([...keyPaths(Array.isArray(r) ? r : r)]).slice(0, 80); } catch (e) { out.errors.push('audit: ' + e.message); }
     return json(out);
   }
+  if (path === '/api/labels/pending') {
+    // Kargo etiketi için bekleyen paketler (Trendyol'da Yeni + İşleme alınan), güncel takip numarası ve adresle
+    if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
+    const sid = env.TRENDYOL_SELLER_ID, now = Date.now(), out = [];
+    for (const status of ['Created', 'Picking', 'Invoiced']) {
+      for (let page = 0; page < 5; page++) {
+        let r;
+        try { r = await ty(env, `order/sellers/${sid}/orders`, { status, startDate: now - 13 * 86400000, endDate: now + TY_TZ, size: 200, page, orderByField: 'PackageLastModifiedDate', orderByDirection: 'DESC' }); }
+        catch (e) { return bad('Trendyol siparişleri alınamadı: ' + e.message, 502); }
+        for (const p of (r.content || [])) {
+          const sa = p.shipmentAddress || {}, t = (v) => String(v || '').trim();
+          out.push({ pkgId: String(p.shipmentPackageId || p.id), orderNo: String(p.orderNumber || ''), status: p.shipmentPackageStatus || p.status || status,
+            date: p.orderDate ? iso(Number(p.orderDate) - TY_ORDER_DATE_SHIFT) : null, provider: t(p.cargoProviderName), tracking: t(p.cargoTrackingNumber), sender: t(p.cargoSenderNumber),
+            desi: Number(p.cargoDeci ?? p.deci) || null, fast: /sameday|bugun|bugün/i.test(String(p.fastDeliveryType || '')),
+            to: { name: t(sa.fullName) || t([p.customerFirstName, p.customerLastName].filter(Boolean).join(' ')), address: t(sa.fullAddress || [sa.address1, sa.address2].filter(Boolean).join(' ')), district: t(sa.district), city: t(sa.city), phone: t(sa.phone) },
+            lines: (p.lines || []).filter(l => !/cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))).map(l => ({ sku: t(l.merchantSku || l.stockCode || l.barcode), name: t(l.productName), qty: Number(l.quantity) || 1 })) });
+        }
+        if (page + 1 >= (r.totalPages || 0)) break;
+      }
+    }
+    out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    return json({ ok: true, packages: out });
+  }
   if (path === '/api/returns/reasons') {
     if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
     try { return json({ reasons: await claimIssueReasons(env), noFile: [...CLAIM_NOFILE] }); } catch (e) { return bad('Ret sebepleri alınamadı: ' + e.message, 502); }
