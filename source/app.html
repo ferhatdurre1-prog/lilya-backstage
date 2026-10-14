@@ -1208,7 +1208,9 @@ async function lineReturn(lineKey){
 const RST = {requested:['Talep açıldı','p-warn'], accepted:['Depoya ulaştı · kabul','p-good'], rejected:['Reddedildi','p-mute']};
 // Trendyol: iade satıcıya teslim edildikten sonra 2 iş günü (Pazar hariç) içinde işlem yapılmazsa otomatik onaylanır
 function retDeadline(r){
-  if (r.status !== 'requested' || r.extStatus !== 'WaitingInAction' || !r.extAt) return null;
+  if (r.status !== 'requested' || r.extStatus !== 'WaitingInAction') return null;
+  if (r.autoAt) return Date.parse(r.autoAt) - Date.now();   // Trendyol'un verdiği otomatik onay zamanı
+  if (!r.extAt) return null;
   const d = new Date(r.extAt); let n = 0; while (n < 2) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) n++; }
   return d.getTime() - Date.now();
 }
@@ -1256,7 +1258,7 @@ function retCard(g){
   return `<div class="rcard">
     <div class="rhead"><div><div class="rno">${r.orderNo ? '#' + esc(r.orderNo) : 'Sipariş no yok'} ${chBadge(r.channel)}</div>${r.customer ? `<div class="small">${esc(r.customer)}</div>` : ''}</div>
       <div class="small muted" style="text-align:right">İade talep tarihi: <b class="ink">${esc(fmtDate(r.createdAt))}</b>${g.amount !== null ? `<br>Fatura tutarı: <b class="ink">${fmtTL(g.amount)}</b>` : ''}</div></div>
-    ${ms !== null ? `<div class="rdl ${ms < 24 * 3600000 ? 'bad' : ''}">Otomatik onaya kalan süre: <b data-dl="${esc(r.extAt)}">${dlText(ms)}</b></div>` : ''}
+    ${ms !== null ? `<div class="rdl ${ms < 24 * 3600000 ? 'bad' : ''}">Otomatik onaya kalan süre: <b data-dl="${esc(r.extAt || '')}" data-auto="${esc(r.autoAt || '')}">${dlText(ms)}</b></div>` : ''}
     <div class="item ret" style="cursor:default;border-top:0">${thumbHtml}<div class="main"><div class="ttl">${esc(r.name || r.sku)}</div>
       <div class="meta"><span>Stok kodu: <span class="mono">${esc(r.sku)}</span></span></div>
       ${r.reason ? `<div class="meta"><span>İade sebebi: <b class="ink">${esc(r.reason)}</b></span></div>` : ''}
@@ -1286,9 +1288,9 @@ function sheetRetShape(){
   const sh = S.sheet;
   if (!sh.data) { if (!sh.loading) { sh.loading = true; api('/api/returns/shape', {}).then(d => { if (S.sheet === sh) { sh.data = d; renderSheet(true); } }).catch(e => { toast(errText(e), true); closeSheetForce(); }); } return {title:'Desi teşhisi', body: loading()}; }
   const d = sh.data, list = (t, l) => `<div class="card"><b>${t}</b><div class="mono small" style="white-space:pre-wrap;word-break:break-all">${esc(l.join('\n') || '—')}</div></div>`;
-  return {title:'Desi teşhisi', sub:`<span class="mono">#${esc(d.orderNo)}</span>`, body: `<p class="small muted">Bu ekranın görüntüsünü Claude'a gönder.</p>${d.errors.length ? `<div class="banner bad"><div>${esc(d.errors.join(' · '))}</div></div>` : ''}${list('İade kaydı', d.claim)}${list('İade geçmişi', d.audit)}`};
+  return {title:'Desi teşhisi', sub:`<span class="mono">#${esc(d.orderNo)}</span>`, body: `<p class="small muted">Bu ekranın görüntüsünü Claude'a gönder.</p>${d.errors.length ? `<div class="banner bad"><div>${esc(d.errors.join(' · '))}</div></div>` : ''}${list('Sipariş paketleri', d.pkgs || [])}${list('İade kaydı', d.claim)}${list('İade geçmişi', d.audit)}`};
 }
-setInterval(() => { document.querySelectorAll('[data-dl]').forEach(el => { const r = {status:'requested', extStatus:'WaitingInAction', extAt:el.dataset.dl}; el.textContent = dlText(retDeadline(r)); }); }, 1000);
+setInterval(() => { document.querySelectorAll('[data-dl]').forEach(el => { const r = {status:'requested', extStatus:'WaitingInAction', extAt:el.dataset.dl, autoAt:el.dataset.auto || null}; el.textContent = dlText(retDeadline(r)); }); }, 1000);
 function retIds(id){ try { const a = JSON.parse(id); return Array.isArray(a) ? a : [id]; } catch(e) { return [id]; } }
 function sheetTyReject(){
   const sh = S.sheet, rows = sh.ids.map(i => S.returns.find(x => x.id === i)).filter(Boolean), r = rows[0] || {};
