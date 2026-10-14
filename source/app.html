@@ -1356,43 +1356,84 @@ function sheetLabels(){
   return {title:'Kargo etiketi yazdır', sub:`<span>${fmtN(L.data.length)} bekleyen paket</span>`, body:`<div class="card" style="gap:10px">
       <div><b>Kağıt ölçüsü</b> <span class="muted small">(etiket yazıcının kağıdı)</span></div>
       <div class="chips">${presets.map(([w,h]) => `<button class="chip" type="button" data-act="lbl-size" data-id="${w}x${h}" aria-pressed="${z.w===w && z.h===h}">${w}×${h} mm</button>`).join('')}<span class="chip" aria-pressed="${!isPreset}" style="display:inline-flex;gap:6px;align-items:center">Özel <input class="input num" id="lbl-w" inputmode="numeric" value="${z.w}" style="width:56px;padding:4px 6px" aria-label="Genişlik mm">×<input class="input num" id="lbl-h" inputmode="numeric" value="${z.h}" style="width:56px;padding:4px 6px" aria-label="Yükseklik mm"> mm</span></div>
-      <p class="muted small" style="margin:0">Etiket seçtiğin ölçüye göre ölçeklenir. Yazdırırken yazıcıda "gerçek boyut / %100" seç.</p></div>
+      <p class="muted small" style="margin:0">Etiket seçtiğin ölçüye göre ölçeklenir. Yazdırırken yazıcıda "gerçek boyut / %100" seç.</p>
+      <button class="btn sm" type="button" data-act="lbl-tpl" style="justify-self:start">${L.tpl ? 'Şablon ayarlarını kapat' : 'Barkod şablonu ayarları'}</button></div>
+    ${L.tpl ? lblTplCard(L) : ''}
     ${L.data.length ? `<div class="rbulk"><button class="btn sm" data-act="lbl-all">${L.sel.size === L.data.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(L.sel.size)} / ${fmtN(L.data.length)} seçili</span><button class="btn sm primary" data-act="lbl-pdf" ${L.sel.size ? '' : 'disabled'}>PDF oluştur</button></div><div class="list">${rows}</div>` : `<div class="panel empty"><h4>Bekleyen paket yok</h4><p>Trendyol'da "Yeni" ya da "İşleme alındı" durumundaki paketler burada listelenir.</p><button class="btn" data-act="lbl-reload">Yenile</button></div>`}`};
 }
 const loadScript = (src) => new Promise((ok, no) => { if (document.querySelector(`script[src="${src}"]`)) return ok(); const el = document.createElement('script'); el.src = src; el.onload = ok; el.onerror = () => no(new Error('Kütüphane yüklenemedi. İnternet bağlantını kontrol et.')); document.head.appendChild(el); });
 function wrapText(ctx, text, maxW){ const out = []; for (const para of String(text || '').split('\n')) { let line = ''; for (const w of para.split(/\s+/)) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width <= maxW || !line) line = t; else { out.push(line); line = w; } } if (line) out.push(line); } return out; }
+// Etiket şablonu ayarları (bu cihazda saklanır)
+const LBL_DEF = {sender:'Lilya Home', font:100, bar:20, margin:3.5, rotate:false, f:{provider:true, orderNo:true, barcode:true, trackText:true, name:true, address:true, city:true, phone:true, products:true, prodNames:true, desi:true, pkg:true, sender:true}};
+const LBL_F = [['provider','Kargo firması'],['orderNo','Sipariş no'],['barcode','Barkod'],['trackText','Takip no yazısı'],['name','Alıcı adı'],['address','Adres'],['city','İlçe / il'],['phone','Telefon'],['products','Ürünler'],['prodNames','Ürün adları'],['desi','Desi'],['pkg','Paket no'],['sender','Gönderen']];
+function lblTpl(v){ if (v) { try { localStorage.setItem('lb_label_tpl', JSON.stringify(v)); } catch(e) {} return v; } let x = null; try { x = JSON.parse(localStorage.getItem('lb_label_tpl') || 'null'); } catch(e) {} return x ? {...LBL_DEF, ...x, f:{...LBL_DEF.f, ...(x.f || {})}} : JSON.parse(JSON.stringify(LBL_DEF)); }
 // Etiketi tuval üzerine çizer: 8 nokta/mm (203 dpi termal yazıcı); her şey kağıdın kısa kenarına göre ölçeklenir
-function drawLabel(p, W, H){
+function drawLabel(p, W0, H0, T){
+  T = T || lblTpl(); const f = T.f, rot = !!T.rotate, W = rot ? H0 : W0, H = rot ? W0 : H0;
   const D = 8, cv = document.createElement('canvas'); cv.width = Math.round(W * D); cv.height = Math.round(H * D);
-  const c = cv.getContext('2d'), u = Math.min(W, H) / 100, mm = (v) => v * D * u, m = mm(3.5), cw = cv.width - 2 * m;
+  const c = cv.getContext('2d'), u = Math.min(W, H) / 100, fs = (Number(T.font) || 100) / 100, mm = (v) => v * D * u, m = Math.max(0, Number(T.margin) || 0) * D * u, cw = cv.width - 2 * m;
   c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top';
-  const F = (size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
+  const F = (size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size * fs)}px Helvetica, Arial, sans-serif`; };
+  const L = (size) => mm(size * fs);
   const line = (y) => { c.lineWidth = mm(0.35); c.beginPath(); c.moveTo(m, y); c.lineTo(cv.width - m, y); c.stroke(); };
   let y = m;
-  F(5.2, true); c.fillText((p.provider || 'Kargo').replace(/ Marketplace$/i, ''), m, y);
-  F(4, true); const on = '#' + p.orderNo; c.fillText(on, cv.width - m - c.measureText(on).width, y + mm(0.8));
-  y += mm(7); line(y); y += mm(2.5);
-  const bh = Math.max(mm(14), cv.height * 0.2);
-  if (p.tracking && window.JsBarcode) {
-    const bc = document.createElement('canvas');
-    try { JsBarcode(bc, p.tracking, {format:'CODE128', displayValue:false, margin:0, height:100, width:4}); c.imageSmoothingEnabled = false; c.drawImage(bc, m, y, cw, bh); } catch(e) {}
-    y += bh + mm(1.5); F(4.2, true); const tw = c.measureText(p.tracking).width; c.fillText(p.tracking, m + (cw - tw) / 2, y); y += mm(6);
-  } else { F(4.5, true); c.fillText('Takip numarası yok', m, y + bh / 3); y += bh + mm(2); }
-  line(y); y += mm(2.5);
-  F(3, true); c.fillText('ALICI', m, y); y += mm(4);
-  F(5, true); for (const l of wrapText(c, p.to.name, cw).slice(0, 2)) { c.fillText(l, m, y); y += mm(5.8); }
-  F(3.8, false); for (const l of wrapText(c, p.to.address, cw).slice(0, 4)) { c.fillText(l, m, y); y += mm(4.6); }
-  F(4.4, true); c.fillText([p.to.district, p.to.city].filter(Boolean).join(' / ').toLocaleUpperCase('tr-TR'), m, y); y += mm(5.6);
-  if (p.to.phone) { F(3.6, false); c.fillText('Tel: ' + p.to.phone, m, y); y += mm(4.6); }
-  y += mm(1); line(y); y += mm(2.5);
-  const foot = mm(5.5), lines = p.lines.map(l => `${l.qty}× ${l.sku}${l.name ? ' · ' + l.name : ''}`);
-  F(3.2, false); let shown = 0; const room = cv.height - m - foot - y;
-  const maxLines = Math.max(0, Math.floor(room / mm(4)));
-  for (const t of lines) { if (shown >= maxLines - (lines.length - shown > maxLines - shown ? 1 : 0)) break; let s2 = t; while (c.measureText(s2).width > cw && s2.length > 4) s2 = s2.slice(0, -2); if (s2 !== t) s2 = s2.slice(0, -1) + '…'; c.fillText(s2, m, y); y += mm(4); shown++; }
-  if (shown < lines.length && maxLines > 0) { c.fillText(`+${lines.length - shown} ürün daha`, m, y); }
-  F(3, false); const ft = `Gönderen: Lilya Home${p.desi ? ' · ' + String(p.desi).replace('.', ',') + ' desi' : ''} · Paket ${p.pkgId}`;
-  c.fillText(ft, m, cv.height - m - mm(3.4));
-  return cv;
+  if (f.provider || f.orderNo) {
+    if (f.provider) { F(5.2, true); c.fillText((p.provider || 'Kargo').replace(/ Marketplace$/i, ''), m, y); }
+    if (f.orderNo) { F(4, true); const on = '#' + p.orderNo; c.fillText(on, f.provider ? cv.width - m - c.measureText(on).width : m, y + L(0.8)); }
+    y += L(7); line(y); y += mm(2.5);
+  }
+  if (f.barcode) {
+    const bh = Math.max(mm(8), cv.height * Math.min(0.5, Math.max(0.08, (Number(T.bar) || 20) / 100)));
+    if (p.tracking && window.JsBarcode) {
+      const bc = document.createElement('canvas');
+      try { JsBarcode(bc, p.tracking, {format:'CODE128', displayValue:false, margin:0, height:100, width:4}); c.imageSmoothingEnabled = false; c.drawImage(bc, m, y, cw, bh); } catch(e) {}
+      y += bh + mm(1.5);
+    } else { F(4.5, true); c.fillText(p.tracking ? 'Barkod yükleniyor…' : 'Takip numarası yok', m, y + bh / 3); y += bh + mm(2); }
+  }
+  if (f.trackText && p.tracking) { F(4.2, true); const tw = c.measureText(p.tracking).width; c.fillText(p.tracking, m + (cw - tw) / 2, y); y += L(6); }
+  if (f.barcode || f.trackText) { line(y); y += mm(2.5); }
+  if (f.name || f.address || f.city || f.phone) {
+    F(3, true); c.fillText('ALICI', m, y); y += L(4);
+    if (f.name) { F(5, true); for (const l of wrapText(c, p.to.name, cw).slice(0, 2)) { c.fillText(l, m, y); y += L(5.8); } }
+    if (f.address) { F(3.8, false); for (const l of wrapText(c, p.to.address, cw).slice(0, 4)) { c.fillText(l, m, y); y += L(4.6); } }
+    if (f.city) { F(4.4, true); c.fillText([p.to.district, p.to.city].filter(Boolean).join(' / ').toLocaleUpperCase('tr-TR'), m, y); y += L(5.6); }
+    if (f.phone && p.to.phone) { F(3.6, false); c.fillText('Tel: ' + p.to.phone, m, y); y += L(4.6); }
+    y += mm(1); line(y); y += mm(2.5);
+  }
+  const ft = [f.sender && T.sender ? 'Gönderen: ' + T.sender : '', f.desi && p.desi ? String(p.desi).replace('.', ',') + ' desi' : '', f.pkg ? 'Paket ' + p.pkgId : ''].filter(Boolean).join(' · ');
+  const foot = ft ? L(5.5) : 0;
+  if (f.products) {
+    const lines = p.lines.map(l => `${l.qty}× ${l.sku}${f.prodNames && l.name ? ' · ' + l.name : ''}`);
+    F(3.2, false); let shown = 0; const maxLines = Math.max(0, Math.floor((cv.height - m - foot - y) / L(4)));
+    for (const t of lines) { if (shown >= maxLines - (lines.length - shown > maxLines - shown ? 1 : 0)) break; let s2 = t; while (c.measureText(s2).width > cw && s2.length > 4) s2 = s2.slice(0, -2); if (s2 !== t) s2 = s2.slice(0, -1) + '…'; c.fillText(s2, m, y); y += L(4); shown++; }
+    if (shown < lines.length && maxLines > 0) c.fillText(`+${lines.length - shown} ürün daha`, m, y);
+  }
+  if (ft) { F(3, false); c.fillText(ft, m, cv.height - m - L(3.4)); }
+  if (!rot) return cv;
+  const r = document.createElement('canvas'); r.width = cv.height; r.height = cv.width; const rc = r.getContext('2d'); rc.translate(r.width, 0); rc.rotate(Math.PI / 2); rc.drawImage(cv, 0, 0); return r;
+}
+function lblPreview(){
+  const L = S.sheet; if (!L || L.type !== 'labels' || !L.tpl) return; const im = document.querySelector('.sheet img[alt="Etiket önizleme"]'); if (!im) return;
+  const T = lblTpl(), z = lblSize(), pkg = (L.data || []).find(p => L.sel.has(p.pkgId)) || (L.data || [])[0] || SAMPLE_PKG;
+  try { im.src = drawLabel(pkg, z.w, z.h, T).toDataURL('image/png'); im.style.width = Math.min(260, 260 * (T.rotate ? z.h : z.w) / Math.max(z.w, z.h)) + 'px'; } catch(e) {}
+}
+const SAMPLE_PKG = {pkgId:'4238894387', orderNo:'11710872320', provider:'Trendyol Express Marketplace', tracking:'7330037958282711', desi:3, to:{name:'Ayşe Yılmaz', address:'Örnek Mah. Gül Sok. No: 12 Daire: 4', district:'Başakşehir', city:'İstanbul', phone:''}, lines:[{sku:'LİLYAHOME1657', name:'Makyaj Düzenleyici', qty:1}, {sku:'LİLYAHOME1040', name:'Yaprak Sarma Makinesi', qty:2}]};
+function lblTplCard(L){
+  const T = lblTpl(), z = lblSize();
+  if (!window.JsBarcode && !L.jsb) { L.jsb = true; loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js').then(() => { if (S.sheet === L) renderSheet(false); }).catch(() => {}); }
+  const pkg = (L.data || []).find(p => L.sel.has(p.pkgId)) || (L.data || [])[0] || SAMPLE_PKG;
+  let img = ''; try { img = drawLabel(pkg, z.w, z.h, T).toDataURL('image/png'); } catch(e) {}
+  const rng = (id, label, min, max, step, val, unit) => `<label class="f">${label} <b id="${id}-v">${String(val).replace('.', ',')}${unit}</b><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}" data-unit="${unit}"></label>`;
+  return `<div class="card" style="gap:12px"><div class="spread"><b>Şablon ayarları</b><button class="btn sm ghost" type="button" data-act="lbl-reset">Varsayılana dön</button></div>
+    <div style="display:flex;justify-content:center"><img src="${img}" alt="Etiket önizleme" style="width:${Math.min(260, 260 * (T.rotate ? z.h : z.w) / Math.max(z.w, z.h))}px;border:1px solid var(--line);border-radius:6px;background:#fff;image-rendering:pixelated"></div>
+    <p class="muted small" style="margin:0;text-align:center">Önizleme: ${esc(pkg === SAMPLE_PKG ? 'örnek paket' : '#' + pkg.orderNo)} · ${z.w}×${z.h} mm</p>
+    <div><div class="small" style="font-weight:600;margin-bottom:6px">Etikette görünsün</div><div class="chips">${LBL_F.map(([k, l]) => `<button class="chip" type="button" data-act="lbl-f" data-id="${k}" aria-pressed="${!!T.f[k]}">${l}</button>`).join('')}</div></div>
+    <label class="f">Gönderen adı<input class="input" id="lbl-sender" value="${esc(T.sender)}" maxlength="40"></label>
+    ${rng('lbl-font', 'Yazı boyutu', 70, 150, 5, T.font, '%')}
+    ${rng('lbl-bar', 'Barkod yüksekliği', 8, 45, 1, T.bar, '%')}
+    ${rng('lbl-margin', 'Kenar boşluğu', 0, 10, 0.5, T.margin, ' mm')}
+    <label class="chk small"><input type="checkbox" id="lbl-rot" ${T.rotate ? 'checked' : ''}>Etiketi 90° döndür (yazıcı kağıdı yan besliyorsa)</label>
+    <p class="muted small" style="margin:0">Ayarlar bu telefonda saklanır, her PDF'te kullanılır.</p></div>`;
 }
 async function makeLabelsPdf(){
   const L = S.sheet; if (!L || !L.data) return;
@@ -2280,7 +2321,7 @@ function renderSheet(full){
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
     if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
-    if (sh.type === 'labels' && document.activeElement && /^lbl-[wh]$/.test(document.activeElement.id)) return; // formları bozma
+    if (sh.type === 'labels' && document.activeElement && /^lbl-(w|h|font|bar|margin|sender)$/.test(document.activeElement.id)) return; // formları bozma
     const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; const hadFocus = document.activeElement && document.activeElement.id === 'bdq'; b.innerHTML = r.body; enhanceTables(b); applyBdFilter(); if (hadFocus) { const i = $('#bdq'); if (i) { i.focus(); const L = i.value.length; try { i.setSelectionRange(L, L); } catch(e){} } } existing.scrollTop = st; return;
   }
   root.innerHTML = `<div class="scrim" data-act="scrim"><aside class="sheet" role="dialog" aria-modal="true" aria-label="${esc(String(r.title).replace(/<[^>]+>/g,''))}" data-type="${sh.type}" data-id="${esc(sh.id||'')}">
@@ -2346,6 +2387,9 @@ document.addEventListener('click', async e => {
     case 'lbl-all': { const L = S.sheet; if (!L || !L.data) break; if (L.sel.size === L.data.length) L.sel.clear(); else L.data.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); break; }
     case 'lbl-size': { const [w, h] = id.split('x').map(Number); lblSize({w, h}); renderSheet(false); break; }
     case 'lbl-pdf': await makeLabelsPdf(); break;
+    case 'lbl-tpl': if (S.sheet) { S.sheet.tpl = !S.sheet.tpl; renderSheet(false); } break;
+    case 'lbl-f': { const T = lblTpl(); T.f[id] = !T.f[id]; lblTpl(T); renderSheet(false); break; }
+    case 'lbl-reset': lblTpl(JSON.parse(JSON.stringify(LBL_DEF))); renderSheet(false); break;
     case 'lbl-reload': if (S.sheet) { S.sheet.data = null; S.sheet.loading = false; renderSheet(false); } break;
     case 'ret-tab': S.rfilter = id; S.drawer = false; renderDrawer(); setTab('returns'); break;
     case 'ret-sel': { const k = JSON.stringify(retIds(id)), s2 = retSel(); s2.has(k) ? s2.delete(k) : s2.add(k); render(); break; }
@@ -2446,12 +2490,16 @@ document.addEventListener('submit', async e => {
 let qTimer;
 document.addEventListener('input', e => {
   const t = e.target;
+  if (/^lbl-(font|bar|margin)$/.test(t.id)) { const T = lblTpl(); T[t.id.slice(4)] = Number(t.value); lblTpl(T); const v = $('#' + t.id + '-v'); if (v) v.textContent = String(t.value).replace('.', ',') + t.dataset.unit; clearTimeout(window.__lblT); window.__lblT = setTimeout(() => lblPreview(), 120); }
+  if (t.id === 'lbl-sender') { const T = lblTpl(); T.sender = t.value.slice(0, 40); lblTpl(T); clearTimeout(window.__lblT); window.__lblT = setTimeout(() => lblPreview(), 200); }
+  if (t.id === 'lbl-w' || t.id === 'lbl-h') { const w = Number(($('#lbl-w')||{}).value), h = Number(($('#lbl-h')||{}).value); if (w >= 30 && w <= 300 && h >= 30 && h <= 300) { lblSize({w, h}); clearTimeout(window.__lblT); window.__lblT = setTimeout(() => lblPreview(), 300); } }
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
   if (t.id === 'oq') { S.oq = t.value; S.opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 300); }
   if (t.id === 'bdq') { if (S.sheet) S.sheet.q = t.value; applyBdFilter(); }
   if (t.id === 'pq') { profS().q = t.value; profS().opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
 document.addEventListener('change', e => {
+  if (e.target.id === 'lbl-rot') { const T = lblTpl(); T.rotate = e.target.checked; lblTpl(T); lblPreview(); return; }
   const t = e.target;
   if (t.dataset && t.dataset.cost) saveCost(t);
   if (t.id === 'imp-file') onImportFile(t.files[0]);
