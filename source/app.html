@@ -1723,7 +1723,7 @@ function viewProfit(){
   const subsHtml = () => `<div class="filters"><div class="chips">${subs.map(([id,l]) => `<button class="chip" data-act="psub" data-id="${id}" aria-pressed="${P.sub===id}">${l}${id==='losers'?` · ${D.products.filter(x=>x.profit<0).length}`:id==='winners'?` · ${D.products.filter(x=>x.profit>0).length}`:''}</button>`).join('')}</div></div>`;
   // Reklam girişi, fatura detayı yükleme ve kesinti varsayımları ayrı "Ayarlar" sekmesinde
   if (P.sub === 'settings') return h + subsHtml() + adsCard(D) + detailsCard() + feesCard(fees);
-  if (P.sub === 'expenses') return h + subsHtml() + expensesCard(D);
+  if (P.sub === 'expenses') return h + subsHtml() + expensesCard(D) + recurringCard(D);
   if (P.sub === 'audit') return h + subsHtml() + viewAudit();
   if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + subsHtml();
   const rows = [['Satış (ciro)', s.revenue, false, 'revenue'], ['Komisyon', s.commission, true, 'commission'], ['Kargo', s.cargo, true, 'cargo'], ...(s.retCargo ? [['İade kargosu', s.retCargo, true, 'retCargo']] : []), ...(s.penalty ? [['Ceza ve müşteri kuponu', s.penalty, true, 'penalty']] : []), ['Hizmet bedeli', s.service, true, 'service'], ['Stopaj', s.stopaj, true, 'stopaj'], ['Ürün maliyeti', s.cost, true, 'cost'], ...(s.ads ? [['Reklam', s.ads, true, 'ads']] : []), ...(s.expenses ? [['Giderler (elle girilen)', s.expenses, true, 'expenses']] : []), ...(s.otherFees ? [['Diğer Trendyol kesintileri', s.otherFees, true, 'other']] : [])];
@@ -1805,8 +1805,20 @@ async function importDetails(files){
   }
 }
 function todayTR(){ return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10); }
+function recurringCard(D){
+  const R = D.recurring || [], RK = S.recKind || 'gider', isI = RK === 'gelir';
+  const all = (S.recAll || []);
+  return `<div class="card" style="gap:10px"><div class="spread"><h3 style="margin:0">Günlük sabit gider / gelir</h3><span class="muted small">Her güne aynı tutar yazılır</span></div>
+    <div class="chips"><button class="chip" type="button" data-act="rec-kind" data-id="gider" aria-pressed="${!isI}">Günlük gider</button><button class="chip" type="button" data-act="rec-kind" data-id="gelir" aria-pressed="${isI}">Günlük gelir</button></div>
+    <form id="f-rec" style="display:grid;gap:10px">
+      <label class="f">${isI ? 'Gelir adı' : 'Gider adı'}<input class="input" id="rc-name" maxlength="80" required autocomplete="off" placeholder="${isI ? 'Örn: Kira geliri' : 'Örn: Personel, depo kirası, elektrik'}"></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label class="f">Günlük tutar (₺)<input class="input num" id="rc-amt" inputmode="decimal" placeholder="0,00" required autocomplete="off"></label><label class="f">Başlangıç<input class="input" id="rc-start" type="date" value="${todayTR()}" required></label></div>
+      <button class="btn primary" type="submit">${isI ? 'Günlük geliri ekle' : 'Günlük gideri ekle'}</button></form>
+    ${R.length ? `<div class="list" style="box-shadow:none">${R.map(x => `<div class="item" style="cursor:default"><div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="pill ${x.kind === 'gelir' ? 'p-good' : 'p-bad'}">${x.kind === 'gelir' ? 'Günlük gelir' : 'Günlük gider'}</span><span>${esc(fmtDate(x.start, false))}${x.end ? ' – ' + esc(fmtDate(x.end, false)) : ' itibaren'}</span><span>bu dönemde ${fmtN(x.days)} gün</span></div></div><div class="end" style="display:flex;align-items:center;gap:6px"><b class="num" style="white-space:nowrap;color:var(${x.kind === 'gelir' ? '--good' : '--bad'})">${fmtTL(x.daily)}/gün</b>${x.end ? '' : `<button class="btn sm" data-act="rec-stop" data-id="${x.id}">Durdur</button>`}<button class="btn sm ghost" data-act="rec-del" data-id="${x.id}" style="color:var(--bad)">Sil</button></div></div>`).join('')}</div>` : '<p class="muted small" style="margin:0">Bu dönemde günlük sabit kalem yok.</p>'}
+    <p class="muted small" style="margin:0">"Durdur" bugünden sonrasını keser, geçmiş günler kalır. "Sil" kalemi geçmiş günler dahil tamamen kaldırır.</p></div>`;
+}
 function expensesCard(D, inSheet){
-  const L = D.expenses || [], gid = L.filter(x => x.kind !== 'gelir'), gel = L.filter(x => x.kind === 'gelir');
+  const ALL = D.expenses || [], L = ALL.filter(x => !x.recurring), gid = ALL.filter(x => x.kind !== 'gelir'), gel = ALL.filter(x => x.kind === 'gelir');
   const tG = gid.reduce((a, x) => a + x.amount, 0), tI = gel.reduce((a, x) => a + x.amount, 0);
   const dfmt = (d) => new Date(d + 'T12:00:00').toLocaleDateString('tr-TR', {day:'numeric', month:'long', weekday:'short'});
   const E = S.expEdit; const amtStr = (n) => String(n).replace('.', ',');
@@ -1825,6 +1837,7 @@ function expensesCard(D, inSheet){
     <div class="card"><div class="spread"><h3 style="margin:0">Bu dönemin giderleri ve gelirleri</h3></div>
     <dl class="kv" style="margin:0"><dt>Giderler</dt><dd style="color:var(--bad)">${tG ? '−' + fmtTL(tG) : fmtTL(0)}</dd><dt>Gelirler</dt><dd style="color:var(--good)">${tI ? '+' + fmtTL(tI) : fmtTL(0)}</dd></dl>
     ${L.length ? `<div class="list" style="box-shadow:none">${L.map(row).join('')}</div>` : '<p class="muted small" style="margin:0">Bu dönemde kayıt yok.</p>'}
+    ${ALL.some(x => x.recurring) ? `<p class="muted small" style="margin:0">Toplamlara günlük sabit kalemler de dahil: ${ALL.filter(x => x.recurring).map(x => esc(x.name) + ' ' + (x.kind === 'gelir' ? '+' : '−') + fmtTL(x.amount)).join(', ')}.</p>` : ''}
     <p class="muted small" style="margin:0">Giderler: paketleme malzemesi, kırtasiye gibi siparişe bağlı olmayan masraflar; net kârdan düşülür. Gelirler: sipariş dışı ek gelirler (tazminat, iade edilen ücret vb.); net kâra eklenir. İkisi de ana ekrandaki günlük ve aylık kâra yansır.</p></div>`;
 }
 function adsCard(D){
@@ -1964,7 +1977,7 @@ function sheetBreakdown(){
   const k = S.sheet.id, D = profS().data; if (!D) return {title: BD_LABEL[k] || 'Döküm', body: loading()};
   const P = profS(), [f, t] = periodRange(P.period, P.cf, P.ct);
   const sub = `<span class="muted">${esc(fmtDate(f.toISOString(), false))} – ${esc(fmtDate(new Date(t - 1).toISOString(), false))}</span>`;
-  if (k === 'expenses') return {title:'Gider / gelir', sub, body: expensesCard(D, true)};
+  if (k === 'expenses') return {title:'Gider / gelir', sub, body: expensesCard(D, true) + recurringCard(D)};
   if (k === 'ads') { const rows = D.ads || []; const tot = rows.reduce((a, x) => a + x.amount, 0);
     return {title:'Reklam', sub, body:`<div class="toolbar" style="margin:0 0 10px"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="bdq" type="search" value="${esc(S.sheet.q||'')}" placeholder="Gün ara" aria-label="Ara" autocomplete="off"></div></div><div class="card"><div class="spread"><b id="bd-n" data-u="gün">${fmtN(rows.length)} gün</b><b class="num" id="bd-t">${fmtTL(tot)}</b></div><div class="tbl-wrap"><table class="t"><thead><tr><th>Gün</th><th>Kaynak</th><th class="r">Tutar</th></tr></thead><tbody>${rows.map(a => `<tr data-amt="${a.amount}" data-q="${esc(searchNorm(a.day + ' ' + new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'long',weekday:'long'})))}"><td data-v="${esc(a.day)}">${esc(new Date(a.day+'T12:00').toLocaleDateString('tr-TR',{day:'numeric',month:'short',weekday:'short'}))}</td><td class="muted">${a.source==='rapor'?'Rapor':'Elle'}</td><td class="r num">${fmtTL(a.amount)}</td></tr>`).join('')}</tbody></table></div></div>`}; }
   if (k === 'other') { const rows = D.otherFees || []; const tot = rows.reduce((a, x) => a + x.amount, 0);
@@ -2445,6 +2458,9 @@ document.addEventListener('click', async e => {
     case 'exp-del': if (await confirmBox('Bu kayıt silinsin mi?', 'Sil', true)) await run(async () => { await api('/api/expenses/delete', {id}); if (S.expEdit && String(S.expEdit.id) === String(id)) S.expEdit = null; profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); if (S.sheet && S.sheet.type === 'breakdown') closeSheet(); toast('Kayıt silindi.'); }); break;
     case 'exp-edit': { const x = ((profS().data || {}).expenses || []).find(e => String(e.id) === String(id)); if (!x) break; S.expEdit = {...x}; if (S.sheet && S.sheet.type === 'breakdown') { closeSheet(); profS().sub = 'expenses'; } render(); setTimeout(() => { const f = $('#exp-form'); if (f) f.scrollIntoView({behavior:'smooth', block:'center'}); }, 50); break; }
     case 'exp-cancel': S.expEdit = null; render(); break;
+    case 'rec-kind': S.recKind = id; S.sheet ? renderSheet(false) : render(); break;
+    case 'rec-stop': case 'rec-del': { const del = act === 'rec-del'; if (!(await confirmBox(del ? 'Bu günlük kalem geçmiş günler dahil tamamen silinsin mi?' : 'Bu günlük kalem bugünden sonra yazılmasın mı? Geçmiş günler kalır.', del ? 'Sil' : 'Durdur', del))) break;
+      await run(async () => { await api(del ? '/api/recurring/delete' : '/api/recurring/stop', {id}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(del ? 'Silindi.' : 'Durduruldu.'); }); break; }
     case 'exp-kind': S.expKind = id; if (S.expEdit) S.expEdit.kind = id; S.sheet ? renderSheet(false) : render(); break;
     case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
     case 'rep-year': repS().year = Number(id); render(); break;
@@ -2506,6 +2522,12 @@ document.addEventListener('submit', async e => {
     btn.disabled = false; return;
   }
   if (id === 'f-repp') { const R = repS(); let f = $('#rp-from').value, t = $('#rp-to').value; if (!f || !t) return toast('İki tarihi de seç.', true); if (f > t) [f, t] = [t, f]; R.cf = f; R.ct = t; render(); return; }
+  if (id === 'f-rec') {
+    const name = $('#rc-name').value.trim(), amount = num($('#rc-amt').value), start = $('#rc-start').value, kind = S.recKind || 'gider';
+    if (!name) return toast('Adını yaz.', true); if (!isFinite(amount) || amount <= 0) return toast('Geçerli bir günlük tutar yaz.', true);
+    await run(async () => { await api('/api/recurring/add', {name, amount, kind, start}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(`${name}: günlük ${fmtTL(amount)} ${kind === 'gelir' ? 'gelir' : 'gider'} eklendi.`); });
+    return;
+  }
   if (id === 'f-exp') {
     const name = $('#ex-name').value.trim(), amount = num($('#ex-amt').value), day = $('#ex-day').value;
     const E0 = S.expEdit, kind = E0 ? (E0.kind || 'gider') : (S.expKind || 'gider'), isI = kind === 'gelir';

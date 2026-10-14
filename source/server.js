@@ -104,6 +104,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, name TEXT, amount REAL, created_at TEXT)').run();
   try { await env.DB.prepare("ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'gider'").run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS recurring(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL, kind TEXT, start_day TEXT, end_day TEXT, created_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
@@ -1552,6 +1553,16 @@ async function computeProfit(env, from, to) {
   sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices);
   // Elle girilen işletme giderleri (paketleme malzemesi vb.): girildiği günün gideri
   const expenses = expR.results.map(x => ({ id: x.id, day: x.day, name: x.name, amount: R2(x.amount || 0), kind: x.kind === 'gelir' ? 'gelir' : 'gider' }));
+  // Günlük sabit gider / gelir: dönemdeki her güne (başlangıç–bitiş arası) yazılır
+  let recurring = [];
+  try {
+    const { results: rr } = await env.DB.prepare('SELECT * FROM recurring WHERE start_day <= ?2 AND (end_day IS NULL OR end_day >= ?1) ORDER BY id').bind(dayFrom, dayTo).all();
+    for (const x of rr) { const a = x.start_day > dayFrom ? x.start_day : dayFrom, b = x.end_day && x.end_day < dayTo ? x.end_day : dayTo;
+      const days = Math.max(0, Math.round((dayStartTR(b) - dayStartTR(a)) / 86400000) + 1); if (!days) continue;
+      const kind = x.kind === 'gelir' ? 'gelir' : 'gider';
+      recurring.push({ id: x.id, name: x.name, daily: R2(x.amount || 0), kind, start: x.start_day, end: x.end_day || null, days });
+      expenses.push({ id: 'r' + x.id, day: b, name: `${x.name} (günlük × ${days} gün)`, amount: R2((x.amount || 0) * days), kind, recurring: true }); }
+  } catch (e) {}
   sum.expenses = expenses.filter(x => x.kind === 'gider').reduce((a, x) => a + x.amount, 0);
   sum.extraIncome = R2(expenses.filter(x => x.kind === 'gelir').reduce((a, x) => a + x.amount, 0));
   sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses; sum.profit += sum.compensation + sum.extraIncome;
@@ -1559,7 +1570,7 @@ async function computeProfit(env, from, to) {
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
   mark('cpu'); PERF_LAST = { ...TM, orders: o.results.length };
-  return { from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, missingCostSkus: [...missingCostSkus].slice(0, 30) };
+  return { from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, recurring, missingCostSkus: [...missingCostSkus].slice(0, 30) };
 }
 
 async function computePricing(env) {
@@ -1787,6 +1798,20 @@ async function api(req, env, path, ctx) {
     await env.DB.batch([st, setStmt(env, 'home_cache', ''), REV(env)]);
     // Raporlar ve ana ekran hemen güncel olsun
     try { await snapshotDay(env, day); if (old && old.day && old.day !== day) await snapshotDay(env, old.day); } catch (e) {}
+    return json({ ok: true });
+  }
+  if (path === '/api/recurring/add') {
+    const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), kind = body.kind === 'gelir' ? 'gelir' : 'gider', start = String(body.start || trDay(Date.now()));
+    if (!name) return bad('Adını yaz.'); if (!isFinite(amount) || amount <= 0 || amount > 1e7) return bad('Geçerli bir günlük tutar yaz.'); if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return bad('Tarih geçersiz.');
+    await env.DB.batch([env.DB.prepare('INSERT INTO recurring(name, amount, kind, start_day, end_day, created_at) VALUES(?1,?2,?3,?4,NULL,?5)').bind(name, Math.round(amount * 100) / 100, kind, start, iso()),
+      env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(start), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true });
+  }
+  if (path === '/api/recurring/stop' || path === '/api/recurring/delete') {
+    const r = await env.DB.prepare('SELECT * FROM recurring WHERE id=?1').bind(Number(body.id) || 0).first(); if (!r) return bad('Kayıt bulunamadı.', 404);
+    const today = trDay(Date.now());
+    const st = path === '/api/recurring/delete' ? env.DB.prepare('DELETE FROM recurring WHERE id=?1').bind(r.id) : env.DB.prepare('UPDATE recurring SET end_day=?2 WHERE id=?1').bind(r.id, today < r.start_day ? r.start_day : today); // bugün dahil, yarından itibaren yazılmaz
+    await env.DB.batch([st, env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(path === '/api/recurring/delete' ? r.start_day : addDay(today, 1)), setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true });
   }
   if (path === '/api/expenses/delete') { const old = await env.DB.prepare('SELECT day FROM expenses WHERE id=?1').bind(Number(body.id) || 0).first(); await env.DB.batch([env.DB.prepare('DELETE FROM expenses WHERE id=?1').bind(Number(body.id) || 0), setStmt(env, 'home_cache', ''), REV(env)]); try { if (old && old.day) await snapshotDay(env, old.day); } catch (e) {} return json({ ok: true }); }
