@@ -446,7 +446,8 @@ async function syncTrendyolOrders(env) {
   const s = await getSettings(env, ['ty_orders_hwm', 'ty_shift', 'ty_orders_exact']);
   const hwm = Number(s.ty_orders_hwm) || 0, exact = Number(s.ty_orders_exact) || 0;
   let { start, end } = tyWindow(hwm, 13, now);
-  if (exact) start = Math.max(start, exact - TY_TZ - 1000); // yarım kalan işte kaldığı yerden devam
+  const fullEnd = end;
+  if (exact) { start = Math.max(start, exact - TY_TZ - 1000); end = Math.min(end, start + 40 * 60000); } // yarım kalan işte kaldığı yerden, 40 dk'lık dilimlerle
   let pkgs;
   try { pkgs = await fetchOrderPackages(env, start, end); }
   catch (e) { if (e.status === 400) { end = now; pkgs = await fetchOrderPackages(env, start, end); } else throw e; }
@@ -468,6 +469,7 @@ async function syncTrendyolOrders(env) {
   for (const p of list) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const ls = p.lines || []; if (d > 0 && ls.length === 1 && ls[0].stockCode) desiSt.push(env.DB.prepare('UPDATE products SET desi=?1 WHERE key=?2 AND desi IS NOT ?1').bind(Math.round(d / Math.max(1, Number(ls[0].quantity) || 1) * 100) / 100, skuKey(ls[0].stockCode))); }
   for (let i = 0; i < desiSt.length; i += 90) await env.DB.batch(desiSt.slice(i, i + 90));
   if (truncated) await env.DB.batch([setStmt(env, 'ty_orders_exact', String(list[list.length - 1].lastModifiedDate || 0)), setStmt(env, 'ty_orders_hwm', String(Math.max(hwm, Math.min(maxMod, list[list.length - 1].lastModifiedDate || maxMod))))]);
+  else if (exact && end < fullEnd) await env.DB.batch([setStmt(env, 'ty_orders_exact', String(end + TY_TZ)), setStmt(env, 'ty_orders_hwm', String(Math.max(hwm, maxMod)))]); // dilim bitti, sonraki dilime geç
   else await env.DB.batch([setStmt(env, 'ty_orders_exact', ''), setStmt(env, 'ty_orders_hwm', String(list.length ? maxMod : (hwm || Math.min(end, now))))]);
   return { packages: list.length, remaining: truncated ? all.length - list.length : 0, stats };
 }
