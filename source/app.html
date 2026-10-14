@@ -1262,7 +1262,7 @@ function retCard(g){
       ${r.reason ? `<div class="meta"><span>İade sebebi: <b class="ink">${esc(r.reason)}</b></span></div>` : ''}
       ${r.cnote ? `<div class="meta"><span>Müşteri notu: ${esc(r.cnote)}</span></div>` : ''}
       ${note ? `<div class="meta">${esc(note)}</div>` : ''}
-      ${r.cargo ? `<div class="meta"><span>İade kargosu: ${r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)}</span></div>` : ''}</div>
+      ${r.cargo || r.retDesi ? `<div class="meta"><span>İade kargosu: ${r.cargo ? (r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)) : ''}</span>${r.retDesi ? `<span class="pill p-mute">${esc(String(r.retDesi).replace('.', ','))} desi</span>` : ''}${r.retCargo ? `<span class="pill p-mute">Kargo ${fmtTL(r.retCargo)}</span>` : ''}</div>` : ''}</div>
       <div class="end"><div class="qty" style="font-size:18px">${fmtN(g.qty)}<small>adet</small></div><span class="pill ${st[1]}">${esc(st[0])}</span>${btns ? `<div class="row" style="justify-content:flex-end">${btns}</div>` : ''}</div></div>
   </div>`;
 }
@@ -1936,7 +1936,7 @@ function parseOldBackup(json){
 }
 /* ============ Aktarım sayfası ============ */
 const TYC = {Created:'Oluşturuldu', WaitingInAction:'Aksiyon bekliyor', Accepted:'Onaylandı', Rejected:'Reddedildi', Cancelled:'İptal edildi', Unresolved:'Çözümsüz', InAnalysis:'İncelemede', WaitingFraudCheck:'Kontrolde'};
-const STEP_NAMES = {orders:'Siparişler', recon:'Sipariş kontrolü', push:'Stok gönderimi', claims:'İadeler', products:'Ürün listesi', pushCheck:'Stok gönderim kontrolü', finance:'Kesintiler (kâr)', backfill:'Geçmiş tarama'};
+const STEP_NAMES = {orders:'Siparişler', recon:'Sipariş kontrolü', push:'Stok gönderimi', claims:'İadeler', retDesi:'İade desileri', products:'Ürün listesi', pushCheck:'Stok gönderim kontrolü', finance:'Kesintiler (kâr)', backfill:'Geçmiş tarama'};
 function diagHtml(t){
   const d = t.diag; if (!d) return '';
   const slow = Object.entries(d.slow || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, v]) => `${STEP_NAMES[k] || k} ${(v/1000).toFixed(1).replace('.', ',')} sn`).join(', ');

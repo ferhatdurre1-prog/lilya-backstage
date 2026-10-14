@@ -87,6 +87,7 @@ async function init0(env) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_gross1','1')`), setStmt(env, 'fin_backfill_day', '13'), setStmt(env, 'audit_state', 'running'), setStmt(env, 'audit_started', iso())]); } catch (e) {}
   }
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
+  try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_desi REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ordslice1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ordslice1','1')`), setStmt(env, 'ty_orders_exact', '')]); } catch (e) {} }
   for (const c of ['chk_at TEXT', 'claim_id TEXT', 'item_id TEXT', 'customer TEXT', 'amount REAL', 'reason TEXT', 'cnote TEXT', 'cargo TEXT', 'cargo_link TEXT']) { try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -577,6 +578,29 @@ async function queueSuspectOrders(env) {
   for (const r of results) { const pk = new Set(JSON.parse(r.lines || '[]').filter(l => l.status !== 'cancelled' && (Number(l.applied) || 0) > 0).map(l => String(l.key).split('|')[0]).filter(Boolean)); if (pk.size > 1) out.push(r.order_no); }
   return out;
 }
+// Daha önce okunmuş kargo faturalarından yalnızca iade paketlerinin desisi bir kez geriye dönük alınır (tutarlara dokunulmaz)
+async function backfillReturnDesi(env) {
+  const s = await getSettings(env, ['ret_desi_bf', 'cargo_inv_done']);
+  if (s.ret_desi_bf === 'done') return null;
+  let todo = s.ret_desi_bf ? JSON.parse(s.ret_desi_bf) : JSON.parse(s.cargo_inv_done || '[]');
+  if (!todo.length) { await setSetting(env, 'ret_desi_bf', 'done'); return null; }
+  const sid = env.TRENDYOL_SELLER_ID; let n = 0, found = 0;
+  for (const id of todo.slice(0, 2)) {
+    const by = new Map();
+    for (let p = 0; p < 20; p++) {
+      const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(id)}/items`, { page: p, size: 500 });
+      for (const c of (it.content || [])) if (c.orderNumber && Number(c.desi) > 0 && String(c.shipmentPackageType || '').toLocaleLowerCase('tr-TR').includes('iade')) by.set(String(c.orderNumber), Math.max(by.get(String(c.orderNumber)) || 0, Number(c.desi)));
+      if (p + 1 >= (it.totalPages || 0)) break;
+    }
+    const st = [...by].map(([no, d]) => env.DB.prepare(`INSERT INTO order_fin(order_no, ret_desi, updated_at) VALUES(?1,?2,?3) ON CONFLICT(order_no) DO UPDATE SET ret_desi=excluded.ret_desi WHERE order_fin.ret_desi IS NOT excluded.ret_desi`).bind(no, Math.round(d * 100) / 100, iso()));
+    found += st.length; n++;
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  }
+  todo = todo.slice(n);
+  await setSetting(env, 'ret_desi_bf', todo.length ? JSON.stringify(todo) : 'done');
+  if (found) await env.DB.batch([REV(env)]);
+  return { invoices: n, returns: found, left: todo.length };
+}
 const CLAIM_OPEN = new Set(['Created', 'WaitingInAction', 'WaitingFraudCheck', 'InAnalysis', 'Unresolved']);
 function claimItems(claims) {
   const items = [];
@@ -919,11 +943,12 @@ async function syncTrendyolFinance(env, force, deadline) {
   const flushCargo = async (invId) => {
     const ws = [];
     for (const [no, a] of agg) if (a.cargo !== null || a.retCargo !== null) {
-      ws.push(env.DB.prepare(`INSERT INTO order_fin(order_no,cargo,ret_cargo,updated_at) VALUES(?1,?2,?3,?4) ON CONFLICT(order_no) DO UPDATE SET
+      ws.push(env.DB.prepare(`INSERT INTO order_fin(order_no,cargo,ret_cargo,updated_at,ret_desi) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(order_no) DO UPDATE SET
         cargo=CASE WHEN excluded.cargo IS NULL THEN order_fin.cargo ELSE COALESCE(order_fin.cargo,0)+excluded.cargo END,
-        ret_cargo=CASE WHEN excluded.ret_cargo IS NULL THEN order_fin.ret_cargo ELSE COALESCE(order_fin.ret_cargo,0)+excluded.ret_cargo END, updated_at=excluded.updated_at`)
-        .bind(no, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.retCargo === null ? null : Math.round(a.retCargo * 100) / 100, iso()));
-      a.cargo = null; a.retCargo = null;
+        ret_cargo=CASE WHEN excluded.ret_cargo IS NULL THEN order_fin.ret_cargo ELSE COALESCE(order_fin.ret_cargo,0)+excluded.ret_cargo END,
+        ret_desi=COALESCE(excluded.ret_desi, order_fin.ret_desi), updated_at=excluded.updated_at`)
+        .bind(no, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.retCargo === null ? null : Math.round(a.retCargo * 100) / 100, iso(), a.retDesi ? Math.round(a.retDesi * 100) / 100 : null));
+      a.cargo = null; a.retCargo = null; a.retDesi = null;
     }
     done.add(invId); ws.push(setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))));
     await env.DB.batch(ws);
@@ -940,7 +965,7 @@ async function syncTrendyolFinance(env, force, deadline) {
             for (const c of (it.content || [])) {
               const isRet = String(c.shipmentPackageType || '').toLocaleLowerCase('tr-TR').includes('iade');
               stat.cargoItems++; if (isRet) stat.retItems++;
-              if (c.orderNumber) { const a = get(String(c.orderNumber)); if (isRet) a.retCargo = (a.retCargo || 0) + (Number(c.amount) || 0); else a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
+              if (c.orderNumber) { const a = get(String(c.orderNumber)); if (isRet) { a.retCargo = (a.retCargo || 0) + (Number(c.amount) || 0); if (Number(c.desi) > 0) a.retDesi = Math.max(a.retDesi || 0, Number(c.desi)); } else a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
               const d = Math.ceil(Number(c.desi) || 0), amt = Number(c.amount) || 0;
               if (d > 0 && amt > 0 && !isRet) { (learned[d] = learned[d] || []).push(amt); }
             }
@@ -1006,6 +1031,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms * mult;
     const ok = (need) => qLeft(env) > need;
     if (left() > 30000 && ok(150)) await step('claims', () => syncTrendyolClaims(env));
+    if (left() > 30000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
     if (left() > 30000 && ok(150) && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
     if (left() > 30000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 30000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
@@ -1460,7 +1486,7 @@ async function computePricing(env) {
 
 /* ---------- API ---------- */
 function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
-function mapReturn(r) { return { claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
+function mapReturn(r) { return { retDesi: r.f_ret_desi ?? null, retCargo: r.f_ret_cargo ?? null, claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
 function mapProduct(r) { return { sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
@@ -1621,7 +1647,7 @@ async function api(req, env, path, ctx) {
     const [p, o, r, m] = await env.DB.batch([
       env.DB.prepare('SELECT * FROM products ORDER BY name'),
       env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ORDER BY o.date DESC LIMIT 300`),
-      env.DB.prepare('SELECT * FROM returns ORDER BY created_at DESC LIMIT 400'),
+      env.DB.prepare(`SELECT r.*, f.ret_desi f_ret_desi, f.ret_cargo f_ret_cargo FROM returns r LEFT JOIN order_fin f ON f.order_no=r.order_no AND r.channel='trendyol' ORDER BY r.created_at DESC LIMIT 400`),
       env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600')]);
     return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove) });
   }
