@@ -1344,15 +1344,25 @@ async function retBulkApprove(){
 }
 /* ============ Kargo etiketi (PDF, termal yazıcı) ============ */
 function lblSize(v){ if (v) { try { localStorage.setItem('lb_label', JSON.stringify(v)); } catch(e) {} return v; } try { const x = JSON.parse(localStorage.getItem('lb_label') || 'null'); if (x && x.w > 20 && x.h > 20) return x; } catch(e) {} return {w:100, h:100}; }
+// Etiket sırası ürüne göre: tek ürünlü siparişler aynı ürün arka arkaya (en çok sipariş edilen ürün önce, adet sırasıyla),
+// birden çok ürünlü siparişler en sonda, ürün birleşimine göre gruplu
+function lblSort(list){
+  const key = p => { const ks = [...new Set(p.lines.map(l => l.sku || l.name))].sort(); return {multi: ks.length > 1, k: ks.join(' + '), q: p.lines.reduce((t, l) => t + l.qty, 0)}; };
+  const ks = new Map(list.map(p => [p, key(p)])), cnt = new Map();
+  for (const v of ks.values()) cnt.set(v.k, (cnt.get(v.k) || 0) + 1);
+  return [...list].sort((a, b) => { const x = ks.get(a), y = ks.get(b);
+    return (x.multi - y.multi) || (cnt.get(y.k) - cnt.get(x.k)) || x.k.localeCompare(y.k, 'tr') || (x.q - y.q) || String(a.date).localeCompare(String(b.date)); });
+}
 function sheetLabels(){
   const L = S.sheet;
   if (!L.data) {
-    if (!L.loading) { L.loading = true; api('/api/labels/pending', {}).then(d => { if (S.sheet === L) { L.data = d.packages; L.sid = d.sellerId || ''; L.loading = false; d.packages.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); } }).catch(e => { L.loading = false; toast(errText(e), true); closeSheetForce(); }); }
+    if (!L.loading) { L.loading = true; api('/api/labels/pending', {}).then(d => { if (S.sheet === L) { L.data = lblSort(d.packages); L.sid = d.sellerId || ''; L.loading = false; d.packages.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); } }).catch(e => { L.loading = false; toast(errText(e), true); closeSheetForce(); }); }
     return {title:'Kargo etiketi yazdır', body: loading()};
   }
   const z = lblSize(), presets = [[100,100],[100,150],[150,150]], isPreset = presets.some(([w,h]) => w === z.w && h === z.h);
   const st = {Created:'Yeni', Picking:'İşleme alındı', Invoiced:'Faturalandı'};
-  const rows = L.data.map(p => `<button class="item" type="button" data-act="lbl-sel" data-id="${esc(p.pkgId)}" style="grid-template-columns:auto 1fr auto"><span class="rsel" aria-pressed="${L.sel.has(p.pkgId)}"></span><div class="main"><div class="ttl"><span class="mono">#${esc(p.orderNo)}</span> ${esc(p.to.name)}</div><div class="meta"><span>${esc(p.provider || 'Kargo firması yok')}</span><span>${esc(p.to.district)}${p.to.city ? ' / ' + esc(p.to.city) : ''}</span>${p.tracking ? '' : '<span class="pill p-bad">Takip no yok</span>'}</div><div class="meta">${esc(p.lines.map(l => l.qty + '× ' + (l.sku || l.name)).join(', ').slice(0, 120))}</div></div><div class="end"><span class="pill p-warn">${esc(st[p.status] || p.status)}</span></div></button>`).join('');
+  let lastK = null; const gk = p => { const ks = [...new Set(p.lines.map(l => l.sku || l.name))].sort(); return ks.length > 1 ? 'Birden çok ürünlü siparişler' : ks[0]; };
+  const rows = L.data.map(p => { const k = gk(p), hd = k !== lastK ? `<div class="small" style="padding:8px 14px 4px;font-weight:700;color:var(--ink-2);background:var(--surface-2)">${esc(k)} · ${fmtN(L.data.filter(x => gk(x) === k).length)} sipariş</div>` : ''; lastK = k; return hd + `<button class="item" type="button" data-act="lbl-sel" data-id="${esc(p.pkgId)}" style="grid-template-columns:auto 1fr auto"><span class="rsel" aria-pressed="${L.sel.has(p.pkgId)}"></span><div class="main"><div class="ttl"><span class="mono">#${esc(p.orderNo)}</span> ${esc(p.to.name)}</div><div class="meta"><span>${esc(p.provider || 'Kargo firması yok')}</span><span>${esc(p.to.district)}${p.to.city ? ' / ' + esc(p.to.city) : ''}</span>${p.tracking ? '' : '<span class="pill p-bad">Takip no yok</span>'}</div><div class="meta">${esc(p.lines.map(l => l.qty + '× ' + (l.sku || l.name)).join(', ').slice(0, 120))}</div></div><div class="end"><span class="pill p-warn">${esc(st[p.status] || p.status)}</span></div></button>`; }).join('');
   return {title:'Kargo etiketi yazdır', sub:`<span>${fmtN(L.data.length)} bekleyen paket</span>`, body:`<div class="card" style="gap:10px">
       <div><b>Kağıt ölçüsü</b> <span class="muted small">(etiket yazıcının kağıdı)</span></div>
       <div class="chips">${presets.map(([w,h]) => `<button class="chip" type="button" data-act="lbl-size" data-id="${w}x${h}" aria-pressed="${z.w===w && z.h===h}">${w}×${h} mm</button>`).join('')}<span class="chip" aria-pressed="${!isPreset}" style="display:inline-flex;gap:6px;align-items:center">Özel <input class="input num" id="lbl-w" inputmode="numeric" value="${z.w}" style="width:56px;padding:4px 6px" aria-label="Genişlik mm">×<input class="input num" id="lbl-h" inputmode="numeric" value="${z.h}" style="width:56px;padding:4px 6px" aria-label="Yükseklik mm"> mm</span></div>
@@ -1440,7 +1450,7 @@ async function makeLabelsPdf(){
   const w = Number(($('#lbl-w') || {}).value) || lblSize().w, h = Number(($('#lbl-h') || {}).value) || lblSize().h;
   if (!(w >= 30 && w <= 300 && h >= 30 && h <= 300)) return toast('Kağıt ölçüsü 30–300 mm arasında olmalı.', true);
   lblSize({w, h});
-  const list = L.data.filter(p => L.sel.has(p.pkgId)); if (!list.length) return toast('En az bir paket seç.', true);
+  const list = lblSort(L.data.filter(p => L.sel.has(p.pkgId))); if (!list.length) return toast('En az bir paket seç.', true);
   await run(async () => {
     toast('PDF hazırlanıyor…');
     await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
