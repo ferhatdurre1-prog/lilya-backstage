@@ -2033,7 +2033,7 @@ function tyCardLive(){
   if (!t.configured) return `<p class="muted small" style="margin:0">Cloudflare'de <span class="mono">TRENDYOL_SELLER_ID</span>, <span class="mono">TRENDYOL_API_KEY</span> ve <span class="mono">TRENDYOL_API_SECRET</span> girildiğinde otomatik eşitleme başlar.</p>`;
   return `<dl class="kv"><dt>Durum</dt><dd><span class="pill ${st.cls==='ok'?'p-good':st.cls==='err'?'p-bad':'p-warn'}">${esc(st.text)}</span></dd>
     <dt>Siparişler</dt><dd>Her 10 saniyede, uygulama kapalıyken de</dd>
-    <dt>Kesintiler (kâr)</dt><dd>${t.finAt ? 'Son okuma ' + esc(ago(t.finAt)) : '6 saatte bir okunur'}</dd>
+    <dt>Kesintiler (kâr)</dt><dd>${t.finAt ? 'Son okuma ' + esc(ago(t.finAt)) : '6 saatte bir okunur'}${t.finErr && (!t.finAt || t.finErr.slice(0, 24) > t.finAt.slice(0, 24)) ? `<div style="color:var(--bad);font-size:12px">${esc(t.finErr.slice(27))}</div>` : ''}</dd>
     <dt>Stok → Trendyol</dt><dd>${S.settings.pushStock===false ? 'Kapalı' : t.pushAt ? 'Son gönderim ' + esc(ago(t.pushAt)) + ' · ' + fmtN(t.pushCount) + ' ürün' : 'Değişiklik olunca gönderilir'}</dd><dt>İadeler</dt><dd>Her dakika</dd><dt>Ürün listesi</dt><dd>${t.productsAt ? '6 saatte bir · son ' + esc(ago(t.productsAt)) : 'İlk tarama sürüyor'}</dd></dl>
     ${st.cls==='err' ? `<div class="banner bad" style="margin:0"><div>${esc(st.err||'')}</div></div>` : ''}
     ${diagHtml(t)}

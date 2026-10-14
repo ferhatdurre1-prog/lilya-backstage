@@ -952,15 +952,28 @@ async function syncTrendyolFinance(env, force, deadline) {
   } catch (e) { if (type === 'Sale') throw e; stat.errors.push(type + ': ' + String(e.message || e).slice(0, 80)); }
   stat.types[type] = typeRows;
   }
+  const aggStmts = (now) => { const st = [];
+  for (const [no, a] of agg) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,revenue,commission,net,cargo,service,updated_at,ret_cargo) VALUES(?1,?2,?3,?4,?5,?6,?7,?9)
+    ON CONFLICT(order_no) DO UPDATE SET revenue=CASE WHEN ?8 THEN excluded.revenue ELSE order_fin.revenue END, commission=CASE WHEN ?8 THEN excluded.commission ELSE order_fin.commission END, net=CASE WHEN ?8 THEN excluded.net ELSE order_fin.net END,
+      cargo=CASE WHEN excluded.cargo IS NULL THEN order_fin.cargo ELSE COALESCE(order_fin.cargo,0)+excluded.cargo END,
+      ret_cargo=CASE WHEN excluded.ret_cargo IS NULL THEN order_fin.ret_cargo ELSE COALESCE(order_fin.ret_cargo,0)+excluded.ret_cargo END,
+      service=COALESCE(excluded.service, order_fin.service), updated_at=excluded.updated_at`)
+    .bind(no, a.sale ? Math.round(a.revenue * 100) / 100 : null, a.sale ? Math.round(a.commission * 100) / 100 : null, a.sale ? Math.round(a.net * 100) / 100 : null, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.service, now, a.sale ? 1 : 0, a.retCargo === null ? null : Math.round(a.retCargo * 100) / 100));
+    return st; };
+  // Satış/komisyon gerçek değerleri hemen kaydedilir; sonraki adımlar (hizmet bedeli, kargo faturaları) hata verse de kaybolmaz
+  { const w = aggStmts(iso()); for (let i = 0; i < w.length; i += 90) await env.DB.batch(w.slice(i, i + 90)); stat.early = w.length; }
   // Paket numarasından sipariş numarasına (Trendyol bazı kayıtlarda yalnızca shipmentPackageId verir)
-  const pkgOrder = async (pid) => { if (!pid) return null; const r = await env.DB.prepare('SELECT order_no FROM audit_pkg WHERE pkg_id=?1').bind(String(pid)).first(); return r ? r.order_no : null; };
-  const orderOf = async (x) => x.orderNumber ? String(x.orderNumber) : await pkgOrder(x.shipmentPackageId);
+  // Satır başına sorgu yerine sayfa başına tek toplu sorgu (çalışma başına veritabanı sorgu sınırı aşılmasın)
+  const pkgMap = new Map();
+  const prefetch = async (list) => { const ids = [...new Set(list.filter(x => !x.orderNumber && x.shipmentPackageId).map(x => String(x.shipmentPackageId)).filter(id => !pkgMap.has(id)))]; if (!ids.length) return; for (const id of ids) pkgMap.set(id, null); for (const r of await selectIn(env, 'SELECT pkg_id, order_no FROM audit_pkg', 'pkg_id', ids)) pkgMap.set(String(r.pkg_id), r.order_no); };
+  const orderOf = async (x) => x.orderNumber ? String(x.orderNumber) : (x.shipmentPackageId ? pkgMap.get(String(x.shipmentPackageId)) || null : null);
   // Platform hizmet bedeli kayıtları ayrı filtreyle (transactionSubType=PlatformServiceFee) okunur; siparişe bağlanabilenler gerçek tutar olarak yazılır
   stat.svcRows = 0; stat.svcLinked = 0;
   try {
     const svc = new Map();
     for (let page = 0; page < 20; page++) {
       const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', transactionSubType: 'PlatformServiceFee', startDate: start, endDate: end, page, size: 500, supplierId: sid });
+      await prefetch(r.content || []);
       for (const x of (r.content || [])) { stat.svcRows++; const no = await orderOf(x); if (!no) continue; stat.svcLinked++; svc.set(no, (svc.get(no) || 0) + Math.abs(Number(x.debt) || Number(x.credit) || 0)); }
       if (page + 1 >= (r.totalPages || 0)) break;
     }
@@ -986,6 +999,7 @@ async function syncTrendyolFinance(env, force, deadline) {
   try {
     outer: for (let page = 0; page < 5; page++) {
       const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', startDate: start, endDate: end, page, size: 500, supplierId: sid });
+      await prefetch(r.content || []);
       for (const x of (r.content || [])) {
         const t = String(x.transactionType || '') + ' ' + String(x.description || '');
         if (/kargo/i.test(t) && x.id && !done.has(String(x.id))) {
@@ -1014,13 +1028,7 @@ async function syncTrendyolFinance(env, force, deadline) {
     }
   } catch (e) { stat.errors.push('Kargo faturaları: ' + String(e.message || e).slice(0, 150)); await setSetting(env, 'fin_err', iso() + ' · Kargo faturaları okunamadı: ' + String(e.message || e).slice(0, 200)); }
   stat.cargoInvoices = cargoInv; stat.cargoDone = done.size; stat.orders = agg.size; stat.misc = misc.length; stat.partial = partial;
-  const now = iso(); const st = [];
-  for (const [no, a] of agg) st.push(env.DB.prepare(`INSERT INTO order_fin(order_no,revenue,commission,net,cargo,service,updated_at,ret_cargo) VALUES(?1,?2,?3,?4,?5,?6,?7,?9)
-    ON CONFLICT(order_no) DO UPDATE SET revenue=CASE WHEN ?8 THEN excluded.revenue ELSE order_fin.revenue END, commission=CASE WHEN ?8 THEN excluded.commission ELSE order_fin.commission END, net=CASE WHEN ?8 THEN excluded.net ELSE order_fin.net END,
-      cargo=CASE WHEN excluded.cargo IS NULL THEN order_fin.cargo ELSE COALESCE(order_fin.cargo,0)+excluded.cargo END,
-      ret_cargo=CASE WHEN excluded.ret_cargo IS NULL THEN order_fin.ret_cargo ELSE COALESCE(order_fin.ret_cargo,0)+excluded.ret_cargo END,
-      service=COALESCE(excluded.service, order_fin.service), updated_at=excluded.updated_at`)
-    .bind(no, a.sale ? Math.round(a.revenue * 100) / 100 : null, a.sale ? Math.round(a.commission * 100) / 100 : null, a.sale ? Math.round(a.net * 100) / 100 : null, a.cargo === null ? null : Math.round(a.cargo * 100) / 100, a.service, now, a.sale ? 1 : 0, a.retCargo === null ? null : Math.round(a.retCargo * 100) / 100));
+  const now = iso(); const st = aggStmts(now);
   // Barem ücretlerine (46,49 / 84,49) eşit olmayan faturalar desiye göre ücretlenmiştir → desi tablosunu öğren
   const prev = (() => { try { return JSON.parse((s.desi_learned) || '{}'); } catch (e) { return {}; } })();
   for (const [d, arr] of Object.entries(learned)) {
