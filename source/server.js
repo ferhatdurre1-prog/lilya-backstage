@@ -1642,9 +1642,9 @@ export default {
     try {
       if (!env.APP_PASSWORD) return new Response('Kurulum eksik: APP_PASSWORD gizli değişkeni tanımlanmalı.', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       // Sayfa ve simgeler veritabanını beklemeden hemen gönderilir
-      if (!path.startsWith('/api/') && path !== '/perf' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png' && path !== '/icon-192.png' && path !== '/icon-512.png')
+      if (!path.startsWith('/api/') && path !== '/perf' && path !== '/__stats' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png' && path !== '/icon-192.png' && path !== '/icon-512.png')
         return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
-      if (path.startsWith('/api/') && path !== '/api/logout' || path === '/perf') await init(env);
+      if (path.startsWith('/api/') && path !== '/api/logout' || path === '/perf' || path === '/__stats') await init(env);
       if (path === '/manifest.webmanifest') return new Response(JSON.stringify({ name: 'Lilya Backstage', short_name: 'Backstage', start_url: '/', display: 'standalone', background_color: '#f5f6f8', theme_color: '#0a0b10', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] }), { headers: { 'content-type': 'application/manifest+json' } });
       if (path === '/icon.svg' || path === '/apple-touch-icon.png') return new Response(ICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
       // Giriş ekranı bilgisi: kullanıcı adı belirlenmiş mi, Face ID kurulu mu
@@ -1686,11 +1686,16 @@ export default {
           return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
         } catch (e) { await sleep(600); return bad('Face ID girişi olmadı: ' + (e.message || e), 401); }
       }
+      if (path === '/__stats' && req.method === 'POST') {
+        if (req.headers.get('x-run') !== await hmac(env.APP_PASSWORD, 'stats-run')) return bad('Yetkisiz', 403);
+        try { const r = await refreshStats(env, Date.now() + 25000); await setSetting(env, 'stats_run', iso() + ' · ' + (r.busy ? 'meşgul' : r.n + ' gün')); return json(r); }
+        catch (e) { await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e), 500); }
+      }
       if (path === '/perf') {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err', 'cron_seen_****', 'cron_seen_*2****']);
+        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err']);
         const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
-        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null, seen1: g['cron_seen_****'] || null, seen2: g['cron_seen_*2****'] || null });
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
@@ -1708,9 +1713,15 @@ export default {
   },
   // Ana eşitleme her dakika; raporlar 2 dakikada bir ayrı çalışmada (sorgu sınırı ayrı sayılsın, eşitlemeyi yavaşlatmasın)
   async scheduled(event, env, ctx) {
-    ctx.waitUntil((async () => { try { await init(env); const k = 'cron_seen_' + String(event && event.cron || '?').replace(/[^0-9*]/g, ''); await setSetting(env, k, iso()); } catch (e) {} })());
-    if (event && /^\*\/2 /.test(String(event.cron || ''))) ctx.waitUntil((async () => { await init(env); try { await refreshStats(env, Date.now() + 25000); await setSetting(env, 'stats_run', iso()); } catch (e) { try { await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } catch (x) {} } })());
-    else ctx.waitUntil(cronRun(env));
+    ctx.waitUntil(cronRun(env));
+    // Raporlar 2 dakikada bir AYRI bir çalışmada hesaplanır (kendi sorgu sınırı olsun, eşitlemeyi etkilemesin)
+    if (new Date().getUTCMinutes() % 2 === 0) ctx.waitUntil((async () => {
+      try {
+        const sig = await hmac(env.APP_PASSWORD, 'stats-run');
+        if (env.SELF) { const r = await env.SELF.fetch('https://self/__stats', { method: 'POST', headers: { 'x-run': sig } }); if (!r.ok) throw new Error('self ' + r.status); }
+        else { await init(env); await refreshStats(env, Date.now() + 20000); }
+      } catch (e) { try { await init(env); await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } catch (x) {} }
+    })());
   }
 };
 

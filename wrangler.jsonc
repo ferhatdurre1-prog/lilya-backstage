@@ -7,7 +7,8 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "lilya-backstage" }
   ],
-  "triggers": { "crons": ["* * * * *", "*/2 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
+  "services": [{ "binding": "SELF", "service": "lilya-backstage" }],
   "observability": { "enabled": true },
   "limits": { "cpu_ms": 300000 },
   "placement": { "mode": "smart" }
