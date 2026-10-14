@@ -329,11 +329,12 @@ const ICONS = {
   home:'<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
   link:'<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
   reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  questions:'<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1.1-4.6A8 8 0 1121 12z"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.5-1.5 1-1.5 2"/><path d="M12 16.5h.01"/>',
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
-const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
+const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
 const NAV_MAIN = ['stock','profit']; // alt çubukta görünenler; diğerleri sol menüde
-const TAB_SHORT = {reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
+const TAB_SHORT = {questions:'Soru', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
 
 /* ============ Durum ============ */
 const S = {
@@ -600,7 +601,7 @@ function render(){
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
-  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports}[S.tab])();
+  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions}[S.tab])();
   enhanceTables(v);
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
@@ -614,13 +615,60 @@ function renderDrawer(){
   const item = (id, label, icon, cnt) => `<button class="di" data-act="dnav" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon||id]}</svg>${label}${cnt?`<span class="cnt">${cnt}</span>`:''}</button>`;
   root.innerHTML = `<div class="drawer-scrim" data-act="menu-close"></div><nav class="drawer" aria-label="Menü">
     <div class="dh"><div class="mark" aria-hidden="true">L</div><div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1 style="font-size:20px">Backstage</h1></div></div>
-    ${TABS.map(([id, label]) => item(id, label, id, id === 'returns' ? pending : 0)).join('')}
+    ${TABS.map(([id, label]) => item(id, label, id, id === 'returns' ? pending : id === 'questions' ? ((S.sync.trendyol || {}).qnaWaiting || 0) : 0)).join('')}
     <div class="sep"></div>
     <button class="di" data-act="dnav" data-id="__conn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg>Bağlantılar & yedek</button>
     <button class="di" data-act="add-expense"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/></svg>Gider ekle</button>
     <button class="di" data-act="security"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Güvenlik & Face ID</button>
     <button class="di" data-act="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.out}</svg>Çıkış</button>
   </nav>`;
+}
+/* ============ Müşteri soruları ============ */
+function qS(){ if (!S.qna) S.qna = {tab:'waiting', data:null, at:0, loading:false, drafts:{}, open:{}, busy:{}}; return S.qna; }
+async function loadQna(force){
+  const Q = qS(); if (Q.loading || (!force && Q.data && Q.data.tab === Q.tab && Date.now() - Q.at < 30000)) return;
+  Q.loading = true; try { const d = await api('/api/qna/list', {status: Q.tab}); d.tab = Q.tab; Q.data = d; Q.at = Date.now(); Q.err = ''; } catch(e) { Q.err = errText(e); }
+  Q.loading = false; if (S.tab === 'questions') render();
+}
+function ago(t){ const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000)); return m < 60 ? `${m} dk önce` : m < 1440 ? `${Math.floor(m/60)} sa önce` : `${Math.floor(m/1440)} gün önce`; }
+function viewQuestions(){
+  const Q = qS(); loadQna(false); const t = S.sync.trendyol || {};
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Müşteri soruları</h2><p class="lead small">Trendyol'daki sorular 2 dakikada bir gelir. Yapay zekâ ürün bilgisinden cevap taslağı hazırlar; sen düzeltip gönderirsin.</p></div>`;
+  h += `<div class="filters" style="margin-bottom:10px"><div class="chips"><button class="chip" data-act="q-tab" data-id="waiting" aria-pressed="${Q.tab==='waiting'}">Cevap bekleyen${t.qnaWaiting ? ' · ' + fmtN(t.qnaWaiting) : ''}</button><button class="chip" data-act="q-tab" data-id="answered" aria-pressed="${Q.tab==='answered'}">Cevaplananlar</button></div><button class="btn sm ghost" data-act="q-sync">Şimdi yenile</button></div>`;
+  if (t.qnaErr) h += `<div class="banner bad"><div>Sorular alınamadı: ${esc(String(t.qnaErr).slice(27))}</div></div>`;
+  const D = Q.data && Q.data.tab === Q.tab ? Q.data : null;
+  if (!D) return h + (Q.err ? `<div class="banner bad"><div>${esc(Q.err)}</div></div>` : loading());
+  if (!D.ai) h += `<div class="banner" style="background:var(--accent-soft)"><div><b>Yapay zekâ taslağı henüz kapalı.</b> Açmak için Anthropic'ten bir API anahtarı alıp Cloudflare'de <b>ANTHROPIC_API_KEY</b> adıyla gizli değişken olarak eklemen gerekiyor (Workers ve Pages → lilya-backstage → Ayarlar → Değişkenler ve Gizli Bilgiler). O zamana kadar cevapları kendin yazıp buradan gönderebilirsin.</div></div>`;
+  // genel bilgiler
+  h += `<details class="card" ${Q.genOpen ? 'open' : ''} style="gap:8px"><summary style="cursor:pointer;font-weight:700;font-size:16px" data-act="q-gen-toggle">Mağaza genel bilgileri ${D.general ? '' : '<span class="pill p-warn" style="margin-left:6px">Boş</span>'}</summary>
+    <p class="muted small" style="margin:0">Kargoya veriş süresi, iade koşulları, paketleme, garanti gibi her ürün için geçerli bilgiler. Yapay zekâ cevap yazarken bunları kullanır.</p>
+    <textarea class="input" id="q-general" rows="5" placeholder="Örn: Siparişler 15:00'e kadar aynı gün kargoya verilir. Ürünler özenle, kırılmaz şekilde paketlenir. 15 gün içinde iade edilebilir.">${esc(D.general)}</textarea>
+    <button class="btn" data-act="q-gen-save">Kaydet</button></details>`;
+  const items = D.items || [];
+  if (!items.length) return h + `<div class="panel empty"><h4>${Q.tab === 'waiting' ? 'Cevap bekleyen soru yok' : 'Henüz cevaplanan soru yok'}</h4><p>${Q.tab === 'waiting' ? 'Yeni soru gelince burada görünür ve ana ekranda bildirilir.' : 'Buradan gönderdiğin cevaplar burada listelenir.'}</p></div>`;
+  for (const q of items) {
+    const head = `<div style="display:flex;gap:12px;align-items:flex-start">${q.image ? `<div class="thumb"><img alt="" loading="lazy" referrerpolicy="no-referrer" src="${esc(q.image)}"></div>` : ''}<div style="min-width:0;flex:1"><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.product_name || '')}</div><div class="small muted">${esc(ago(q.created_at))}${q.web_url ? ` · <a href="${esc(q.web_url)}" target="_blank" rel="noopener">Ürün sayfası</a>` : ''}</div></div></div>
+      <div style="background:var(--surface-2);border-radius:12px;padding:12px 14px;font-size:15px;line-height:1.45"><b>Soru:</b> ${esc(q.text)}</div>`;
+    if (Q.tab === 'answered') { h += `<div class="card" style="gap:10px">${head}<div style="border-left:3px solid var(--good);padding:2px 0 2px 12px;font-size:14.5px">${q.answer ? esc(q.answer) : '<span class="muted">Trendyol panelinden cevaplandı.</span>'}</div><div class="small muted">${q.answered_at ? 'Cevap: ' + esc(fmtDate(q.answered_at)) : ''}</div></div>`; continue; }
+    const val = Q.drafts[q.id] !== undefined ? Q.drafts[q.id] : (q.draft || '');
+    const busy = Q.busy[q.id];
+    h += `<div class="card" style="gap:10px" id="q-${esc(q.id)}">${head}
+      ${q.draft_flag && !Q.drafts[q.id] ? `<div class="banner" style="margin:0;background:var(--warn-soft)"><div><b>Kontrol et:</b> ürün bilgisinde bu sorunun net cevabı yok; taslak genel yazıldı. Gerekirse ürün notu ekleyip yeniden yazdır.</div></div>` : ''}
+      ${q.draft_err && !val ? `<div class="banner bad" style="margin:0"><div>Taslak hazırlanamadı: ${esc(q.draft_err)}</div></div>` : ''}
+      <label class="f">Cevap${!val && D.ai && !q.draft_err ? ' <span class="muted small">(taslak hazırlanıyor…)</span>' : ''}<textarea class="input" id="qa-${esc(q.id)}" data-qid="${esc(q.id)}" rows="4" maxlength="2000" placeholder="Cevabını yaz (en az 10 karakter)">${esc(val)}</textarea></label>
+      <div style="display:grid;grid-template-columns:${D.ai ? '1fr 1fr' : '1fr'};gap:8px">
+        ${D.ai ? `<button class="btn" data-act="q-draft" data-id="${esc(q.id)}" ${busy?'disabled':''}>${busy === 'draft' ? 'Yazılıyor…' : val ? '✨ Yeniden yaz' : '✨ Taslak yaz'}</button>` : ''}
+        <button class="btn primary" data-act="q-send" data-id="${esc(q.id)}" ${busy?'disabled':''}>${busy === 'send' ? 'Gönderiliyor…' : 'Trendyol\'a gönder'}</button>
+      </div>
+      ${D.ai ? `<div class="chips">${['Daha kısa yaz','Daha samimi yaz','Stokta var de','Ölçüyü vurgula'].map(x => `<button class="chip" data-act="q-hint" data-id="${esc(q.id)}" data-hint="${esc(x)}" ${busy?'disabled':''}>${esc(x)}</button>`).join('')}</div>` : ''}
+      <details ${Q.open[q.id] ? 'open' : ''}><summary class="small" style="cursor:pointer;color:var(--accent);font-weight:600" data-act="q-note-toggle" data-id="${esc(q.id)}">Bu ürün için not ${q.pnote ? '(var)' : 'ekle'}${q.has_info ? '' : ' · ürün açıklaması henüz alınmadı'}</summary>
+        <p class="muted small" style="margin:6px 0">Ölçü, malzeme, kullanım, paket içeriği gibi bilgiler. Bu ürüne gelen tüm sorularda kullanılır.</p>
+        <textarea class="input" id="qn-${esc(q.id)}" rows="3" placeholder="Örn: Çap 24 cm, yükseklik 8 cm. Bulaşık makinesinde yıkanabilir. Pakette 4 adet var.">${esc(q.pnote || '')}</textarea>
+        <button class="btn sm" style="margin-top:6px" data-act="q-note-save" data-id="${esc(q.id)}" data-mid="${esc(q.main_id || '')}" data-title="${esc(q.product_name || '')}">Notu kaydet</button></details>
+    </div>`;
+  }
+  if (D.ai && items.some(x => !x.draft && !x.draft_err)) { clearTimeout(Q.timer); Q.timer = setTimeout(() => { if (S.tab === 'questions') loadQna(true); }, 15000); }
+  return h;
 }
 /* ============ Raporlar: günlük kesin sonuçlardan dönem toplamları ============ */
 const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
@@ -797,7 +845,7 @@ function viewHome(){
     ${act('Tükenen ürünler', zero, 'home-stock', 'zero', true)}
     ${act('Stoğu azalan', low, 'home-stock', 'low')}
     ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
-    ${act('Toplam ürün', ps.length, 'tab', 'stock')}
+    ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true)}
   </div></div>`;
   return h;
 }
@@ -1979,6 +2027,7 @@ async function run(fn){
 }
 
 /* ============ Olaylar ============ */
+document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.qid) qS().drafts[t.dataset.qid] = t.value; });
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act, id = b.dataset.id;
@@ -2031,6 +2080,23 @@ document.addEventListener('click', async e => {
     case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
     case 'rep-year': repS().year = Number(id); render(); break;
     case 'rep-gran': repS().gran = id; try { localStorage.setItem('lb_rgran', id); } catch(e) {} render(); break;
+    case 'q-tab': qS().tab = id; qS().data = null; render(); break;
+    case 'q-sync': await run(async () => { await api('/api/qna/sync', {}); await refresh(true); qS().at = 0; await loadQna(true); toast('Sorular yenilendi.'); }); break;
+    case 'q-gen-toggle': qS().genOpen = !qS().genOpen; break;
+    case 'q-gen-save': await run(async () => { await api('/api/qna/general', {text: $('#q-general').value}); qS().data.general = $('#q-general').value; toast('Genel bilgiler kaydedildi.'); }); break;
+    case 'q-note-toggle': qS().open[id] = !qS().open[id]; break;
+    case 'q-note-save': { const note = $('#qn-' + CSS.escape(id)).value; await run(async () => { await api('/api/qna/note', {mainId: b.dataset.mid, title: b.dataset.title, note}); (qS().data.items || []).forEach(x => { if (x.main_id === b.dataset.mid) x.pnote = note; }); toast('Ürün notu kaydedildi. İstersen "Yeniden yaz" ile taslağı güncelle.'); render(); }); break; }
+    case 'q-draft': case 'q-hint': { const Q = qS(); Q.busy[id] = 'draft'; render();
+      try { const r = await api('/api/qna/draft', {id, hint: act === 'q-hint' ? b.dataset.hint : ''}); delete Q.drafts[id]; const it = (Q.data.items || []).find(x => x.id === id); if (it) { it.draft = r.draft; it.draft_flag = r.flag ? 1 : 0; it.draft_err = null; } }
+      catch(e) { toast(errText(e), true); }
+      delete Q.busy[id]; render(); break; }
+    case 'q-send': { const Q = qS(); const ta = document.querySelector(`textarea[data-qid="${CSS.escape(id)}"]`); const text = (ta ? ta.value : '').trim();
+      if (text.length < 10) { toast('Cevap en az 10 karakter olmalı.', true); break; }
+      if (!(await confirmBox('Bu cevap Trendyol\'da müşteriye gönderilsin mi?<br><br><span class="small muted">' + esc(text.slice(0, 300)) + '</span>', 'Gönder'))) break;
+      Q.busy[id] = 'send'; render();
+      try { await api('/api/qna/answer', {id, text}); Q.data.items = Q.data.items.filter(x => x.id !== id); delete Q.drafts[id]; toast('Cevap gönderildi.'); refresh(true); }
+      catch(e) { toast(errText(e), true); }
+      delete Q.busy[id]; render(); break; }
     case 'rep-quick': { const R = repS(); [R.cf, R.ct] = id.split('|'); render(); break; }
     case 'rep-metric': openSheet('repmetric', {k: id, id}); break;
     case 'rep-drill': openSheet('repdrill', {key: id, id}); break;

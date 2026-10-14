@@ -90,6 +90,9 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE order_cust ADD COLUMN sname TEXT').run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS product_info(main_id TEXT PRIMARY KEY, title TEXT, descr TEXT, attrs TEXT, image TEXT, updated_at TEXT, note TEXT)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS qna(id TEXT PRIMARY KEY, main_id TEXT, product_name TEXT, image TEXT, web_url TEXT, text TEXT, created_at TEXT, status TEXT, answer TEXT, answered_at TEXT, draft TEXT, draft_flag INTEGER, draft_at TEXT, draft_err TEXT, updated_at TEXT)').run();
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_pinfo1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_pinfo1','1')`), setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]); } catch (e) {} }
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS daily_stats(day TEXT PRIMARY KEY, data TEXT, computed_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS product_daily(day TEXT, pkey TEXT, sku TEXT, name TEXT, units INTEGER, ret_units INTEGER, revenue REAL, profit REAL, PRIMARY KEY(day, pkey))').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)').run();
@@ -626,6 +629,88 @@ async function syncTrendyolClaims(env) {
   await setSetting(env, 'ty_claims_hwm', String(claims.length ? maxMod : (hwm || Math.min(end, now))));
   return { claims: claims.length, added, accepted };
 }
+// Soru cevaplama için ürün bilgisi (açıklama + özellikler), ana ürün koduna göre
+const stripHtml = (h) => String(h || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|li|div|h\d)>/gi, '\n').replace(/<li[^>]*>/gi, '• ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+async function storeProductInfo(env, content) {
+  const now = iso(), st = [];
+  for (const c of content) {
+    const mid = String(c.productMainId || '').trim(); if (!mid) continue;
+    const attrs = [...(c.attributes || []), ...((c.variants || [])[0] ? ((c.variants[0].attributes) || []) : [])].map(a => `${a.attributeName || ''}: ${a.attributeValue || ''}`).filter(x => !/^: |: $/.test(x));
+    const extra = []; const v0 = (c.variants || [])[0] || {};
+    if (c.brand) extra.push('Marka: ' + (c.brand.name || c.brand)); if (c.categoryName) extra.push('Kategori: ' + c.categoryName);
+    if (v0.dimensionalWeight) extra.push('Desi: ' + v0.dimensionalWeight); if (c.dimensionalWeight) extra.push('Desi: ' + c.dimensionalWeight);
+    if (Array.isArray(c.variants) && c.variants.length > 1) extra.push('Seçenekler: ' + c.variants.map(v => (v.attributes || []).map(a => a.attributeValue).join(' ')).filter(Boolean).join(' | '));
+    st.push(env.DB.prepare(`INSERT INTO product_info(main_id, title, descr, attrs, image, updated_at) VALUES(?1,?2,?3,?4,?5,?6)
+      ON CONFLICT(main_id) DO UPDATE SET title=excluded.title, descr=excluded.descr, attrs=excluded.attrs, image=excluded.image, updated_at=excluded.updated_at
+      WHERE product_info.title IS NOT excluded.title OR product_info.descr IS NOT excluded.descr OR product_info.attrs IS NOT excluded.attrs OR product_info.image IS NOT excluded.image`)
+      .bind(mid, c.title || '', stripHtml(c.description).slice(0, 6000), [...new Set([...attrs, ...extra])].join('\n').slice(0, 3000), (c.images && c.images[0] && c.images[0].url) || '', now));
+  }
+  for (let i = 0; i < st.length; i += 50) await env.DB.batch(st.slice(i, i + 50));
+}
+/* ---------- Müşteri soruları (Trendyol Soru-Cevap) ---------- */
+async function qnaCount(env) { const c = await env.DB.prepare(`SELECT COUNT(*) n FROM qna WHERE status='waiting'`).first(); await setSetting(env, 'qna_waiting', String((c && c.n) || 0)); }
+async function syncTrendyolQna(env) {
+  const sid = env.TRENDYOL_SELLER_ID, now = Date.now(), seen = new Set(); let n = 0;
+  for (let page = 0; page < 5; page++) {
+    let r;
+    try { r = await ty(env, `qna/sellers/${sid}/questions/filter`, { status: 'WAITING_FOR_ANSWER', page, size: 50, orderByField: 'CreatedDate', orderByDirection: 'DESC' }); }
+    catch (e) { if (page === 0 && e.status === 400) r = await ty(env, `qna/sellers/${sid}/questions/filter`, { status: 'WAITING_FOR_ANSWER', page, size: 50, startDate: now - 14 * 86400000, endDate: now }); else throw e; }
+    const list = r.content || [];
+    const st = list.map(q => { seen.add(String(q.id)); return env.DB.prepare(`INSERT INTO qna(id, main_id, product_name, image, web_url, text, created_at, status, updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'waiting',?8)
+      ON CONFLICT(id) DO UPDATE SET main_id=excluded.main_id, product_name=excluded.product_name, image=excluded.image, web_url=excluded.web_url, text=excluded.text, updated_at=excluded.updated_at, status=CASE WHEN qna.status IN ('sent') THEN qna.status ELSE 'waiting' END
+      WHERE qna.text IS NOT excluded.text OR qna.status NOT IN ('waiting','sent')`).bind(String(q.id), String(q.productMainId || ''), q.productName || '', q.imageUrl || '', q.webUrl || '', String(q.text || ''), iso(Number(q.creationDate) || now), iso()); });
+    for (let i = 0; i < st.length; i += 50) await env.DB.batch(st.slice(i, i + 50));
+    n += list.length;
+    if (!list.length || page + 1 >= (r.totalPages || 1)) break;
+  }
+  // Trendyol'da bekleyenlerden çıkan (panelden cevaplanan) sorular
+  const { results } = await env.DB.prepare(`SELECT id FROM qna WHERE status='waiting'`).all();
+  const gone = results.filter(x => !seen.has(x.id));
+  if (gone.length) await env.DB.batch(gone.map(x => env.DB.prepare(`UPDATE qna SET status='answered_elsewhere', updated_at=?2 WHERE id=?1`).bind(x.id, iso())));
+  await qnaCount(env);
+  return { waiting: n, closed: gone.length };
+}
+const QA_SYSTEM = `Sen Lilya Home'un (ev ve mutfak ürünleri) Trendyol mağazasına gelen müşteri sorularına cevap TASLAĞI yazan yardımcısın. Taslağı mağaza sahibi okuyup onaylayacak.
+Kurallar:
+- Türkçe, sıcak ve kibar yaz. "Merhaba," ile başla, kısa bir teşekkür ya da "İyi alışverişler dileriz." ile bitir.
+- Kısa ol: genelde 1-3 cümle, en fazla 500 karakter.
+- YALNIZCA verilen ürün bilgisine, mağaza notlarına ve önceki cevaplara dayan. Ölçü, malzeme, adet, uyumluluk gibi bilgileri ASLA uydurma.
+- Sorunun cevabı verilen bilgilerde yoksa dürüst ve genel bir cevap yaz ve cevabın EN BAŞINA tek başına [KONTROL] yaz (mağaza sahibi bunu görüp düzeltecek).
+- Telefon, e-posta, web adresi, sosyal medya, WhatsApp, başka mağaza ya da siteye yönlendirme YAZMA (Trendyol kuralı).
+- Fiyat, indirim, kampanya, kargo ücreti ya da teslim tarihi için söz verme; mağaza notunda yazmıyorsa bunlara girme.
+- Müşteriden kişisel bilgi, sipariş numarası isteme.
+- Çıktı olarak SADECE cevap metnini yaz; açıklama, başlık, tırnak ekleme.`;
+async function draftQna(env, id, hint) {
+  if (!env.ANTHROPIC_API_KEY) throw new Error('Yapay zekâ anahtarı (ANTHROPIC_API_KEY) Cloudflare\'e eklenmemiş.');
+  const q = await env.DB.prepare('SELECT * FROM qna WHERE id=?1').bind(String(id)).first(); if (!q) throw new Error('Soru bulunamadı');
+  const [pi, prev, gen] = await Promise.all([
+    q.main_id ? env.DB.prepare('SELECT * FROM product_info WHERE main_id=?1').bind(q.main_id).first() : null,
+    env.DB.prepare(`SELECT text, answer FROM qna WHERE main_id=?1 AND id<>?2 AND answer IS NOT NULL AND answer<>'' ORDER BY answered_at DESC LIMIT 6`).bind(q.main_id || '-', q.id).all(),
+    getSetting(env, 'qa_general')]);
+  const parts = [`ÜRÜN: ${(pi && pi.title) || q.product_name || '-'}`];
+  if (pi && pi.attrs) parts.push(`ÖZELLİKLER:\n${pi.attrs}`);
+  if (pi && pi.descr) parts.push(`ÜRÜN AÇIKLAMASI:\n${pi.descr.slice(0, 3500)}`);
+  if (pi && pi.note) parts.push(`MAĞAZA SAHİBİNİN BU ÜRÜN İÇİN NOTU (en güvenilir bilgi):\n${pi.note}`);
+  if (gen) parts.push(`MAĞAZANIN GENEL BİLGİLERİ (kargo, iade vb.):\n${gen}`);
+  if (prev.results.length) parts.push(`BU ÜRÜNE DAHA ÖNCE VERİLEN CEVAPLAR (üslup ve bilgi için örnek):\n${prev.results.map(x => `S: ${x.text}\nC: ${x.answer}`).join('\n---\n')}`);
+  parts.push(`MÜŞTERİNİN SORUSU:\n${q.text}`);
+  if (hint) parts.push(`MAĞAZA SAHİBİNİN İSTEĞİ (taslağı buna göre yaz): ${String(hint).slice(0, 300)}`);
+  const model = (await getSetting(env, 'qa_model')) || 'claude-haiku-5-5';
+  const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model, max_tokens: 700, system: QA_SYSTEM, messages: [{ role: 'user', content: parts.join('\n\n') }] }) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { const msg = (data.error && data.error.message) || ('Yapay zekâ hatası ' + r.status); await env.DB.prepare('UPDATE qna SET draft_err=?2 WHERE id=?1').bind(q.id, msg.slice(0, 200)).run(); throw new Error(msg); }
+  let text = ((data.content || []).filter(c => c.type === 'text').map(c => c.text).join('') || '').trim();
+  const flag = /^\[KONTROL\]/i.test(text) ? 1 : 0; text = text.replace(/^\[KONTROL\]\s*/i, '').trim().slice(0, 2000);
+  await env.DB.prepare('UPDATE qna SET draft=?2, draft_flag=?3, draft_at=?4, draft_err=NULL WHERE id=?1').bind(q.id, text, flag, iso()).run();
+  return { draft: text, flag: !!flag };
+}
+async function draftPendingQna(env, max = 4) {
+  if (!env.ANTHROPIC_API_KEY) return { n: 0 };
+  const { results } = await env.DB.prepare(`SELECT id FROM qna WHERE status='waiting' AND (draft IS NULL OR draft='') AND (draft_err IS NULL) ORDER BY created_at LIMIT ?1`).bind(max).all();
+  let n = 0; for (const x of results) { try { await draftQna(env, x.id); n++; } catch (e) {} }
+  return { n };
+}
 async function syncTrendyolProducts(env, maxPages = 4) {
   const sid = env.TRENDYOL_SELLER_ID;
   const s = await getSettings(env, ['ty_prod_page', 'ty_prod_done', 'ty_prod_initial']);
@@ -645,6 +730,7 @@ async function syncTrendyolProducts(env, maxPages = 4) {
       }
     }
     if (items.length) { const st = await ingestProducts(env, 'trendyol', items, { useStock, tyQty: true }); stats.created += st.created; stats.updated += st.updated; }
+    try { await storeProductInfo(env, r.content || []); } catch (e) {}
     total += items.length;
     const pages = r.totalPages || 0;
     if (!r.content || !r.content.length || page + 1 >= pages) { page = 0; await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', iso())]); return { variants: total, ...stats, finished: true }; }
@@ -848,9 +934,10 @@ async function pollOnce(env, full, budget) {
   await step('push', () => pushTrendyolStock(env), 'ty_push_err');
   if (full) {
     // Ağır işler seyrek çalışır; veritabanını sürekli meşgul edip ekranları yavaşlatmasın
-    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at']); const now = Date.now();
+    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at']); const now = Date.now();
     const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms;
     if (left() > 30000) await step('claims', () => syncTrendyolClaims(env));
+    if (left() > 30000 && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
     if (left() > 30000) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 30000 && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env)); }
     if (left() > 35000 && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
@@ -1198,8 +1285,8 @@ function mapReturn(r) { return { extAt: r.ext_at || null, id: r.id, channel: r.c
 function mapProduct(r) { return { sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err']);
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, qnaWaiting: Number(s.qna_waiting) || 0, qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
 }
 /* ---------- piyasa bandı (döviz, borsa, emtia) ---------- */
 const MKT_SYMS = { USD: 'USDTRY=X', EUR: 'EURTRY=X', BIST: 'XU100.IS', GOLD: 'GC=F', SILVER: 'SI=F', BRENT: 'BZ=F' };
@@ -1380,6 +1467,29 @@ async function api(req, env, path, ctx) {
     return json({ best: best.results, worst: worst.results, top: top.results });
   }
   if (path === '/api/reports/rebuild') { await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'stats_first', ''), setStmt(env, 'stats_cursor', ''), setStmt(env, 'stats_busy', '0')]); const job = refreshStats(env, Date.now() + 25000).catch(() => {}); if (ctx && ctx.waitUntil) ctx.waitUntil(job); return json({ ok: true }); }
+  if (path === '/api/qna/list') {
+    const st = body.status === 'answered' ? `status IN ('answered','answered_elsewhere')` : `status IN ('waiting','sent_failed')`;
+    const { results } = await env.DB.prepare(`SELECT q.*, p.note pnote, (p.descr IS NOT NULL AND p.descr<>'') has_info FROM qna q LEFT JOIN product_info p ON p.main_id=q.main_id WHERE ${st} ORDER BY ${body.status === 'answered' ? 'COALESCE(q.answered_at,q.updated_at) DESC LIMIT 100' : 'q.created_at ASC LIMIT 200'}`).all();
+    return json({ ai: !!env.ANTHROPIC_API_KEY, general: (await getSetting(env, 'qa_general')) || '', items: results });
+  }
+  if (path === '/api/qna/draft') { try { return json(await draftQna(env, body.id, body.hint)); } catch (e) { return bad(e.message || String(e)); } }
+  if (path === '/api/qna/answer') {
+    const text = String(body.text || '').trim(), id = String(body.id || '');
+    if (text.length < 10) return bad('Cevap en az 10 karakter olmalı.'); if (text.length > 2000) return bad('Cevap en fazla 2000 karakter olabilir.');
+    if (/(https?:\/\/|www\.|@[a-z0-9-]+\.|\b0?5\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b)/i.test(text)) return bad('Cevapta web adresi, e-posta ya da telefon numarası olmamalı (Trendyol kuralı).');
+    const r = await fetch(`${TY_BASE}qna/sellers/${env.TRENDYOL_SELLER_ID}/questions/${encodeURIComponent(id)}/answers`, { method: 'POST', headers: { ...tyHeaders(env), 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    if (!r.ok) { const t = (await r.text()).slice(0, 300); return bad(`Trendyol cevabı kabul etmedi (${r.status}): ${t}`); }
+    await env.DB.prepare(`UPDATE qna SET status='answered', answer=?2, answered_at=?3, updated_at=?3 WHERE id=?1`).bind(id, text, iso()).run();
+    await qnaCount(env);
+    return json({ ok: true });
+  }
+  if (path === '/api/qna/note') {
+    const mid = String(body.mainId || ''); if (!mid) return bad('Ürün bulunamadı.');
+    await env.DB.prepare(`INSERT INTO product_info(main_id, title, note, updated_at) VALUES(?1,?2,?3,?4) ON CONFLICT(main_id) DO UPDATE SET note=excluded.note`).bind(mid, String(body.title || ''), String(body.note || '').slice(0, 3000), iso()).run();
+    return json({ ok: true });
+  }
+  if (path === '/api/qna/general') { await setSetting(env, 'qa_general', String(body.text || '').slice(0, 4000)); return json({ ok: true }); }
+  if (path === '/api/qna/sync') { try { const r = await syncTrendyolQna(env); return json(r); } catch (e) { return bad(e.message || String(e)); } }
   if (path === '/api/home') return json(await homeData(env, ctx, !!body.force));
   if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
@@ -1688,7 +1798,8 @@ export default {
       }
       if (path === '/__stats' && req.method === 'POST') {
         if (req.headers.get('x-run') !== await hmac(env.APP_PASSWORD, 'stats-run')) return bad('Yetkisiz', 403);
-        try { const r = await refreshStats(env, Date.now() + 25000); await setSetting(env, 'stats_run', iso() + ' · ' + (r.busy ? 'meşgul' : r.n + ' gün')); return json(r); }
+        let qd = null; try { qd = await draftPendingQna(env, 4); } catch (e) {}
+        try { const r = await refreshStats(env, Date.now() + 25000); await setSetting(env, 'stats_run', iso() + ' · ' + (r.busy ? 'meşgul' : r.n + ' gün') + (qd && qd.n ? ` · ${qd.n} soru taslağı` : '')); return json(r); }
         catch (e) { await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e), 500); }
       }
       if (path === '/perf') {
