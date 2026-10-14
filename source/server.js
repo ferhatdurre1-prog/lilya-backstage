@@ -930,7 +930,7 @@ function failPct(carrier) { const c = String(carrier || '').toLocaleLowerCase('t
 const UNDELIVERED_RE = /teslim\s*edile?me|ula[sş][ıi]lam|bulunamad|undeliver/;
 const FIN_TYPES = 'Sale,Return,Discount,DiscountCancel,Coupon,CouponCancel,ManualRefund,ManualRefundCancel';
 async function syncTrendyolFinance(env, force, deadline) {
-  const s = await getSettings(env, ['fin_at', 'cargo_inv_done', 'desi_learned']);
+  const s = await getSettings(env, ['fin_at', 'cargo_inv_done', 'desi_learned', 'inv_detail_tried']);
   if (!force && s.fin_at && Date.now() - Date.parse(s.fin_at) < 6 * 3600000) return null;
   const sid = env.TRENDYOL_SELLER_ID, end = Date.now(), start = end - 15 * 86400000 + 60000;
   const agg = new Map(); const get = (no) => { let a = agg.get(no); if (!a) { a = { revenue: 0, commission: 0, net: 0, cargo: null, retCargo: null, service: null, sale: false }; agg.set(no, a); } return a; };
@@ -999,6 +999,30 @@ async function syncTrendyolFinance(env, force, deadline) {
     done.add(invId); ws.push(setStmt(env, 'cargo_inv_done', JSON.stringify([...done].slice(-300))));
     await env.DB.batch(ws);
   };
+  // Hizmet bedeli / ceza faturalarının sipariş satırları: kargo faturasıyla aynı uç nokta deneniyor (Trendyol belgelemiyor).
+  // Satır gelirse sipariş bazında gerçek tutar yazılır; gelmezse fatura toplu kesinti olarak kalır. Her fatura bir kez denenir.
+  const detTried = new Set(JSON.parse(s.inv_detail_tried || '[]')); const svcDet = new Map(); const detDel = [];
+  stat.detail = { tried: 0, ok: 0, lines: 0 };
+  const tryInvoiceDetail = async (x, t) => {
+    const id = String(x.id); detTried.add(id); stat.detail.tried++;
+    const lines = [];
+    try {
+      for (let p2 = 0; p2 < 10; p2++) {
+        const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(id)}/items`, { page: p2, size: 500 });
+        for (const c of (it.content || [])) if (c.orderNumber && Number(c.amount)) lines.push({ no: String(c.orderNumber), amt: Math.abs(Number(c.amount)) });
+        if (p2 + 1 >= (it.totalPages || 0)) break;
+      }
+    } catch (e) { stat.detail.err = String(e.message || e).slice(0, 90); return false; }
+    if (!lines.length) return false;
+    stat.detail.ok++; stat.detail.lines += lines.length;
+    if (/platform hizmet|hizmet bedeli/i.test(t)) { for (const l of lines) svcDet.set(l.no, (svcDet.get(l.no) || 0) + l.amt); }
+    else {
+      const by = new Map(); for (const l of lines) by.set(l.no, (by.get(l.no) || 0) + l.amt);
+      for (const [no, amt] of by) misc.push({ id: (id + '|' + no).slice(0, 120), no, date: x.transactionDate ? iso(Number(x.transactionDate)) : iso(), type: String(x.transactionType || 'Kesinti').slice(0, 80), amt: Math.round(amt * 100) / 100, descr: String(x.description || '').slice(0, 160) });
+      detDel.push(id); // aynı faturanın toplu kaydı silinir (çift sayılmasın)
+    }
+    return true;
+  };
   try {
     outer: for (let page = 0; page < 5; page++) {
       const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', startDate: start, endDate: end, page, size: 500, supplierId: sid });
@@ -1021,6 +1045,8 @@ async function syncTrendyolFinance(env, force, deadline) {
             if (p2 + 1 >= (it.totalPages || 0)) break;
           }
           await flushCargo(String(x.id)); cargoInv++;
+        } else if ((/platform hizmet|hizmet bedeli/i.test(t) || /kusurlu|yanl[ıi]ş|eksik|tedarik|ceza/i.test(t)) && x.id && !detTried.has(String(x.id)) && !(deadline && Date.now() > deadline - 5000) && await tryInvoiceDetail(x, t)) {
+          /* fatura satırları siparişlere dağıtıldı */
         } else if (/platform hizmet|hizmet bedeli/i.test(t)) { /* yukarıda ayrı okunur */ }
         else if (!/kargo|platform|hizmet bedeli|komisyon/i.test(t)) {
           const amt = Math.round(((Math.abs(Number(x.debt) || 0)) - (Math.abs(Number(x.credit) || 0))) * 100) / 100;
@@ -1032,6 +1058,9 @@ async function syncTrendyolFinance(env, force, deadline) {
       if (page + 1 >= (r.totalPages || 0)) break;
     }
   } catch (e) { stat.errors.push('Kargo faturaları: ' + String(e.message || e).slice(0, 150)); await setSetting(env, 'fin_err', iso() + ' · Kargo faturaları okunamadı: ' + String(e.message || e).slice(0, 200)); }
+  for (const [no, v] of svcDet) { const a = get(no); a.service = Math.round(((a.service || 0) + v) * 100) / 100; }
+  if (detDel.length) await env.DB.batch(detDel.map(id => env.DB.prepare('DELETE FROM fin_misc WHERE id=?1').bind(id)));
+  await setSetting(env, 'inv_detail_tried', JSON.stringify([...detTried].slice(-400)));
   // Teşhis: faturadaki sipariş numaraları bizim siparişlerle eşleşiyor mu, eşleşenler hangi tarihlerde
   if (stat.cargoNos && stat.cargoNos.length) {
     const nos = [...new Set(stat.cargoNos)];
