@@ -1003,6 +1003,7 @@ async function syncTrendyolFinance(env, force, deadline) {
       await prefetch(r.content || []);
       for (const x of (r.content || [])) {
         const t = String(x.transactionType || '') + ' ' + String(x.description || '');
+        { const k = String(x.transactionType || '?').slice(0, 30); stat.ded = stat.ded || {}; stat.ded[k] = (stat.ded[k] || 0) + 1; }
         if (/kargo/i.test(t) && x.id && !done.has(String(x.id))) {
           if (deadline && Date.now() > deadline) { partial = true; break outer; }
           for (let p2 = 0; p2 < 20; p2++) {
@@ -1449,7 +1450,7 @@ async function computeProfit(env, from, to) {
     if (ch === 'trendyol') for (const g of pkgs.values()) { const f = g.fast && ordHour < fee.serviceCutoff; service += f ? fee.serviceFast : fee.serviceTy; if (f) fastPk++; }
     if (fastPk) sum.fastPkgs = (sum.fastPkgs || 0) + fastPk;
     const est = rows.reduce((a, x) => a + x.revenue, 0);
-    let revenue = est, commission = rows.reduce((a, x) => a + x.commission, 0); let actual = false;
+    let revenue = est, commission = rows.reduce((a, x) => a + x.commission, 0); let actual = false, svcActual = false;
     const retUnits = rows.reduce((a, x) => a + x.retQ, 0);
     const fa = ch === 'trendyol' ? fin.get(ord.order_no) : null;
     const undelivered = retUnits > 0 && [...pkgs.values()].some(g => g.ret && g.und);
@@ -1459,7 +1460,7 @@ async function computeProfit(env, from, to) {
       if (fa.revenue !== null && !retUnits) { revenue = fa.revenue; commission = fa.commission || 0; actual = true; }
       if (fa.cargo !== null) { cargo = fa.cargo; actual = true; }
       if (fa.ret_cargo !== null && fa.ret_cargo !== undefined && retUnits) { retCargo = fa.ret_cargo; retCargoEst = false; }
-      if (fa.service !== null) service = fa.service;
+      if (fa.service !== null) { service = fa.service; svcActual = true; }
     }
     if (!retUnits) retCargo = 0;
     penalty += unsPenalty;
@@ -1474,7 +1475,7 @@ async function computeProfit(env, from, to) {
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
-    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, retCargoEst, undelivered, penaltyEst, penaltyTypes: mo ? mo.types.slice(0, 4) : null, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, retCargoEst, undelivered, penaltyEst, penaltyTypes: mo ? mo.types.slice(0, 4) : null, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
     // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
