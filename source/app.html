@@ -125,7 +125,7 @@ body[data-tab="home"] main{margin-top:-40px;position:relative}
 .bnav{display:none}
 @media (max-width:720px){
   .tabs{display:none}
-  .bnav{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
+  .bnav{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
   .bnav button{border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11.5px;font-weight:600;color:var(--ink-3);padding:7px 0;cursor:pointer;position:relative;border-radius:16px}
   .bnav button svg{width:22px;height:22px}
   .bnav button[aria-current="page"]{color:var(--accent);background:var(--accent-soft)}
@@ -187,6 +187,8 @@ label.f{display:grid;gap:5px;font-size:13px;color:var(--ink-2);font-weight:500;m
 .item{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:11px 14px;border:0;border-top:1px solid var(--line);background:none;text-align:left;cursor:pointer;width:100%}
 .item:first-child{border-top:0}
 .rlist{display:grid;gap:12px}
+.hlist{border:0!important;box-shadow:none!important;background:none!important;border-radius:0!important;margin:0 -8px}
+.hlist .item{padding-left:8px;padding-right:8px}
 .oprof{font-size:16px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .rbulk{display:flex;gap:10px;align-items:center;flex-wrap:wrap;position:sticky;top:8px;z-index:3;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin-bottom:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
 .rbulk .btn.primary{margin-left:auto}
@@ -353,7 +355,7 @@ const ICONS = {
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
 const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
-const NAV_MAIN = ['stock','profit']; // alt çubukta görünenler; diğerleri sol menüde
+const NAV_MAIN = ['stock','orders','profit']; // alt çubukta görünenler; diğerleri sol menüde
 const TAB_SHORT = {questions:'Soru', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
 
 /* ============ Durum ============ */
@@ -847,7 +849,7 @@ function viewHome(){
       ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : (Y.prof ? `Dün ${tlS(Y.prof)}` : ''), profitCls(T.prof), 'today-products')}
       ${kpi('Bugün sipariş', 'orders', 'var(--orange)', 'var(--warn-soft)', fmtN(T.n), `${fmtN(T.u)} adet${YS ? ` · dün bu saatte ${fmtN(YS.n)}${vs(T.n, YS.n)}` : ''}`, 'color:var(--orange)', 'today-orders')}
       ${kpi('Bu ay net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit) || 'color:var(--violet)', 'month-products')}
-    </div>` + homeChart(D);
+    </div>` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
@@ -870,6 +872,20 @@ function viewHome(){
     ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true)}
   </div></div>`;
   return h;
+}
+// Ana ekran: son gelen siparişler (kârıyla), dokununca sipariş açılır
+function homeRecent(){
+  const N = 6;
+  if (!S.homeOrd || S.homeOrd.rev !== S.rev) {
+    if (S.homeOrdLoading !== S.rev) { const rev = S.rev; S.homeOrdLoading = rev;
+      api('/api/orders/page', {page:1, filter:'all'}).then(r => { S.homeOrd = {rev, orders: r.orders.slice(0, N)}; S.homeOrdLoading = null; if (S.tab === 'home') render(); }).catch(() => { S.homeOrdLoading = null; }); }
+  }
+  const os = (S.homeOrd && S.homeOrd.orders) || S.orders.slice(0, N);
+  if (!os.length) return '';
+  S.extraOrders = S.extraOrders || {}; for (const o of os) if (!findOrder(o.id)) S.extraOrders[o.id] = o;
+  return `<div class="card"><div class="spread"><h3 style="margin:0">Son siparişler</h3><button class="pill" data-act="tab" data-id="orders" style="background:var(--warn-soft);color:var(--orange);border:0;cursor:pointer">Tümü ›</button></div>
+    <div class="list hlist">${os.map(o => { const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0), st = OST[orderStatus(o)];
+      return `<button class="item" data-act="order" data-id="${esc(o.id)}">${orderThumb((o.lines||[]).map(l => l.pkey), (o.lines||[]).map(l => l.name))}<div class="main"><div class="ttl"><span class="mono">#${esc(o.orderNo)}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(units)} adet</span></div></div><div class="end">${o.prof ? `<b class="oprof" style="${profitCls(o.prof.p)}">${tlS(o.prof.p)}</b>` : ''}${orderStatus(o) !== 'active' ? `<span class="pill ${st[1]}">${st[0]}</span>` : ''}</div></button>`; }).join('')}</div></div>`;
 }
 function homeChart(D){
   const days = D.map(x => ({...x, d: new Date(x.d + 'T12:00:00')}));
