@@ -443,15 +443,21 @@ function tyWindow(hwm, maxBackDays, now) {
 }
 async function syncTrendyolOrders(env) {
   const now = Date.now();
-  const s = await getSettings(env, ['ty_orders_hwm', 'ty_shift']);
-  const hwm = Number(s.ty_orders_hwm) || 0;
+  const s = await getSettings(env, ['ty_orders_hwm', 'ty_shift', 'ty_orders_exact']);
+  const hwm = Number(s.ty_orders_hwm) || 0, exact = Number(s.ty_orders_exact) || 0;
   let { start, end } = tyWindow(hwm, 13, now);
+  if (exact) start = Math.max(start, exact - TY_TZ - 1000); // yarım kalan işte kaldığı yerden devam
   let pkgs;
   try { pkgs = await fetchOrderPackages(env, start, end); }
   catch (e) { if (e.status === 400) { end = now; pkgs = await fetchOrderPackages(env, start, end); } else throw e; }
   const latest = new Map();
   for (const p of pkgs) { const k = String(p.shipmentPackageId || p.id); const o = latest.get(k); if (!o || (p.lastModifiedDate || 0) >= (o.lastModifiedDate || 0)) latest.set(k, p); }
-  const list = [...latest.values()];
+  // Bir çalışmada en fazla ORD_CHUNK paket işlenir (veritabanı sorgu sınırı); kalan sonraki turda kaldığı yerden
+  const ORD_CHUNK = 100;
+  let all = [...latest.values()].sort((a, b) => (a.lastModifiedDate || 0) - (b.lastModifiedDate || 0));
+  if (exact) all = all.filter(p => (p.lastModifiedDate || 0) >= exact);
+  const truncated = all.length > ORD_CHUNK;
+  const list = truncated ? all.slice(0, ORD_CHUNK) : all;
   let maxMod = hwm;
   for (const p of list) if (p.lastModifiedDate && p.lastModifiedDate > maxMod) maxMod = p.lastModifiedDate;
   let shift = s.ty_shift !== null && s.ty_shift !== undefined ? Number(s.ty_shift) : null;
@@ -461,8 +467,9 @@ async function syncTrendyolOrders(env) {
   const desiSt = [];
   for (const p of list) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const ls = p.lines || []; if (d > 0 && ls.length === 1 && ls[0].stockCode) desiSt.push(env.DB.prepare('UPDATE products SET desi=?1 WHERE key=?2 AND desi IS NOT ?1').bind(Math.round(d / Math.max(1, Number(ls[0].quantity) || 1) * 100) / 100, skuKey(ls[0].stockCode))); }
   for (let i = 0; i < desiSt.length; i += 90) await env.DB.batch(desiSt.slice(i, i + 90));
-  await setSetting(env, 'ty_orders_hwm', String(list.length ? maxMod : (hwm || Math.min(end, now))));
-  return { packages: list.length, stats };
+  if (truncated) await env.DB.batch([setStmt(env, 'ty_orders_exact', String(list[list.length - 1].lastModifiedDate || 0)), setStmt(env, 'ty_orders_hwm', String(Math.max(hwm, Math.min(maxMod, list[list.length - 1].lastModifiedDate || maxMod))))]);
+  else await env.DB.batch([setStmt(env, 'ty_orders_exact', ''), setStmt(env, 'ty_orders_hwm', String(list.length ? maxMod : (hwm || Math.min(end, now))))]);
+  return { packages: list.length, remaining: truncated ? all.length - list.length : 0, stats };
 }
 async function backfillTrendyolOrders(env) {
   const v = await getSetting(env, 'fin_backfill_day');
@@ -899,7 +906,22 @@ async function tryLock(env, ms) {
 }
 async function unlock(env) { await env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`).run(); }
 function tyConfigured(env) { return !!(env.TRENDYOL_SELLER_ID && env.TRENDYOL_API_KEY && env.TRENDYOL_API_SECRET); }
-async function pollOnce(env, full, budget) {
+async function heavySteps(env, budget, result, step, left, t) {
+  {
+    // Ağır işler seyrek çalışır; veritabanını sürekli meşgul edip ekranları yavaşlatmasın
+    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at']); const now = Date.now();
+    const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms;
+    if (left() > 30000) await step('claims', () => syncTrendyolClaims(env));
+    if (left() > 30000 && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
+    if (left() > 30000) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
+    if (left() > 30000 && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env)); }
+    if (left() > 35000 && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
+    if (left() > 25000 && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
+  }
+  result.ms = Date.now() - t;
+  return result;
+}
+async function pollOnce(env, full, budget, mode) {
   const t = Date.now(); const result = { steps: {} };
   const left = () => (budget || Infinity) - Date.now();
   // Her adım ayrı ölçülür ve ayrı hata yakalar: biri takılırsa sipariş eşitlemesi durmaz
@@ -909,6 +931,7 @@ async function pollOnce(env, full, budget) {
     catch (e) { result.steps[name + 'Err'] = String(e.message || e).slice(0, 200); if (errKey) await setSetting(env, errKey, iso() + ' · ' + String(e.message || e).slice(0, 250)); }
     result.steps[name] = Date.now() - s0;
   };
+  if (mode === 'heavy') return heavySteps(env, budget, result, step, left, t);
   try {
     // İlk kurulumda önce ürün listesi tamamen aktarılır; aksi halde siparişler stoğu olmayan ürünlerden düşer.
     if (!(await getSetting(env, 'ty_prod_done'))) {
@@ -932,17 +955,7 @@ async function pollOnce(env, full, budget) {
     return processReconQueue(env, add);
   });
   await step('push', () => pushTrendyolStock(env), 'ty_push_err');
-  if (full) {
-    // Ağır işler seyrek çalışır; veritabanını sürekli meşgul edip ekranları yavaşlatmasın
-    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at']); const now = Date.now();
-    const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms;
-    if (left() > 30000) await step('claims', () => syncTrendyolClaims(env));
-    if (left() > 30000 && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
-    if (left() > 30000) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
-    if (left() > 30000 && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env)); }
-    if (left() > 35000 && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
-    if (left() > 25000 && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
-  }
+  if (full && mode !== 'light') await heavySteps(env, budget, result, step, left, t);
   result.ms = Date.now() - t;
   return result;
 }
@@ -963,15 +976,21 @@ async function cronRun(env) {
   await setSetting(env, 'cron_at', String(t0));
   const diag = { at: iso(t0), polls: 0, slow: {}, errs: {} };
   try {
+    // Her eşitleme ve ağır işler ayrı çalışmada (kendi sorgu sınırı); hiçbiri diğerini durduramaz
+    const run = async (mode, budget) => {
+      if (env.SELF) { const r = await env.SELF.fetch('https://self/__run', { method: 'POST', headers: { 'x-run': await hmac(env.APP_PASSWORD, 'stats-run'), 'content-type': 'application/json' }, body: JSON.stringify({ mode, budget }) }); const j = await r.json().catch(() => ({ error: 'run ' + r.status })); if (!r.ok && !j.error) j.error = 'run ' + r.status; return j; }
+      return pollOnce(env, mode === 'heavy', budget, mode);
+    };
+    const absorb = (r) => { for (const [k, v] of Object.entries((r && r.steps) || {})) { if (typeof v === 'number') { if (!(diag.slow[k] >= v)) diag.slow[k] = v; } else diag.errs[k] = v; } if (r && r.error) diag.errs.orders = r.error; };
+    const heavy = run('heavy', t0 + 50000).then(absorb).catch(e => { diag.errs.heavy = String(e.message || e).slice(0, 150); });
     for (let i = 0; i < 6; i++) {
       const wait = t0 + i * 10000 - Date.now();
       if (wait > 0) await sleep(wait);
       if (Date.now() - t0 > 52000) break;
-      const r = await pollOnce(env, i === 0, t0 + 55000);
+      try { absorb(await run('light', Date.now() + 9000)); } catch (e) { diag.errs.orders = String(e.message || e).slice(0, 150); }
       diag.polls++;
-      for (const [k, v] of Object.entries(r.steps || {})) { if (typeof v === 'number') { if (!(diag.slow[k] >= v)) diag.slow[k] = v; } else diag.errs[k] = v; }
-      if (r.error) diag.errs.orders = r.error;
     }
+    await heavy;
   } finally {
     diag.ms = Date.now() - t0;
     try { await env.DB.batch([setStmt(env, 'ty_diag', JSON.stringify(diag)), env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`)]); } catch (e) { await unlock(env); }
@@ -1752,9 +1771,9 @@ export default {
     try {
       if (!env.APP_PASSWORD) return new Response('Kurulum eksik: APP_PASSWORD gizli değişkeni tanımlanmalı.', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       // Sayfa ve simgeler veritabanını beklemeden hemen gönderilir
-      if (!path.startsWith('/api/') && path !== '/perf' && path !== '/__stats' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png' && path !== '/icon-192.png' && path !== '/icon-512.png')
+      if (!path.startsWith('/api/') && path !== '/perf' && path !== '/__stats' && path !== '/__run' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png' && path !== '/icon-192.png' && path !== '/icon-512.png')
         return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
-      if (path.startsWith('/api/') && path !== '/api/logout' || path === '/perf' || path === '/__stats') await init(env);
+      if (path.startsWith('/api/') && path !== '/api/logout' || path === '/perf' || path === '/__stats' || path === '/__run') await init(env);
       if (path === '/manifest.webmanifest') return new Response(JSON.stringify({ name: 'Lilya Backstage', short_name: 'Backstage', start_url: '/', display: 'standalone', background_color: '#f5f6f8', theme_color: '#0a0b10', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] }), { headers: { 'content-type': 'application/manifest+json' } });
       if (path === '/icon.svg' || path === '/apple-touch-icon.png') return new Response(ICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
       // Giriş ekranı bilgisi: kullanıcı adı belirlenmiş mi, Face ID kurulu mu
@@ -1796,6 +1815,12 @@ export default {
           return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
         } catch (e) { await sleep(600); return bad('Face ID girişi olmadı: ' + (e.message || e), 401); }
       }
+      if (path === '/__run' && req.method === 'POST') {
+        if (req.headers.get('x-run') !== await hmac(env.APP_PASSWORD, 'stats-run')) return bad('Yetkisiz', 403);
+        const b = await req.json().catch(() => ({}));
+        try { return json(await pollOnce(env, b.mode === 'heavy', Number(b.budget) || Date.now() + 9000, b.mode === 'heavy' ? 'heavy' : 'light')); }
+        catch (e) { return json({ error: String(e.message || e).slice(0, 200), steps: {} }); }
+      }
       if (path === '/__stats' && req.method === 'POST') {
         if (req.headers.get('x-run') !== await hmac(env.APP_PASSWORD, 'stats-run')) return bad('Yetkisiz', 403);
         let qd = null; try { qd = await draftPendingQna(env, 4); } catch (e) {}
@@ -1829,7 +1854,7 @@ export default {
     if (new Date().getUTCMinutes() % 2 === 0) ctx.waitUntil((async () => {
       try {
         const sig = await hmac(env.APP_PASSWORD, 'stats-run');
-        if (env.SELF) { const r = await env.SELF.fetch('https://self/__stats', { method: 'POST', headers: { 'x-run': sig } }); if (!r.ok) throw new Error('self ' + r.status); }
+        if (env.SELF) { const r = await env.SELF.fetch('https://self/__stats', { method: 'POST', headers: { 'x-run': sig } }); if (!r.ok) throw new Error('self ' + r.status + ' ' + (await r.text()).slice(0, 150)); }
         else { await init(env); await refreshStats(env, Date.now() + 20000); }
       } catch (e) { try { await init(env); await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } catch (x) {} }
     })());
