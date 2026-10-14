@@ -286,8 +286,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .toast.bad{background:var(--bad);color:#fff}
 .skel{height:64px;border-top:1px solid var(--line);background:linear-gradient(90deg,var(--surface) 0%,var(--surface-2) 50%,var(--surface) 100%);background-size:200% 100%;animation:sk 1.4s infinite}
 @keyframes sk{to{background-position:-200% 0}}
-body[data-tab="home"] .hero>.wrap{padding-top:10px}
-.ticker{overflow:hidden;margin:0;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:12px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent)}
+.ticker{overflow:hidden;margin:-4px 0 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:12px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent)}
 .ticker .rail{display:flex;width:max-content;animation:tick var(--dur,40s) linear infinite}
 .ticker:active .rail{animation-play-state:paused}
 .ticker .ti{display:flex;align-items:baseline;gap:6px;padding:8px 14px;white-space:nowrap;font-size:13px;border-right:1px solid rgba(255,255,255,.12)}
@@ -309,7 +308,6 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 </style>
 
 <div class="hero"><div class="wrap">
-  <div class="ticker" id="ticker" hidden aria-label="Piyasalar"></div>
   <header class="top">
     <button class="burger" id="burger" data-act="menu" aria-label="Menü" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
     <button class="brandbtn" data-act="tab" data-id="home" aria-label="Ana ekran"><div class="mark" aria-hidden="true">L</div>
@@ -319,6 +317,7 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
       <button class="btn" data-act="open-import" aria-label="Bağlantılar ve yedek"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7l1.7-1.7"/></svg><span class="hide-sm">Bağlantılar</span></button>
     </div>
   </header>
+  <div class="ticker" id="ticker" hidden aria-label="Piyasalar"></div>
 </div></div>
 <div class="wrap">
   <nav class="tabs" id="tabs" aria-label="Bölümler"></nav>
