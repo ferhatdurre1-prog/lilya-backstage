@@ -1388,7 +1388,7 @@ function drawLabelPages(p, W, H, sid){
   const colQty = mm(11), colAmt = mm(19), nameW = cw - colQty - colAmt - mm(2);
   font(scratch, 2.8, false);
   const rows = p.lines.map(l => { const nm = [l.name, l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ') + (l.sku ? ` (${l.sku})` : '');
-    const lines = wrapText(scratch, nm, nameW); const sub = l.qty > 1 && l.unit ? 1 : 0; return {l, lines, h: Math.max(lines.length, 1 + sub) * mm(3.5) + mm(2)}; });
+    const lines = wrapText(scratch, nm, nameW); return {l, lines, h: Math.max(lines.length, 1) * mm(3.5) + mm(2)}; });
   const footH = mm(10);
   const pages = []; // her sayfa: satır dizisi
   const newCanvas = () => { const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; return {cv, c}; };
@@ -1403,7 +1403,9 @@ function drawLabelPages(p, W, H, sid){
   const bx = PW * 0.44, bw = PW - m - bx, by = m + mm(5.5), bh = mm(19);
   if (p.tracking && window.JsBarcode) { const bc = document.createElement('canvas'); try { JsBarcode(bc, p.tracking, {format:'CODE128', displayValue:false, margin:0, height:100, width:4}); c.imageSmoothingEnabled = false; c.drawImage(bc, bx, by, bw, bh); } catch(e) {} }
   else { c.lineWidth = mm(0.3); c.setLineDash([mm(1.2), mm(1)]); c.strokeRect(bx, by, bw, bh); c.setLineDash([]); font(c, 3.2, true); const t = 'Takip numarası bekleniyor'; c.fillText(t, bx + (bw - c.measureText(t).width) / 2, by + bh / 2 - mm(1.6)); }
-  yR = by + bh + mm(1.6); font(c, 3, false); c.fillText('Sipariş No: ' + orderLabel, bx, yR); yR += mm(5.2);
+  yR = by + bh + mm(1.6); font(c, 3, false); c.fillText('Sipariş No: ' + orderLabel, bx, yR); yR += mm(4.2);
+  if (p.tracking) { font(c, 3, true); for (const l of wrapText(c, 'Kargo Kampanya Kodu: ' + p.tracking, bw)) { c.fillText(l, bx, yR); yR += mm(4); } }
+  yR += mm(1);
   const lw = bx - m - mm(3); yL = m + logo + mm(0.5);
   font(c, 4.6, true); for (const l of wrapText(c, (p.to.name || '').toLocaleUpperCase('tr-TR'), lw)) { c.fillText(l, m, yL); yL += mm(5.3); }
   let y0 = Math.max(yL, yR) + mm(1); rule(c, y0, 0.4); y0 = tableHead(c, y0 + mm(1.8));
@@ -1418,17 +1420,16 @@ function drawLabelPages(p, W, H, sid){
     const cc = cur.canvas.c; let y = cur.y;
     font(cc, 2.8, false); r.lines.forEach((t, k) => cc.fillText(t, m, y + k * mm(3.5)));
     font(cc, 3.4, true); const q = String(r.l.qty); cc.fillText(q, PW - m - colAmt - colQty / 2 - cc.measureText(q).width / 2, y);
-    font(cc, 3, true); const a = tl2(r.l.amount); cc.fillText(a, PW - m - cc.measureText(a).width, y);
-    if (r.l.qty > 1 && r.l.unit) { font(cc, 2.5, false); const u2 = 'birim ' + tl2(r.l.unit); cc.fillText(u2, PW - m - cc.measureText(u2).width, y + mm(3.5)); }
+    font(cc, 3, true); const a = tl2(r.l.unit ? r.l.unit * r.l.qty : r.l.amount); cc.fillText(a, PW - m - cc.measureText(a).width, y);
     y += r.h; cc.lineWidth = mm(0.12); cc.setLineDash([mm(0.6), mm(0.6)]); cc.beginPath(); cc.moveTo(m, y - mm(1)); cc.lineTo(PW - m, y - mm(1)); cc.stroke(); cc.setLineDash([]);
     cur.y = y; cur.rows.push(r);
   }
   // alt bilgi: sayfa belirteci ve son sayfada toplam tutar
-  const total = p.total || p.lines.reduce((t, l) => t + (Number(l.amount) || 0), 0);
+  const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
   pages.forEach((pg, i) => { const cc = pg.canvas.c, fy = PH - m - footH + mm(2);
     rule(cc, fy, 0.4);
     if (pages.length > 1) { font(cc, 2.8, true); cc.fillText(i === 0 ? `Sayfa 1/${pages.length} · devamı ek sayfada` : `Ek sayfa ${i + 1}/${pages.length}`, m, fy + mm(2.8)); }
-    if (i === pages.length - 1) { font(cc, 3, false); const t = (Number(total) || 0).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2}); cc.fillText(t, PW - m - cc.measureText(t).width, PH - m - mm(3.2)); }
+    if (i === pages.length - 1) { font(cc, 3.6, true); const t = 'TOPLAM TUTAR: ' + tl2(total); cc.fillText(t, PW - m - cc.measureText(t).width, PH - m - mm(3.8)); }
   });
   return pages.map(pg => pg.canvas.cv);
 }
