@@ -701,6 +701,11 @@ async function syncTrendyolClaims(env) {
   for (const c of claims) if (c.lastModifiedDate && c.lastModifiedDate > maxMod) maxMod = c.lastModifiedDate;
   const res = await applyClaimItems(env, claimItems(claims), s);
   await setSetting(env, 'ty_claims_hwm', String(claims.length ? maxMod : (hwm || Math.min(end, now))));
+  return { claims: claims.length, added: res.added, accepted: res.accepted };
+}
+async function reconcileTrendyolClaims(env) {
+  const sid = env.TRENDYOL_SELLER_ID, now = Date.now();
+  const s = await getSettings(env, ['auto_accept', 'started_at']);
   // Açık iadeler Trendyol'la tek tek karşılaştırılır: değişikliği kaçırılmış (iptal, onay, kargoya verildi vb.) talepler burada düzelir.
   // Her açık iade en geç 30 dakikada bir kontrol edilir; turda en fazla 10 talep.
   let filled = 0, checked = 0;
@@ -729,7 +734,7 @@ async function syncTrendyolClaims(env) {
       checked++;
     }
   } catch (e) {}
-  return { claims: claims.length, added: res.added, accepted: res.accepted, filled, checked };
+  return { filled, checked };
 }
 /* Trendyol'da iade onayı / ret talebi (yalnızca "Aksiyon bekliyor" durumundakiler) */
 async function tySend(env, method, path, params, body) {
@@ -1052,9 +1057,8 @@ async function heavySteps(env, budget, result, step, left, t) {
     const lvl = (GUARD_CACHE && GUARD_CACHE.v && GUARD_CACHE.v.level) || 0, mult = lvl >= 2 ? 6 : lvl === 1 ? 3 : 1;
     const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms * mult;
     const ok = (need) => qLeft(env) > need;
-    if (left() > 30000 && ok(150)) await step('claims', () => syncTrendyolClaims(env));
+    if (left() > 30000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env));
     if (left() > 30000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
-    if (left() > 30000 && ok(150) && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
     if (left() > 30000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 30000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
     if (left() > 35000 && ok(350) && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
@@ -1097,6 +1101,11 @@ async function pollOnce(env, full, budget, mode) {
     return processReconQueue(env, add);
   });
   await step('push', () => pushTrendyolStock(env), 'ty_push_err');
+  // İadeler ve sorular da siparişlerle birlikte sık kontrol edilir (iadeler her turda, sorular 30 sn'de bir)
+  if (mode !== 'heavy' && qLeft(env) > 160) {
+    await step('claims', () => syncTrendyolClaims(env));
+    if ((env.__poll || 0) % 3 === 0) { await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr && !env.__poll) await setSetting(env, 'qna_err', ''); }
+  }
   if (full && mode !== 'light') await heavySteps(env, budget, result, step, left, t);
   result.ms = Date.now() - t;
   return result;
@@ -1177,17 +1186,22 @@ async function cronRun(env) {
     const absorb = (r) => { for (const [k, v] of Object.entries((r && r.steps) || {})) { if (typeof v === 'number') { if (!(diag.slow[k] >= v)) diag.slow[k] = v; } else diag.errs[k] = v; } if (r && r.error) diag.errs.orders = r.error; };
     const POLLS = guard.level >= 2 ? 1 : guard.level === 1 ? 3 : 6, GAP = 60000 / POLLS;
     diag.level = guard.level;
+    // Ağır işler (kesintiler, ürün listesi, iade kontrolü…) siparişlerle AYNI ANDA ayrı kolda çalışır; sipariş turlarını bekletmez
+    let heavyP = null;
+    if (guard.level < 2 || new Date().getUTCMinutes() % 15 === 0) {
+      const reserve = POLLS * 60;
+      const envh = { ...envc, __q: { get n() { return counter.n + reserve; } } };
+      heavyP = sleep(1500).then(() => pollOnce(envh, true, t0 + 50000, 'heavy')).then(absorb).catch(e => { diag.errs.heavy = String(e.message || e).slice(0, 150); });
+    }
     for (let i = 0; i < POLLS; i++) {
       const wait = t0 + i * GAP - Date.now();
       if (wait > 0) await sleep(wait);
       if (Date.now() - t0 > 52000) break;
       if (qLeft(envc) < 130) { diag.errs.budget = 'sorgu bütçesi doldu (' + counter.n + ')'; break; }
-      const q0 = counter.n;
-      try { absorb(await pollOnce(envc, false, Date.now() + 9000, 'light')); } catch (e) { diag.errs.orders = String(e.message || e).slice(0, 150); }
+      try { absorb(await pollOnce({ ...envc, __poll: i }, false, Date.now() + 9000, 'light')); } catch (e) { diag.errs.orders = String(e.message || e).slice(0, 150); }
       diag.polls++;
-      // Ağır işler ilk turdan sonra; kalan 5 sipariş turu için ilk turun kullandığı kadar (+pay) yer bırakılır
-      if (i === 0 && (guard.level < 2 || new Date().getUTCMinutes() % 15 === 0)) { const reserve = (POLLS - 1) * Math.min(170, Math.max(45, counter.n - q0 + 25)); try { envc.__q = { get n() { return counter.n + reserve; } }; absorb(await pollOnce(envc, true, t0 + 50000, 'heavy')); } catch (e) { diag.errs.heavy = String(e.message || e).slice(0, 150); } envc.__q = counter; }
     }
+    if (heavyP) await heavyP;
     // Raporlar: kalan bütçeyle birkaç gün
     // Raporlar 5 dakikada bir, az sayıda gün (eksik gün varken daha fazla); değişmeyen gün yazılmaz
     const sAt = Number(await envc.DB.prepare(`SELECT v FROM settings WHERE k='run_stats_at'`).first().then(r => r && r.v)) || 0;

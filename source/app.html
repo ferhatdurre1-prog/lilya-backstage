@@ -647,7 +647,7 @@ function renderDrawer(){
 /* ============ Müşteri soruları ============ */
 function qS(){ if (!S.qna) S.qna = {tab:'waiting', data:null, at:0, loading:false, drafts:{}, open:{}, busy:{}}; return S.qna; }
 async function loadQna(force){
-  const Q = qS(); if (Q.loading || (!force && Q.data && Q.data.tab === Q.tab && Date.now() - Q.at < 30000)) return;
+  const Q = qS(); if (Q.loading || (!force && Q.data && Q.data.tab === Q.tab && Date.now() - Q.at < 10000)) return;
   Q.loading = true; try { const d = await api('/api/qna/list', {status: Q.tab}); d.tab = Q.tab; Q.data = d; Q.at = Date.now(); Q.err = ''; } catch(e) { Q.err = errText(e); }
   Q.loading = false; if (S.tab === 'questions') render();
 }
@@ -1528,8 +1528,8 @@ async function loadProfit(force){
   const P = profS(); const [f, t] = periodRange(P.period, P.cf, P.ct);
   const ck = f.toISOString() + '|' + t.toISOString(), key = ck + '|' + S.rev;
   if (!force && (P.loading || P.key === key)) return;
-  // Aynı dönem açıkken senkron değişse bile en fazla dakikada bir yeniden hesaplanır
-  if (!force && P.key && P.key.startsWith(ck + '|') && Date.now() - (P.at || 0) < 60000) return;
+  // Yeni sipariş/değişiklik gelince (rev değişir) hemen yeniden hesaplanır; aynı dönem için en fazla 10 sn'de bir
+  if (!force && P.key && P.key.startsWith(ck + '|') && Date.now() - (P.at || 0) < 10000) return;
   P.cache = P.cache || {};
   if (P.cache[ck] && P.data !== P.cache[ck]) { P.data = P.cache[ck]; P.err = ''; if (S.tab === 'profit') setTimeout(render, 0); }
   P.loading = true; P.key = key; P.err = '';
@@ -1977,7 +1977,7 @@ function parseOldBackup(json){
 }
 /* ============ Aktarım sayfası ============ */
 const TYC = {Created:'Oluşturuldu', WaitingInAction:'Aksiyon bekliyor', Accepted:'Onaylandı', Rejected:'Reddedildi', Cancelled:'İptal edildi', Unresolved:'Çözümsüz', InAnalysis:'İncelemede', WaitingFraudCheck:'Kontrolde'};
-const STEP_NAMES = {orders:'Siparişler', recon:'Sipariş kontrolü', push:'Stok gönderimi', claims:'İadeler', retDesi:'İade desileri', products:'Ürün listesi', pushCheck:'Stok gönderim kontrolü', finance:'Kesintiler (kâr)', backfill:'Geçmiş tarama'};
+const STEP_NAMES = {orders:'Siparişler', recon:'Sipariş kontrolü', push:'Stok gönderimi', claims:'İadeler', claimsCheck:'İade kontrolü', retDesi:'İade desileri', products:'Ürün listesi', pushCheck:'Stok gönderim kontrolü', finance:'Kesintiler (kâr)', backfill:'Geçmiş tarama'};
 function diagHtml(t){
   const d = t.diag; if (!d) return '';
   const slow = Object.entries(d.slow || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, v]) => `${STEP_NAMES[k] || k} ${(v/1000).toFixed(1).replace('.', ',')} sn`).join(', ');
