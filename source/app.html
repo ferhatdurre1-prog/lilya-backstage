@@ -389,12 +389,14 @@ async function refresh(force){
       let last = null; try { last = JSON.parse(sessionStorage.getItem('lb_reload') || 'null'); } catch(e) {}
       if (!last || last.b !== d.build || Date.now() - last.t > 120000) { try { sessionStorage.setItem('lb_reload', JSON.stringify({b: d.build, t: Date.now()})); } catch(e) {} location.reload(); return; }
     }
+    const nwKey = o => JSON.stringify(((o || {}).trendyol || {}).newOrders || null), nwChanged = nwKey(S.sync) !== nwKey(d.sync);
     S.settings = d.settings || {}; S.sync = d.sync || S.sync; if (d.usage) S.usage = d.usage; S.skew = Date.parse(d.now) - Date.now();
     if (!d.same) {
       S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
       for (const k in S.loaded) S.loaded[k] = true;
       render();
-    } else renderSync();
+    } else if (nwChanged && S.tab === 'home') render(); // bekleyen sipariş sayısı veri sürümünden bağımsız değişebilir
+    else renderSync();
   } catch(e) {
     if (S.authed === false) return;
     S.conn = 'err'; renderSync();

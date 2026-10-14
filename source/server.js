@@ -471,7 +471,8 @@ async function syncTrendyolOrders(env) {
   let shift = s.ty_shift !== null && s.ty_shift !== undefined ? Number(s.ty_shift) : null;
   if (list.length && shift === null) { shift = maxMod > now + 30 * 60000 ? 3 * 3600000 : 0; await setSetting(env, 'ty_shift', shift); }
   let stats = null;
-  if (list.length) { stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' }); await recordAuditPkgs(env, list); try { await recordCustomers(env, list); } catch (e) {} }
+  // Paket durumları (bekleyen sipariş sayısı) siparişlerden ÖNCE yazılır; ekran yeni siparişi gördüğünde sayı da güncel olur
+  if (list.length) { await recordAuditPkgs(env, list); stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(list, shift || 0), { source: 'trendyol' }); try { await recordCustomers(env, list); } catch (e) {} }
   const desiSt = [];
   for (const p of list) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const ls = p.lines || []; if (d > 0 && ls.length === 1 && ls[0].stockCode) desiSt.push(env.DB.prepare('UPDATE products SET desi=?1 WHERE key=?2 AND desi IS NOT ?1').bind(Math.round(d / Math.max(1, Number(ls[0].quantity) || 1) * 100) / 100, skuKey(ls[0].stockCode))); }
   for (let i = 0; i < desiSt.length; i += 90) await env.DB.batch(desiSt.slice(i, i + 90));
