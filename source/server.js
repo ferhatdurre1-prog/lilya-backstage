@@ -90,7 +90,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_desi REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   // Kargo faturaları bir kez baştan okunur (önceki okumalar yarıda kalmış olabilir); tutarlar sıfırlanıp yeniden yazılır, çift sayılmaz
-  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_cargo_reread4'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_cargo_reread4','1')`), env.DB.prepare('UPDATE order_fin SET cargo=NULL, ret_cargo=NULL'), setStmt(env, 'cargo_inv_done', '[]'), setStmt(env, 'fin_at', '')]); } catch (e) {} }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_cargo_reread5'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_cargo_reread5','1')`), env.DB.prepare('UPDATE order_fin SET cargo=NULL, ret_cargo=NULL'), setStmt(env, 'cargo_inv_done', '[]'), setStmt(env, 'fin_at', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_passive1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_passive1','1')`), setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ordslice1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ordslice1','1')`), setStmt(env, 'ty_orders_exact', '')]); } catch (e) {} }
   for (const c of ['auto_at TEXT', 'desi REAL', 'chk_at TEXT', 'claim_id TEXT', 'item_id TEXT', 'customer TEXT', 'amount REAL', 'reason TEXT', 'cnote TEXT', 'cargo TEXT', 'cargo_link TEXT']) { try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -1032,12 +1032,14 @@ async function syncTrendyolFinance(env, force, deadline) {
         { const k = String(x.transactionType || '?').slice(0, 30); stat.ded = stat.ded || {}; stat.ded[k] = (stat.ded[k] || 0) + 1; }
         if (/kargo/i.test(t) && x.id && !done.has(String(x.id))) {
           if (deadline && Date.now() > deadline) { partial = true; break outer; }
+          const invS = { id: String(x.id).slice(0, 40), date: x.transactionDate ? iso(Number(x.transactionDate)).slice(0, 10) : null, debt: Math.round((Number(x.debt) || 0) * 100) / 100, items: 0, sum: 0, nos: [] };
+          (stat.invs = stat.invs || []).push(invS);
           for (let p2 = 0; p2 < 20; p2++) {
             const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(x.id)}/items`, { page: p2, size: 500 });
             for (const c of (it.content || [])) {
               const isRet = String(c.shipmentPackageType || '').toLocaleLowerCase('tr-TR').includes('iade');
               stat.cargoItems++; if (isRet) stat.retItems++;
-              if (c.orderNumber && (stat.cargoNos = stat.cargoNos || []).length < 2000) stat.cargoNos.push(String(c.orderNumber));
+              invS.items++; invS.sum += Number(c.amount) || 0; if (c.orderNumber) invS.nos.push(String(c.orderNumber));
               if (c.orderNumber) { const a = get(String(c.orderNumber)); if (isRet) { a.retCargo = (a.retCargo || 0) + (Number(c.amount) || 0); if (Number(c.desi) > 0) a.retDesi = Math.max(a.retDesi || 0, Number(c.desi)); } else a.cargo = (a.cargo || 0) + (Number(c.amount) || 0); }
               const d = Math.ceil(Number(c.desi) || 0), amt = Number(c.amount) || 0;
               if (d > 0 && amt > 0 && !isRet) { (learned[d] = learned[d] || []).push(amt); }
@@ -1061,15 +1063,16 @@ async function syncTrendyolFinance(env, force, deadline) {
   for (const [no, v] of svcDet) { const a = get(no); a.service = Math.round(((a.service || 0) + v) * 100) / 100; }
   if (detDel.length) await env.DB.batch(detDel.map(id => env.DB.prepare('DELETE FROM fin_misc WHERE id=?1').bind(id)));
   await setSetting(env, 'inv_detail_tried', JSON.stringify([...detTried].slice(-400)));
-  // Teşhis: faturadaki sipariş numaraları bizim siparişlerle eşleşiyor mu, eşleşenler hangi tarihlerde
-  if (stat.cargoNos && stat.cargoNos.length) {
-    const nos = [...new Set(stat.cargoNos)];
-    const m = await selectIn(env, 'SELECT order_no, date FROM orders', 'order_no', nos);
-    const ds = m.map(x => x.date).filter(Boolean).sort();
-    stat.cargoCheck = { at: iso(), inv: cargoInv, items: stat.cargoItems, ret: stat.retItems, nos: nos.length, matched: m.length, from: ds[0] || null, to: ds[ds.length - 1] || null, sample: nos.slice(0, 3) };
+  // Teşhis: her kargo faturası için satır sayısı, toplam, sipariş numarası aralığı ve bizim siparişlerle eşleşme
+  if (stat.invs && stat.invs.length) {
+    const all = [...new Set(stat.invs.flatMap(v => v.nos))];
+    const m = new Map((await selectIn(env, 'SELECT order_no, date FROM orders', 'order_no', all)).map(x => [x.order_no, x.date]));
+    const invs = stat.invs.map(v => { const ns = [...new Set(v.nos)].sort(); const md = ns.filter(n => m.has(n)).map(n => m.get(n)).sort();
+      return { id: v.id, date: v.date, debt: v.debt, items: v.items, sum: Math.round(v.sum * 100) / 100, nos: ns.length, matched: md.length, lo: ns[0] || null, hi: ns[ns.length - 1] || null, from: md[0] || null, to: md[md.length - 1] || null }; });
+    stat.cargoCheck = { at: iso(), inv: cargoInv, items: stat.cargoItems, ret: stat.retItems, nos: all.length, matched: invs.reduce((a, v) => a + v.matched, 0), invs };
     await setSetting(env, 'fin_cargo_check', JSON.stringify(stat.cargoCheck));
   }
-  delete stat.cargoNos;
+  delete stat.invs;
   stat.cargoInvoices = cargoInv; stat.cargoDone = done.size; stat.orders = agg.size; stat.misc = misc.length; stat.partial = partial;
   const now = iso(); const st = aggStmts(now);
   // Barem ücretlerine (46,49 / 84,49) eşit olmayan faturalar desiye göre ücretlenmiştir → desi tablosunu öğren
