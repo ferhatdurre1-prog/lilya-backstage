@@ -1241,7 +1241,7 @@ function retGroups(){
   }
   return [...m.values()];
 }
-function retActionCount(){ return retGroups().filter(g => g.bucket === 'action' || g.bucket === 'stock').reduce((s, g) => s + g.qty, 0); }
+function retActionCount(){ return retGroups().filter(g => g.bucket === 'action' || g.bucket === 'stock').length; }
 function retCard(g){
   const r = g.r, p = S.products.get(r.pkey), ids = esc(JSON.stringify(g.rows.map(x => x.id)));
   const ms = retDeadline(r), tyAct = r.channel === 'trendyol' && r.extStatus === 'WaitingInAction' && r.canTy && r.status === 'requested';
@@ -1268,7 +1268,8 @@ function retCard(g){
 }
 function viewReturns(){
   if (S.rfilter === 'requested') S.rfilter = 'action';
-  const gs = retGroups(); const c = {}; gs.forEach(g => c[g.bucket] = (c[g.bucket] || 0) + g.qty); c.all = gs.reduce((s, g) => s + g.qty, 0);
+  // Trendyol gibi ürün satırı sayılır (2 adetlik iade 1 sayılır)
+  const gs = retGroups(); const c = {}; gs.forEach(g => c[g.bucket] = (c[g.bucket] || 0) + 1); c.all = gs.length;
   const urgent = gs.filter(g => { const ms = retDeadline(g.r); return ms !== null && ms < 24 * 3600000; }).length;
   const tabs = RTABS.filter(([id]) => id !== 'stock' && id !== 'analysis' || c[id] || S.rfilter === id);
   const head = `<div class="spread"><div><h2 class="sec">İadeler</h2><p class="lead small">Trendyol iadeleri kendiliğinden gelir. Ürün depoya ulaşınca onayla: Trendyol'da da onaylanır ve stok artar.</p></div><button class="btn primary" data-act="new-return">İade kaydı aç</button></div>
