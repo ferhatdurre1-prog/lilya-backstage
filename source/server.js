@@ -1602,6 +1602,10 @@ async function refreshStats(env, deadline, maxDays) {
       env.DB.prepare(`SELECT substr(datetime(o.date,'+3 hours'),1,10) day, MAX(MAX(COALESCE(o.updated_at,'')), MAX(COALESCE(f.updated_at,''))) u FROM orders o LEFT JOIN order_fin f ON f.order_no=o.order_no WHERE o.date >= ?1 GROUP BY day`).bind(iso(dayStartTR(since))),
       env.DB.prepare('SELECT day, computed_at FROM daily_stats WHERE day >= ?1').bind(since)]);
     const at = new Map(snap.results.map(x => [x.day, x.computed_at || '']));
+    const extra = await env.DB.batch([
+      env.DB.prepare(`SELECT substr(datetime(o.date,'+3 hours'),1,10) day, MAX(MAX(COALESCE(r.decided_at,'')), MAX(COALESCE(r.ext_at,''))) u FROM returns r JOIN orders o ON o.order_no=r.order_no AND o.channel=r.channel WHERE o.date >= ?1 GROUP BY day`).bind(iso(dayStartTR(since))),
+      env.DB.prepare(`SELECT day, MAX(created_at) u FROM expenses WHERE day >= ?1 GROUP BY day`).bind(since)]).catch(() => [{ results: [] }, { results: [] }]);
+    for (const x of [...extra[0].results, ...extra[1].results]) chg.results.push(x);
     const dirty = chg.results.filter(x => x.day && x.day < addDay(today, -1) && at.has(x.day) && x.u > at.get(x.day)).map(x => x.day).sort().reverse();
     for (const d of dirty) if (todo.length < LIM && !todo.includes(d)) todo.push(d);
   } catch (e) {}
@@ -1639,18 +1643,19 @@ async function computeHome(env) {
   const t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', w0d = addDay(today, -6);
   const fromD = m0d < w0d ? m0d : w0d, yday = addDay(today, -1);
   const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
-  const [T, YS, statsR, pdR] = await Promise.all([
+  // Ay toplamı Kâr ekranıyla birebir aynı olsun diye kayıtlı günlerden toplanmaz, aynı hesapla canlı alınır
+  const [T, YS, statsR, pdR, M] = await Promise.all([
     computeProfit(env, iso(t0), iso(t0 + 86400000)),
     computeProfit(env, iso(t0 - 86400000), iso(ySame)),
     env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all(),
-    env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all()]);
+    env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all(),
+    computeProfit(env, iso(dayStartTR(m0d)), iso(t0 + 86400000))]);
   const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
   // Kaydı olmayan geçmiş gün varsa canlı hesaplanıp kaydedilir
   for (let d = fromD; d < today; d = addDay(d, 1)) if (!byDay.has(d)) { try { await snapshotDay(env, d); const r = await env.DB.prepare('SELECT data FROM daily_stats WHERE day=?1').bind(d).first(); if (r) byDay.set(d, JSON.parse(r.data)); } catch (e) {} }
   const days = [];
   for (let i = 6; i >= 0; i--) { const d = addDay(today, -i); const x = i === 0 ? T.summary : (byDay.get(d) || {}); days.push({ d, rev: Number(x.revenue) || 0, prof: Number(x.profit) || 0, n: Number(x.orders) || 0, u: Number(x.units) || 0 }); }
-  let mRev = T.summary.revenue, mProf = T.summary.profit;
-  for (const [d, x] of byDay) if (d >= m0d) { mRev += Number(x.revenue) || 0; mProf += Number(x.profit) || 0; }
+  const mRev = M.summary.revenue, mProf = M.summary.profit;
   const pp = new Map(pdR.results.map(x => [x.pkey, x.p || 0])); for (const x of T.products) pp.set(x.key, (pp.get(x.key) || 0) + (x.profit || 0));
   const R2 = (n) => Math.round(n * 100) / 100;
   const out = { day: today, at: Date.now(), ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
