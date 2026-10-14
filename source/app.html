@@ -1277,7 +1277,7 @@ function retCard(g){
       ${r.reason ? `<div class="meta"><span>İade sebebi: <b class="ink">${esc(r.reason)}</b></span></div>` : ''}
       ${r.cnote ? `<div class="meta"><span>Müşteri notu: ${esc(r.cnote)}</span></div>` : ''}
       ${note ? `<div class="meta">${esc(note)}</div>` : ''}
-      ${r.cargo || r.retDesi || r.outDesi ? `<div class="meta"><span>İade kargosu: ${r.cargo ? (r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)) : ''}</span>${r.retDesi ? `<span class="pill p-mute">${esc(String(r.retDesi).replace('.', ','))} desi</span>` : r.outDesi ? `<span class="pill p-mute" title="Trendyol iade desisini kargo faturasıyla bildirir; o zamana kadar gönderim desisi gösterilir">~${esc(String(r.outDesi).replace('.', ','))} desi (gönderim)</span>` : ''}${r.retCargo ? `<span class="pill p-mute">Kargo ${fmtTL(r.retCargo)}</span>` : ''}</div>` : ''}</div>
+      ${r.cargo || r.retDesi || r.outDesi ? `<div class="meta"><span>İade kargosu: ${r.cargo ? (r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)) : ''}</span>${desiCompare(r)}${r.retCargo ? `<span class="pill p-mute">Kargo ${fmtTL(r.retCargo)}</span>` : ''}</div>` : ''}</div>
       <div class="end"><div class="qty" style="font-size:18px">${fmtN(g.qty)}<small>adet</small></div><span class="pill ${st[1]}">${esc(st[0])}</span>${btns ? `<div class="row" style="justify-content:flex-end">${btns}</div>` : ''}</div></div>
   </div>`;
 }
@@ -1323,6 +1323,28 @@ async function retBulkApprove(){
     await refresh(true);
     toast(fail.length ? `${fmtN(ok)} iade onaylandı, ${fmtN(fail.length)} tanesinde hata: ${fail.slice(0, 2).join(' · ')}` : `${fmtN(ok)} iade Trendyol'da onaylandı ve stoğa eklendi.`, !!fail.length);
   });
+}
+// Gönderim desisi ile iade desisi karşılaştırması; iade daha yüksekse fark ve tahmini ek kargo bedeli (itiraz için)
+function desiPrice(desi, cargo){
+  const f = (S.settings && S.settings.fees) || {}, T = f.desiTables || {};
+  const t = (/ptt/i.test(cargo || '') ? T.ptt : T.tex) || f.desiTable || [];
+  if (!t.length || !(desi > 0)) return null;
+  const d = Math.ceil(desi), row = t.find(x => d <= x.desi) || t[t.length - 1];
+  const last = t[t.length - 1], over = d > last.desi && last.extra ? (d - last.desi) * last.extra : 0;
+  return row.price + over;
+}
+function desiCompare(r){
+  const n = v => esc(String(v).replace('.', ','));
+  if (r.outDesi && r.retDesi) {
+    if (r.retDesi > r.outDesi) {
+      const a = desiPrice(r.outDesi, r.cargo), b = desiPrice(r.retDesi, r.cargo), diff = a !== null && b !== null ? b - a : null;
+      return `<span class="pill p-bad" title="İade desisi gönderimden yüksek; Trendyol panelinden desiye itiraz edebilirsin">Gönderim ${n(r.outDesi)} → iade ${n(r.retDesi)} desi${diff > 0 ? ` · +${fmtTL(diff)}` : ''}</span>`;
+    }
+    return `<span class="pill p-good">Gönderim ${n(r.outDesi)} → iade ${n(r.retDesi)} desi</span>`;
+  }
+  if (r.retDesi) return `<span class="pill p-mute">İade ${n(r.retDesi)} desi</span>`;
+  if (r.outDesi) return `<span class="pill p-mute" title="Trendyol iade desisini kargo faturasıyla bildirir">Gönderim ${n(r.outDesi)} desi · iade desisi bekleniyor</span>`;
+  return '';
 }
 function retIds(id){ try { const a = JSON.parse(id); return Array.isArray(a) ? a : [id]; } catch(e) { return [id]; } }
 function sheetTyReject(){
