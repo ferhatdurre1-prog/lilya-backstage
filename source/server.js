@@ -453,7 +453,7 @@ async function syncTrendyolOrders(env) {
   const latest = new Map();
   for (const p of pkgs) { const k = String(p.shipmentPackageId || p.id); const o = latest.get(k); if (!o || (p.lastModifiedDate || 0) >= (o.lastModifiedDate || 0)) latest.set(k, p); }
   // Bir çalışmada en fazla ORD_CHUNK paket işlenir (veritabanı sorgu sınırı); kalan sonraki turda kaldığı yerden
-  const ORD_CHUNK = 100;
+  const ORD_CHUNK = Math.max(5, Math.min(60, Math.floor((qLeft(env) - 90) / 6)));
   let all = [...latest.values()].sort((a, b) => (a.lastModifiedDate || 0) - (b.lastModifiedDate || 0));
   if (exact) all = all.filter(p => (p.lastModifiedDate || 0) >= exact);
   const truncated = all.length > ORD_CHUNK;
@@ -906,17 +906,25 @@ async function tryLock(env, ms) {
 }
 async function unlock(env) { await env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`).run(); }
 function tyConfigured(env) { return !!(env.TRENDYOL_SELLER_ID && env.TRENDYOL_API_KEY && env.TRENDYOL_API_SECRET); }
+// Bir çalışmada veritabanına en fazla ~1000 sorgu atılabilir (Cloudflare D1). Sayaç ile her işten önce kalan bütçe kontrol edilir.
+const Q_LIMIT = 880;
+function countingDB(db, counter) {
+  const wrap = (st) => ({ __raw: st, bind: (...a) => wrap(st.bind(...a)), first: (...a) => { counter.n++; return st.first(...a); }, all: () => { counter.n++; return st.all(); }, run: () => { counter.n++; return st.run(); }, raw: (...a) => { counter.n++; return st.raw(...a); } });
+  return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n += list.length; return db.batch(list.map(x => (x && x.__raw) || x)); }, exec: (q) => { counter.n++; return db.exec(q); } };
+}
+const qLeft = (env) => env.__q ? Q_LIMIT - env.__q.n : Infinity;
 async function heavySteps(env, budget, result, step, left, t) {
   {
     // Ağır işler seyrek çalışır; veritabanını sürekli meşgul edip ekranları yavaşlatmasın
     const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at']); const now = Date.now();
     const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms;
-    if (left() > 30000) await step('claims', () => syncTrendyolClaims(env));
-    if (left() > 30000 && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
-    if (left() > 30000) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
-    if (left() > 30000 && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env)); }
-    if (left() > 35000 && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
-    if (left() > 25000 && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
+    const ok = (need) => qLeft(env) > need;
+    if (left() > 30000 && ok(150)) await step('claims', () => syncTrendyolClaims(env));
+    if (left() > 30000 && ok(150) && isDue('run_qna_at', 2 * 60000)) { await setSetting(env, 'run_qna_at', String(now)); await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr) await setSetting(env, 'qna_err', ''); }
+    if (left() > 30000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
+    if (left() > 30000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
+    if (left() > 35000 && ok(350) && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
+    if (left() > 25000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
   }
   result.ms = Date.now() - t;
   return result;
@@ -976,21 +984,23 @@ async function cronRun(env) {
   await setSetting(env, 'cron_at', String(t0));
   const diag = { at: iso(t0), polls: 0, slow: {}, errs: {} };
   try {
-    // Her eşitleme ve ağır işler ayrı çalışmada (kendi sorgu sınırı); hiçbiri diğerini durduramaz
-    const run = async (mode, budget) => {
-      if (env.SELF) { const r = await env.SELF.fetch('https://self/__run', { method: 'POST', headers: { 'x-run': await hmac(env.APP_PASSWORD, 'stats-run'), 'content-type': 'application/json' }, body: JSON.stringify({ mode, budget }) }); const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (e) { j = { error: 'run ' + r.status }; try { await setSetting(env, 'run_err', iso() + ' · ' + mode + ' ' + r.status + ' · ' + txt.replace(/\s+/g, ' ').slice(0, 400)); } catch (x) {} } if (!r.ok && !j.error) j.error = 'run ' + r.status; return j; }
-      return pollOnce(env, mode === 'heavy', budget, mode);
-    };
+    // Tek çalışma, sorgu sayacıyla: önce siparişler (her 10 sn), ağır işler bütçe kalırsa; hiçbir iş sınırı aşamaz
+    const counter = { n: 0 }; const envc = { ...env, DB: countingDB(env.DB, counter), __q: counter };
     const absorb = (r) => { for (const [k, v] of Object.entries((r && r.steps) || {})) { if (typeof v === 'number') { if (!(diag.slow[k] >= v)) diag.slow[k] = v; } else diag.errs[k] = v; } if (r && r.error) diag.errs.orders = r.error; };
-    const heavy = run('heavy', t0 + 50000).then(absorb).catch(e => { diag.errs.heavy = String(e.message || e).slice(0, 150); });
     for (let i = 0; i < 6; i++) {
       const wait = t0 + i * 10000 - Date.now();
       if (wait > 0) await sleep(wait);
       if (Date.now() - t0 > 52000) break;
-      try { absorb(await run('light', Date.now() + 9000)); } catch (e) { diag.errs.orders = String(e.message || e).slice(0, 150); }
+      if (qLeft(envc) < 130) { diag.errs.budget = 'sorgu bütçesi doldu (' + counter.n + ')'; break; }
+      const q0 = counter.n;
+      try { absorb(await pollOnce(envc, false, Date.now() + 9000, 'light')); } catch (e) { diag.errs.orders = String(e.message || e).slice(0, 150); }
       diag.polls++;
+      // Ağır işler ilk turdan sonra; kalan 5 sipariş turu için ilk turun kullandığı kadar (+pay) yer bırakılır
+      if (i === 0) { const reserve = 5 * Math.min(170, Math.max(45, counter.n - q0 + 25)); try { envc.__q = { get n() { return counter.n + reserve; } }; absorb(await pollOnce(envc, true, t0 + 50000, 'heavy')); } catch (e) { diag.errs.heavy = String(e.message || e).slice(0, 150); } envc.__q = counter; }
     }
-    await heavy;
+    // Raporlar: kalan bütçeyle birkaç gün
+    if (qLeft(envc) > 120 && Date.now() - t0 < 56000) { try { const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.floor((qLeft(envc) - 60) / 30))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
+    diag.queries = counter.n;
   } finally {
     diag.ms = Date.now() - t0;
     try { await env.DB.batch([setStmt(env, 'ty_diag', JSON.stringify(diag)), env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`)]); } catch (e) { await unlock(env); }
@@ -1362,18 +1372,19 @@ async function snapshotDay(env, day) {
   await env.DB.batch(st);
 }
 // Her dakika: bugün + dün; son 70 gün sırayla yeniden (geç gelen iade/fatura için); daha eski eksik günler bir kez
-async function refreshStats(env, deadline) {
+async function refreshStats(env, deadline, maxDays) {
   const today = trDay(Date.now()); const g = await getSettings(env, ['stats_cursor', 'stats_first']);
   let first = g.stats_first;
   if (!first) { const r = await env.DB.prepare('SELECT MIN(date) d FROM orders').first(); if (!r || !r.d) return { n: 0 }; first = trDay(Date.parse(r.d)); await setSetting(env, 'stats_first', first); }
-  const todo = [today, addDay(today, -1)], LIM = 15;
+  const todo = [today, addDay(today, -1)], LIM = Math.min(15, maxDays || 15);
   // eksik günler: en yeniden eskiye (önce son günler dolsun)
   const { results } = await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1').bind(first).all(); const have = new Set(results.map(x => x.day));
   for (let d = addDay(today, -2); d >= first && todo.length < LIM; d = addDay(d, -1)) if (!have.has(d)) todo.push(d);
   // son 70 gün dönüşümlü
   let cur = g.stats_cursor && g.stats_cursor >= addDay(today, -70) && g.stats_cursor < today ? g.stats_cursor : addDay(today, -70);
   if (cur < first) cur = first;
-  while (todo.length < 12 && cur < today) { if (!todo.includes(cur)) todo.push(cur); cur = addDay(cur, 1); }
+  while (todo.length < Math.min(12, LIM) && cur < today) { if (!todo.includes(cur)) todo.push(cur); cur = addDay(cur, 1); }
+  todo.length = Math.min(todo.length, LIM);
   const busy = Number(await getSetting(env, 'stats_busy')) || 0; if (Date.now() - busy < 60000) return { n: 0, busy: true };
   await setSetting(env, 'stats_busy', String(Date.now()));
   let n = 0;
@@ -1845,7 +1856,7 @@ export default {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
         const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err', 'run_err', 'ty_orders_exact', 'ty_orders_hwm', 'ty_ok']);
         const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
-        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: dg.errs || {} }, runErr: g.run_err || null, exact: g.ty_orders_exact || null, hwm: g.ty_orders_hwm ? iso(Number(g.ty_orders_hwm)) : null, tyOk: g.ty_ok || null, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, queries: dg.queries, slow: dg.slow, errs: dg.errs || {} }, runErr: g.run_err || null, exact: g.ty_orders_exact || null, hwm: g.ty_orders_hwm ? iso(Number(g.ty_orders_hwm)) : null, tyOk: g.ty_ok || null, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
@@ -1862,17 +1873,7 @@ export default {
     }
   },
   // Ana eşitleme her dakika; raporlar 2 dakikada bir ayrı çalışmada (sorgu sınırı ayrı sayılsın, eşitlemeyi yavaşlatmasın)
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(cronRun(env));
-    // Raporlar 2 dakikada bir AYRI bir çalışmada hesaplanır (kendi sorgu sınırı olsun, eşitlemeyi etkilemesin)
-    if (new Date().getUTCMinutes() % 2 === 0) ctx.waitUntil((async () => {
-      try {
-        const sig = await hmac(env.APP_PASSWORD, 'stats-run');
-        if (env.SELF) { const r = await env.SELF.fetch('https://self/__stats', { method: 'POST', headers: { 'x-run': sig } }); if (!r.ok) throw new Error('self ' + r.status + ' ' + (await r.text()).slice(0, 150)); }
-        else { await init(env); await refreshStats(env, Date.now() + 20000); }
-      } catch (e) { try { await init(env); await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } catch (x) {} }
-    })());
-  }
+  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); }
 };
 
 const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d2235"/><stop offset=".55" stop-color="#0f121c"/><stop offset="1" stop-color="#06070b"/></linearGradient><radialGradient id="g1" cx="860" cy="140" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#6366f1" stop-opacity=".62"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/></radialGradient><radialGradient id="g2" cx="120" cy="980" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient><linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset=".5" stop-color="#818cf8"/><stop offset="1" stop-color="#22d3ee"/></linearGradient><clipPath id="r"><rect width="1024" height="1024" rx="230"/></clipPath></defs><g clip-path="url(#r)"><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#g1)"/><rect width="1024" height="1024" fill="url(#g2)"/><g fill="#fff"><rect x="262" y="236" width="156" height="548" rx="40"/><rect x="262" y="628" width="392" height="156" rx="40"/></g><circle cx="742" cy="706" r="78" fill="url(#ac)"/></g></svg>`;
