@@ -1380,60 +1380,60 @@ const tl2 = (n) => (Number(n) || 0).toLocaleString('tr-TR', {minimumFractionDigi
 // Ürünler sığmazsa "Ek sayfa 2/3" başlığıyla sonraki etikete devam eder; toplam tutar son sayfada.
 function drawLabelPages(p, W, H, sid){
   const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
-  const scratch = document.createElement('canvas').getContext('2d');
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
-  const orderLabel = String(p.orderNo);
+  const orderLabel = String(p.orderNo), custName = (p.to.name || '').toLocaleUpperCase('tr-TR');
   const dateStr = p.date ? new Date(p.date).toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
-  // ürün satırları: ad (sığmazsa alt satıra), adet, tutar
-  const colQty = mm(11), colAmt = mm(19), nameW = cw - colQty - colAmt - mm(2);
-  font(scratch, 2.8, false);
-  const rows = p.lines.map(l => { const nm = [l.name, l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ') + (l.sku ? ` (${l.sku})` : '');
-    const lines = wrapText(scratch, nm, nameW); return {l, lines, h: Math.max(lines.length, 1) * mm(3.5) + mm(2)}; });
-  const footH = mm(9);
-  const pages = []; // her sayfa: satır dizisi
+  const colQty = mm(11), colAmt = mm(19), pad = mm(1.6), nameW = cw - colQty - colAmt - 2 * pad - mm(1);
+  const PER = 3, footH = mm(5.5), gap = mm(1.4);
+  const items = p.lines.map(l => ({l, name: [l.name, l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ') + (l.sku ? ` (${l.sku})` : '')}));
+  const chunks = []; for (let i = 0; i < items.length; i += PER) chunks.push(items.slice(i, i + PER)); if (!chunks.length) chunks.push([]);
+  const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
   const newCanvas = () => { const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; return {cv, c}; };
   const rule = (c, y, w) => { c.lineWidth = mm(w || 0.3); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); };
-  const tableHead = (c, y) => { font(c, 2.6, true); c.fillText('ÜRÜN', m, y); const a = 'ADET'; c.fillText(a, PW - m - colAmt - colQty / 2 - c.measureText(a).width / 2, y); const t = 'TUTAR'; c.fillText(t, PW - m - c.measureText(t).width, y); y += mm(3.6); rule(c, y, 0.2); return y + mm(1.8); };
-  // 1. sayfanın üst bölümü
-  const first = newCanvas(), c = first.c; let yL, yR;
-  // logo: sol üst, barkodun solundaki alana sığacak genişlikte (en-boy oranı korunur)
-  const lgW = PW * 0.44 - m - mm(4), lgH = lgW * 352 / 900, logo = lgH + mm(4);
-  const lgY = m + mm(5.5) + (mm(19) - lgH) / 2; // barkodla aynı dikey merkez
-  if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, lgY, lgW, lgH); else drawLogo(c, m - mm(1), m - mm(1), mm(24));
-  if (dateStr) { font(c, 3.2, false); c.fillText(dateStr, PW - m - c.measureText(dateStr).width, m); }
-  const bx = PW * 0.44, bw = PW - m - bx, by = m + mm(5.5), bh = mm(19);
-  if (p.tracking && window.JsBarcode) { const bc = document.createElement('canvas'); try { JsBarcode(bc, p.tracking, {format:'CODE128', displayValue:false, margin:0, height:100, width:4}); c.imageSmoothingEnabled = false; c.drawImage(bc, bx, by, bw, bh); } catch(e) {} }
-  else { c.lineWidth = mm(0.3); c.setLineDash([mm(1.2), mm(1)]); c.strokeRect(bx, by, bw, bh); c.setLineDash([]); font(c, 3.2, true); const t = 'Takip numarası bekleniyor'; c.fillText(t, bx + (bw - c.measureText(t).width) / 2, by + bh / 2 - mm(1.6)); }
-  yR = by + bh + mm(1.6); font(c, 3, false); c.fillText('Sipariş No: ' + orderLabel, bx, yR); yR += mm(4.2);
-  if (p.tracking) { let sz = 3; const t = 'Kargo Kampanya Kodu: ' + p.tracking; font(c, sz, true); while (c.measureText(t).width > bw && sz > 2.2) { sz -= 0.1; font(c, sz, true); } for (const l of wrapText(c, t, bw)) { c.fillText(l, bx, yR); yR += mm(4); } }
-  yR += mm(1);
-  // müşteri adı: ürün yazısı boyutunda, tablonun hemen üstünde, tam genişlik
-  let y0 = Math.max(lgY + lgH, yR) + mm(1.5);
-  font(c, 2.8, true); for (const l of wrapText(c, (p.to.name || '').toLocaleUpperCase('tr-TR'), cw)) { c.fillText(l, m, y0); y0 += mm(3.6); }
-  y0 += mm(0.4); rule(c, y0, 0.4); y0 = tableHead(c, y0 + mm(1.8));
-  // satırları sayfalara böl
-  let cur = {canvas: first, y: y0, rows: []}; pages.push(cur);
-  for (const r of rows) {
-    if (cur.y + r.h > PH - m - footH && (cur.rows.length || cur.canvas === first)) {
-      const nx = newCanvas(); let y = m; font(nx.c, 3.4, true);
-      for (const l of wrapText(nx.c, `Sipariş No: ${orderLabel} · ${(p.to.name || '').toLocaleUpperCase('tr-TR')}`, cw)) { nx.c.fillText(l, m, y); y += mm(4.4); }
-      rule(nx.c, y + mm(0.5), 0.4); y = tableHead(nx.c, y + mm(2.3)); cur = {canvas: nx, y, rows: []}; pages.push(cur);
+  const xQty = PW - m - colAmt - colQty / 2;
+  const tableHead = (c, y) => { font(c, 2.4, true); c.fillText('ÜRÜN', m + pad, y); const a = 'ADET'; c.fillText(a, xQty - c.measureText(a).width / 2, y); const t = 'BİRİM FİYAT'; c.fillText(t, PW - m - pad - c.measureText(t).width, y); return y + mm(3.6); };
+  // ürün kutusu: ad kutuya sığacak en büyük boyutta (uzunsa küçülür, kısaysa büyür)
+  const box = (c, it, x, y, w, h) => {
+    c.lineWidth = mm(0.3); const r = mm(1.2); c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); c.stroke();
+    if (!it) return;
+    const sep = PW - m - colAmt - colQty; c.lineWidth = mm(0.15); c.beginPath(); c.moveTo(sep, y + mm(1)); c.lineTo(sep, y + h - mm(1)); c.stroke();
+    let sz = 5, lines = [];
+    for (; sz >= 1.8; sz -= 0.1) { font(c, sz, false); lines = wrapText(c, it.name, nameW); if (lines.length * sz * 1.2 * D * u <= h - 2 * pad && lines.every(t => c.measureText(t).width <= nameW)) break; }
+    const lh = mm(sz * 1.2), ty = y + (h - lines.length * lh) / 2 + mm(sz * 0.1);
+    font(c, sz, false); lines.forEach((t, k) => c.fillText(t, x + pad, ty + k * lh));
+    const qs = Math.min(5, Math.max(3, h / D / u * 0.32)); font(c, qs, true); const q = String(it.l.qty); c.fillText(q, xQty - c.measureText(q).width / 2, y + (h - mm(qs)) / 2);
+    const ps = Math.min(3.6, qs * 0.75); font(c, ps, true); const a = tl2(it.l.unit || it.l.amount); c.fillText(a, PW - m - pad - c.measureText(a).width, y + (h - mm(ps)) / 2);
+  };
+  const boxes = (c, y0, list) => { const bottom = PH - m - footH - mm(1), bh = (bottom - y0 - gap * (PER - 1)) / PER; for (let k = 0; k < PER; k++) box(c, list[k], m, y0 + k * (bh + gap), cw, bh); };
+  const pages = chunks.map((list, i) => {
+    const pg = newCanvas(), c = pg.c; let y;
+    if (i === 0) {
+      if (dateStr) { font(c, 3.2, false); c.fillText(dateStr, PW - m - c.measureText(dateStr).width, m); }
+      const bx = PW * 0.44, bw = PW - m - bx, by = m + mm(5.5), bh = mm(19);
+      if (p.tracking && window.JsBarcode) { const bc = document.createElement('canvas'); try { JsBarcode(bc, p.tracking, {format:'CODE128', displayValue:false, margin:0, height:100, width:4}); c.imageSmoothingEnabled = false; c.drawImage(bc, bx, by, bw, bh); } catch(e) {} }
+      else { c.lineWidth = mm(0.3); c.setLineDash([mm(1.2), mm(1)]); c.strokeRect(bx, by, bw, bh); c.setLineDash([]); font(c, 3.2, true); const t = 'Takip numarası bekleniyor'; c.fillText(t, bx + (bw - c.measureText(t).width) / 2, by + bh / 2 - mm(1.6)); }
+      let yR = by + bh + mm(1.6); font(c, 3, false); c.fillText('Sipariş No: ' + orderLabel, bx, yR); yR += mm(4.2);
+      if (p.tracking) { let sz = 3; const t = 'Kargo Kampanya Kodu: ' + p.tracking; font(c, sz, true); while (c.measureText(t).width > bw && sz > 2.2) { sz -= 0.1; font(c, sz, true); } c.fillText(t, bx, yR); yR += mm(sz * 1.15); }
+      // logo barkodla aynı dikey merkezde
+      const lgW = bx - m - mm(4), lgH = lgW * 352 / 900, lgY = by + (bh - lgH) / 2;
+      if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, lgY, lgW, lgH); else drawLogo(c, m - mm(1), m - mm(1), mm(24));
+      // müşteri adı: logonun altında, çizginin hemen üstünde (kampanya kodu satırıyla aynı hizada biter)
+      font(c, 2.8, true); const nl = wrapText(c, custName, bx - m - mm(3)), lh = mm(3.5);
+      const ruleY = Math.max(yR, lgY + lgH + nl.length * lh) + mm(0.8);
+      nl.forEach((t, k) => c.fillText(t, m, ruleY - mm(0.8) - (nl.length - k) * lh));
+      rule(c, ruleY, 0.4); y = ruleY + mm(1.2);
+    } else {
+      y = m; font(c, 3, true);
+      for (const t of wrapText(c, `Sipariş No: ${orderLabel} · ${custName}`, cw)) { c.fillText(t, m, y); y += mm(4); }
+      rule(c, y + mm(0.4), 0.4); y += mm(1.6);
     }
-    const cc = cur.canvas.c; let y = cur.y;
-    font(cc, 2.8, false); r.lines.forEach((t, k) => cc.fillText(t, m, y + k * mm(3.5)));
-    font(cc, 3.4, true); const q = String(r.l.qty); cc.fillText(q, PW - m - colAmt - colQty / 2 - cc.measureText(q).width / 2, y);
-    font(cc, 3, true); const a = tl2(r.l.unit ? r.l.unit * r.l.qty : r.l.amount); cc.fillText(a, PW - m - cc.measureText(a).width, y);
-    y += r.h; cc.lineWidth = mm(0.12); cc.setLineDash([mm(0.6), mm(0.6)]); cc.beginPath(); cc.moveTo(m, y - mm(1)); cc.lineTo(PW - m, y - mm(1)); cc.stroke(); cc.setLineDash([]);
-    cur.y = y; cur.rows.push(r);
-  }
-  // alt bilgi: sayfa belirteci ve son sayfada toplam tutar
-  const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
-  pages.forEach((pg, i) => { const cc = pg.canvas.c, fy = PH - m - footH + mm(2);
-    rule(cc, fy, 0.4);
-    if (pages.length > 1) { font(cc, 2.8, true); cc.fillText(i === 0 ? `Sayfa 1/${pages.length} · devamı ek sayfada` : `Ek sayfa ${i + 1}/${pages.length}`, m, fy + mm(2.8)); }
-    if (i === pages.length - 1) { font(cc, 3.6, true); const t = 'TOPLAM TUTAR: ' + tl2(total); cc.fillText(t, PW - m - cc.measureText(t).width, PH - m - mm(3.8)); }
+    y = tableHead(c, y); boxes(c, y, list);
+    const fy = PH - m - mm(2.6);
+    if (chunks.length > 1) { font(c, 2.4, true); c.fillText(i === 0 ? `Sayfa 1/${chunks.length} · devamı ek sayfada` : `Ek sayfa ${i + 1}/${chunks.length}`, m, fy); }
+    if (i === chunks.length - 1) { font(c, 2.4, true); const t = 'TOPLAM TUTAR: ' + tl2(total); c.fillText(t, PW - m - c.measureText(t).width, fy); }
+    return pg.cv;
   });
-  return pages.map(pg => pg.canvas.cv);
+  return pages;
 }
 async function makeLabelsPdf(){
   const L = S.sheet; if (!L || !L.data) return;
