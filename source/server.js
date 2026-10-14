@@ -1688,9 +1688,9 @@ export default {
       }
       if (path === '/perf') {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err']);
+        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err', 'cron_seen_****', 'cron_seen_*2****']);
         const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
-        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null, seen1: g['cron_seen_****'] || null, seen2: g['cron_seen_*2****'] || null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
@@ -1708,7 +1708,8 @@ export default {
   },
   // Ana eşitleme her dakika; raporlar 2 dakikada bir ayrı çalışmada (sorgu sınırı ayrı sayılsın, eşitlemeyi yavaşlatmasın)
   async scheduled(event, env, ctx) {
-    if (event && event.cron === '*/2 * * * *') ctx.waitUntil((async () => { await init(env); try { await refreshStats(env, Date.now() + 25000); await setSetting(env, 'stats_run', iso()); } catch (e) { try { await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } catch (x) {} } })());
+    ctx.waitUntil((async () => { try { await init(env); const k = 'cron_seen_' + String(event && event.cron || '?').replace(/[^0-9*]/g, ''); await setSetting(env, k, iso()); } catch (e) {} })());
+    if (event && /^\*\/2 /.test(String(event.cron || ''))) ctx.waitUntil((async () => { await init(env); try { await refreshStats(env, Date.now() + 25000); await setSetting(env, 'stats_run', iso()); } catch (e) { try { await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } catch (x) {} } })());
     else ctx.waitUntil(cronRun(env));
   }
 };
