@@ -1353,17 +1353,21 @@ function lblSort(list){
   return [...list].sort((a, b) => { const x = ks.get(a), y = ks.get(b);
     return (x.multi - y.multi) || (cnt.get(y.k) - cnt.get(x.k)) || x.k.localeCompare(y.k, 'tr') || (x.q - y.q) || String(a.date).localeCompare(String(b.date)); });
 }
+const lblCar = p => /ptt/i.test(p.provider || '') ? 'ptt' : /trendyol|express|tex/i.test(p.provider || '') ? 'tex' : 'other';
+const LBL_CAR = {tex:'Trendyol Express', ptt:'PTT Kargo', other:'Diğer kargo'};
 function sheetLabels(){
   const L = S.sheet;
   if (!L.data) {
-    if (!L.loading) { L.loading = true; api('/api/labels/pending', {}).then(d => { if (S.sheet === L) { L.data = lblSort(d.packages); L.sid = d.sellerId || ''; L.loading = false; d.packages.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); } }).catch(e => { L.loading = false; toast(errText(e), true); closeSheetForce(); }); }
+    if (!L.loading) { L.loading = true; api('/api/labels/pending', {}).then(d => { if (S.sheet === L) { L.all = lblSort(d.packages); L.sid = d.sellerId || ''; L.loading = false; const cs = ['tex','ptt','other'].filter(k => L.all.some(p => lblCar(p) === k)); L.car = cs[0] || 'tex'; L.data = L.all.filter(p => lblCar(p) === L.car); L.data.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); } }).catch(e => { L.loading = false; toast(errText(e), true); closeSheetForce(); }); }
     return {title:'Kargo etiketi yazdır', body: loading()};
   }
   const z = lblSize(), presets = [[100,100],[100,150],[150,150]], isPreset = presets.some(([w,h]) => w === z.w && h === z.h);
   const st = {Created:'Yeni', Picking:'İşleme alındı', Invoiced:'Faturalandı'};
   let lastK = null; const gk = p => { const ks = [...new Set(p.lines.map(l => l.sku || l.name))].sort(); return ks.length > 1 ? 'Birden çok ürünlü siparişler' : ks[0]; };
   const rows = L.data.map(p => { const k = gk(p), hd = k !== lastK ? `<div class="small" style="padding:8px 14px 4px;font-weight:700;color:var(--ink-2);background:var(--surface-2)">${esc(k)} · ${fmtN(L.data.filter(x => gk(x) === k).length)} sipariş</div>` : ''; lastK = k; return hd + `<button class="item" type="button" data-act="lbl-sel" data-id="${esc(p.pkgId)}" style="grid-template-columns:auto 1fr auto"><span class="rsel" aria-pressed="${L.sel.has(p.pkgId)}"></span><div class="main"><div class="ttl"><span class="mono">#${esc(p.orderNo)}</span> ${esc(p.to.name)}</div><div class="meta"><span>${esc(p.provider || 'Kargo firması yok')}</span><span>${esc(p.to.district)}${p.to.city ? ' / ' + esc(p.to.city) : ''}</span>${p.tracking ? '' : '<span class="pill p-bad">Takip no yok</span>'}</div><div class="meta">${esc(p.lines.map(l => l.qty + '× ' + (l.sku || l.name)).join(', ').slice(0, 120))}</div></div><div class="end"><span class="pill p-warn">${esc(st[p.status] || p.status)}</span></div></button>`; }).join('');
-  return {title:'Kargo etiketi yazdır', sub:`<span>${fmtN(L.data.length)} bekleyen paket</span>`, body:`<div class="card" style="gap:10px">
+  const cars = ['tex','ptt','other'].filter(k => (L.all || []).some(p => lblCar(p) === k));
+  const carTabs = cars.length ? `<div class="chips" style="margin-bottom:12px">${cars.map(k => `<button class="chip" type="button" data-act="lbl-car" data-id="${k}" aria-pressed="${L.car === k}" style="font-size:15px;padding:9px 16px">${LBL_CAR[k]} · ${fmtN(L.all.filter(p => lblCar(p) === k).length)}</button>`).join('')}</div>` : '';
+  return {title:'Kargo etiketi yazdır', sub:`<span>${fmtN((L.all || L.data).length)} bekleyen paket</span>`, body: carTabs + `<div class="card" style="gap:10px">
       <div><b>Kağıt ölçüsü</b> <span class="muted small">(etiket yazıcının kağıdı)</span></div>
       <div class="chips">${presets.map(([w,h]) => `<button class="chip" type="button" data-act="lbl-size" data-id="${w}x${h}" aria-pressed="${z.w===w && z.h===h}">${w}×${h} mm</button>`).join('')}<span class="chip" aria-pressed="${!isPreset}" style="display:inline-flex;gap:6px;align-items:center">Özel <input class="input num" id="lbl-w" inputmode="numeric" value="${z.w}" style="width:56px;padding:4px 6px" aria-label="Genişlik mm">×<input class="input num" id="lbl-h" inputmode="numeric" value="${z.h}" style="width:56px;padding:4px 6px" aria-label="Yükseklik mm"> mm</span></div>
       <p class="muted small" style="margin:0">Etiket seçtiğin ölçüye göre ölçeklenir. Yazdırırken yazıcıda "gerçek boyut / %100" seç.</p></div>
@@ -1484,7 +1488,7 @@ async function makeLabelsPdf(){
     let n = 0; const add = (cv) => { if (n++) doc.addPage([w, h], w > h ? 'landscape' : 'portrait'); doc.addImage(cv.toDataURL('image/png'), 'PNG', 0, 0, w, h, undefined, 'FAST'); };
     for (const p of list) for (const cv of drawLabelPages(p, w, h, L.sid)) add(cv);
     for (const cv of drawSummaryPages(list, w, h)) add(cv);
-    const name = `kargo-etiketleri-${todayTR()}-${list.length}.pdf`, blob = doc.output('blob'), file = new File([blob], name, {type:'application/pdf'});
+    const name = `kargo-etiketleri-${L.car || ''}-${todayTR()}-${list.length}.pdf`, blob = doc.output('blob'), file = new File([blob], name, {type:'application/pdf'});
     if (navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
     const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
     toast(`${fmtN(list.length)} etiket PDF olarak hazırlandı.`);
@@ -2423,8 +2427,9 @@ document.addEventListener('click', async e => {
     case 'lbl-sel': { const L = S.sheet; if (!L || !L.data) break; L.sel.has(id) ? L.sel.delete(id) : L.sel.add(id); renderSheet(false); break; }
     case 'lbl-all': { const L = S.sheet; if (!L || !L.data) break; if (L.sel.size === L.data.length) L.sel.clear(); else L.data.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); break; }
     case 'lbl-size': { const [w, h] = id.split('x').map(Number); lblSize({w, h}); renderSheet(false); break; }
+    case 'lbl-car': { const L = S.sheet; if (!L || !L.all) break; L.car = id; L.data = L.all.filter(p => lblCar(p) === id); L.sel = new Set(L.data.map(p => p.pkgId)); renderSheet(false); break; }
     case 'lbl-pdf': await makeLabelsPdf(); break;
-    case 'lbl-reload': if (S.sheet) { S.sheet.data = null; S.sheet.loading = false; renderSheet(false); } break;
+    case 'lbl-reload': if (S.sheet) { S.sheet.data = null; S.sheet.all = null; S.sheet.loading = false; renderSheet(false); } break;
     case 'ret-tab': S.rfilter = id; S.drawer = false; renderDrawer(); setTab('returns'); break;
     case 'ret-sel': { const k = JSON.stringify(retIds(id)), s2 = retSel(); s2.has(k) ? s2.delete(k) : s2.add(k); render(); break; }
     case 'ret-selall': { const s2 = retSel(); const all = retGroups().filter(g => g.bucket === 'action' && g.r.extStatus === 'WaitingInAction' && g.r.canTy).map(g => JSON.stringify(g.rows.map(x => x.id))); if (s2.size === all.length) s2.clear(); else all.forEach(k => s2.add(k)); render(); break; }
