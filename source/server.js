@@ -1839,10 +1839,15 @@ async function api(req, env, path, ctx) {
     return json({ ok: true, tyApproved });
   }
   if (path === '/api/returns/shape') {
-    // Teşhis: Trendyol iade kaydında gelen alan adları (değerler kısaltılmış, müşteri bilgisi çıkarılmış)
-    let list = CLAIM_SHAPE;
-    if (!list && tyConfigured(env)) { const n = Date.now(); const r = await ty(env, `order/sellers/${env.TRENDYOL_SELLER_ID}/claims`, { startDate: n - 3 * 86400000, endDate: n + TY_TZ, size: 1, page: 0 }); list = r.content && r.content[0] ? [...keyPaths(r.content[0])] : []; }
-    return json({ keys: (list || []).filter(k => !/customer|address|name=|firstName|lastName|phone|email/i.test(k)) });
+    // Teşhis: açık bir Trendyol iadesinin kaydında ve geçmişinde gelen alan adları (müşteri bilgisi çıkarılır)
+    if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
+    const row = await env.DB.prepare(`SELECT order_no, claim_id, item_id FROM returns WHERE channel='trendyol' AND claim_id IS NOT NULL AND claim_id<>'-' AND item_id IS NOT NULL ORDER BY (ext_status='WaitingInAction') DESC, created_at DESC LIMIT 1`).first();
+    if (!row) return bad('Kontrol edilecek iade bulunamadı.');
+    const clean = (l) => l.filter(k => !/customer|address|firstName|lastName|phone|email|fullName|sellerOtp/i.test(k));
+    const out = { orderNo: row.order_no, claim: [], audit: [], errors: [] };
+    try { const r = await ty(env, `order/sellers/${env.TRENDYOL_SELLER_ID}/claims`, { claimIds: row.claim_id, size: 5, page: 0 }); out.claim = clean([...keyPaths((r.content || [])[0] || {})]); } catch (e) { out.errors.push('claim: ' + e.message); }
+    try { const r = await ty(env, `order/sellers/${env.TRENDYOL_SELLER_ID}/claims/items/${encodeURIComponent(row.item_id)}/audit`, {}); out.audit = clean([...keyPaths(Array.isArray(r) ? r : r)]).slice(0, 80); } catch (e) { out.errors.push('audit: ' + e.message); }
+    return json(out);
   }
   if (path === '/api/returns/reasons') {
     if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');

@@ -1280,7 +1280,13 @@ function viewReturns(){
     .sort((a, b) => { const da = retDeadline(a.r), db = retDeadline(b.r); if (da !== null || db !== null) return (da === null ? Infinity : da) - (db === null ? Infinity : db); return String(b.r.createdAt).localeCompare(String(a.r.createdAt)); });
   const empty = {action:'Aksiyon bekleyen iade yok', created:'Yolda olan iade talebi yok', stock:'Stoğa eklenecek iade yok', analysis:'İncelemede iade yok'}[S.rfilter] || 'Kayıt yok';
   if (!rs.length) return head + `<div class="panel empty"><h4>${empty}</h4><p>Trendyol'da iade talebi açıldığında burada "Talep oluşturulan" olarak görünür. Ürün depoya ulaşınca "Aksiyon bekleyen"e geçer; onaylayınca stok artar.</p></div>`;
-  return head + warn + `<div class="rlist">${rs.map(retCard).join('')}</div>`;
+  return head + warn + `<div class="rlist">${rs.map(retCard).join('')}</div><div style="margin-top:14px"><button class="btn sm ghost" data-act="ret-shape">Desi teşhisi</button></div>`;
+}
+function sheetRetShape(){
+  const sh = S.sheet;
+  if (!sh.data) { if (!sh.loading) { sh.loading = true; api('/api/returns/shape', {}).then(d => { if (S.sheet === sh) { sh.data = d; renderSheet(true); } }).catch(e => { toast(errText(e), true); closeSheetForce(); }); } return {title:'Desi teşhisi', body: loading()}; }
+  const d = sh.data, list = (t, l) => `<div class="card"><b>${t}</b><div class="mono small" style="white-space:pre-wrap;word-break:break-all">${esc(l.join('\n') || '—')}</div></div>`;
+  return {title:'Desi teşhisi', sub:`<span class="mono">#${esc(d.orderNo)}</span>`, body: `<p class="small muted">Bu ekranın görüntüsünü Claude'a gönder.</p>${d.errors.length ? `<div class="banner bad"><div>${esc(d.errors.join(' · '))}</div></div>` : ''}${list('İade kaydı', d.claim)}${list('İade geçmişi', d.audit)}`};
 }
 setInterval(() => { document.querySelectorAll('[data-dl]').forEach(el => { const r = {status:'requested', extStatus:'WaitingInAction', extAt:el.dataset.dl}; el.textContent = dlText(retDeadline(r)); }); }, 1000);
 function retIds(id){ try { const a = JSON.parse(id); return Array.isArray(a) ? a : [id]; } catch(e) { return [id]; } }
@@ -2126,7 +2132,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -2191,6 +2197,7 @@ document.addEventListener('click', async e => {
     case 'new-return': openSheet('new-return'); break;
     case 'ret-accept': await returnDecision(id, true); break;
     case 'ret-reject': await returnDecision(id, false); break;
+    case 'ret-shape': openSheet('ret-shape'); break;
     case 'ret-tyaccept': await returnDecision(id, true, true); break;
     case 'ret-tyreject': openSheet('ty-reject', {ids: retIds(id)}); break;
     case 'open-import': S.imp = null; openSheet('import'); break;
