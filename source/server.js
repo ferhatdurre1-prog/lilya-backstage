@@ -942,9 +942,10 @@ async function syncTrendyolFinance(env, force, deadline) {
     for (const x of (r.content || [])) { typeRows++;
       if (!x.orderNumber) continue; rows++;
       const a = get(String(x.orderNumber)); const credit = Number(x.credit) || 0, debt = Number(x.debt) || 0;
-      a.revenue += credit - debt; if (x.transactionType === 'Sale') a.sale = true;
+      // Trendyol yanıtta türü Türkçe yazıyor ("Satış", "İade"…); türü istekte gönderdiğimiz değerden alıyoruz
+      a.revenue += credit - debt; if (type === 'Sale') a.sale = true;
       const ca = Math.abs(Number(x.commissionAmount) || 0);
-      if (x.transactionType === 'Sale' || x.transactionType === 'DiscountCancel' || x.transactionType === 'CouponCancel') a.commission += ca; else a.commission -= ca;
+      if (type === 'Sale' || type === 'DiscountCancel' || type === 'CouponCancel') a.commission += ca; else a.commission -= ca;
       a.net += Number(x.sellerRevenue) || 0;
     }
     if (page + 1 >= (r.totalPages || 0)) break;
@@ -1982,7 +1983,7 @@ async function api(req, env, path, ctx) {
     const size = 100, page = Math.max(1, intOr(body.page, 1));
     const where = [], args = [];
     const f = String(body.filter || 'all');
-    if (f === 'new') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status IN ('Created','Picking') AND day >= '${trDay(Date.now() - 30 * 86400000)}')`); else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`o.status='returned'`);
+    if (f === 'delivered') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')`); else if (f === 'new') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status IN ('Created','Picking') AND day >= '${trDay(Date.now() - 30 * 86400000)}')`); else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`o.status='returned'`);
     if (body.channel) { args.push(String(body.channel)); where.push(`o.channel=?${args.length}`); }
     const q = String(body.q || '').trim();
     if (q) {
