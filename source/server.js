@@ -91,6 +91,8 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
   // Kargo faturaları bir kez baştan okunur (önceki okumalar yarıda kalmış olabilir); tutarlar sıfırlanıp yeniden yazılır, çift sayılmaz
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_cargo_reread5'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_cargo_reread5','1')`), env.DB.prepare('UPDATE order_fin SET cargo=NULL, ret_cargo=NULL'), setStmt(env, 'cargo_inv_done', '[]'), setStmt(env, 'fin_at', '')]); } catch (e) {} }
+  // Paketleme maliyeti eklendi: kayıtlı günler yeniden hesaplansın
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_pack1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_pack1','1')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_passive1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_passive1','1')`), setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ordslice1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ordslice1','1')`), setStmt(env, 'ty_orders_exact', '')]); } catch (e) {} }
   for (const c of ['auto_at TEXT', 'desi REAL', 'chk_at TEXT', 'claim_id TEXT', 'item_id TEXT', 'customer TEXT', 'amount REAL', 'reason TEXT', 'cnote TEXT', 'cargo TEXT', 'cargo_link TEXT']) { try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -1382,13 +1384,13 @@ function learnedTable(v) {
   try { const o = JSON.parse(v || '{}'); return Object.entries(o).map(([d, x]) => ({ desi: Number(d), price: Number(x.price) })).filter(x => x.desi > 0 && x.price > 0).sort((a, b) => a.desi - b.desi); } catch (e) { return []; }
 }
 async function loadFees(env) {
-  const s = await getSettings(env, ['fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fee_service_fast', 'service_cutoff', 'barem_max_desi']);
+  const s = await getSettings(env, ['fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fee_service_fast', 'service_cutoff', 'barem_max_desi']);
   const manual = parseDesiTable(s.desi_table), learned = learnedTable(s.desi_learned);
   // elle girilen satırlar öncelikli; eksik desiler faturalardan öğrenilenle tamamlanır
   const merged = [...manual]; for (const x of learned) if (!merged.some(m => m.desi === x.desi)) merged.push(x);
   merged.sort((a, b) => a.desi - b.desi);
   if (merged.length && manual.length && manual[manual.length - 1].extra && merged[merged.length - 1] !== manual[manual.length - 1]) merged[merged.length - 1] = { ...merged[merged.length - 1], extra: manual[manual.length - 1].extra };
-  return { serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: merged, desiManual: manual, desiLearned: learned, serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
+  return { packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: merged, desiManual: manual, desiLearned: learned, packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
 }
 async function computeProfit(env, from, to) {
   const T0 = Date.now(), TM = {}; const mark = (k) => { TM[k] = Date.now() - T0; };
@@ -1431,7 +1433,7 @@ async function computeProfit(env, from, to) {
   // Reklam: harcandığı günün gideri (elle ya da Trendyol reklam raporundan girilen günlük harcama)
   const adRows = adR.results;
   mark('misc'); const R2 = (n) => Math.round(n * 100) / 100;
-  const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, profit: 0, units: 0, retUnits: 0 });
+  const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, pack: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
   const sum = { ...blank(), retOrders: 0, retCargoEst: 0, undOrders: 0, unsOrders: 0, defOrders: 0, penaltyEst: 0, penaltyActual: 0, otherFees: 0, orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
   const rep = { grossU: 0, grossTL: 0, cancelU: 0, cancelTL: 0, retU: 0, retTL: 0, pendU: 0, pendTL: 0, discTL: 0, netU: 0, netTL: 0, noGross: 0 };
@@ -1515,8 +1517,10 @@ async function computeProfit(env, from, to) {
     if (mo) penalty = mo.amount;
     const stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0);
     const cost = rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
-    const profit = revenue - commission - cargo - retCargo - penalty - service - stopaj - cost;
-    const oRes = { revenue, commission, cargo, retCargo, penalty, service, stopaj, cost, profit, units, retUnits };
+    // Paketleme: gönderilen her sipariş için sabit + gönderilen her ürün adedi için (iade dönse de düşmez)
+    const shipped = units + retUnits; const pack = shipped > 0 ? (fee.packOrder || 0) + (fee.packUnit || 0) * shipped : 0;
+    const profit = revenue - commission - cargo - retCargo - penalty - service - stopaj - cost - pack;
+    const oRes = { revenue, commission, cargo, retCargo, penalty, service, stopaj, cost, pack, profit, units, retUnits };
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
@@ -1534,8 +1538,8 @@ async function computeProfit(env, from, to) {
       const k = x.l.pkey; let bp = byProduct.get(k);
       if (!bp) { bp = { key: k, sku: x.l.sku, barcode: (x.pr && x.pr.barcode) || '', name: (x.pr && x.pr.name) || x.l.name, image: x.pr ? x.pr.image : '', costKnown: !!(x.pr && x.pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(k, bp); }
       const lr = revenue * share, lc = commission * share, ls = stopaj * share;
-      const res = { revenue: lr, commission: lc, cargo: cargo * fshare, retCargo: retCargo * (retTot ? rv(x) / retTot : x.retQ / retQTot), penalty: (penalty - unsAlloc) * (dTot ? dv(x) / dTot : fshare), service: service * fshare, stopaj: ls, cost: x.cost, units: x.qty, retUnits: x.retQ };
-      res.profit = lr - lc - res.cargo - res.retCargo - res.penalty - res.service - ls - x.cost;
+      const res = { revenue: lr, commission: lc, cargo: cargo * fshare, retCargo: retCargo * (retTot ? rv(x) / retTot : x.retQ / retQTot), penalty: (penalty - unsAlloc) * (dTot ? dv(x) / dTot : fshare), service: service * fshare, stopaj: ls, cost: x.cost, pack: pack * (x.l.qty / qtyTot), units: x.qty, retUnits: x.retQ };
+      res.profit = lr - lc - res.cargo - res.retCargo - res.penalty - res.service - ls - x.cost - res.pack;
       add(bp, res); bp.orders++;
     }
   }
@@ -1596,12 +1600,12 @@ function mapReturn(r) { return { outDesi: Number(r.o_desi) > 0 ? Number(r.o_desi
 function mapProduct(r) { return { passive: r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg']);
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg']);
   let usage = null; try { usage = await usageGuard(env, false); } catch (e) {}
   // Trendyol'da yeni (Created) ve işleme alınan (Picking) paketler
   let newOrders = { n: 0, u: 0 };
   try { const r = await env.DB.prepare(`SELECT COUNT(DISTINCT order_no) n, COALESCE(SUM(units),0) u FROM audit_pkg WHERE status IN ('Created','Picking') AND day >= ?1`).bind(trDay(Date.now() - 30 * 86400000)).first(); if (r) newOrders = { n: r.n || 0, u: r.u || 0 }; } catch (e) {}
-  return { usage, rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), cargoCheck: (() => { try { return JSON.parse(s.fin_cargo_check || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, newOrders, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
+  return { usage, rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), cargoCheck: (() => { try { return JSON.parse(s.fin_cargo_check || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, newOrders, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
 }
 /* ---------- piyasa bandı (döviz, borsa, emtia) ---------- */
 const MKT_SYMS = { USD: 'USDTRY=X', EUR: 'EURTRY=X', BIST: 'XU100.IS', GOLD: 'GC=F', SILVER: 'SI=F', BRENT: 'BZ=F' };
@@ -1643,7 +1647,7 @@ async function marketData(env) {
   return out;
 }
 /* ---------- raporlar: her günün kesin sonucu ayrı tabloda saklanır (yıl sonu toplamları için) ---------- */
-const STAT_KEYS = ['revenue', 'commission', 'cargo', 'retCargo', 'penalty', 'service', 'stopaj', 'cost', 'ads', 'expenses', 'extraIncome', 'otherFees', 'compensation', 'profit', 'orders', 'units', 'retUnits', 'retOrders'];
+const STAT_KEYS = ['revenue', 'commission', 'cargo', 'retCargo', 'penalty', 'service', 'stopaj', 'cost', 'pack', 'ads', 'expenses', 'extraIncome', 'otherFees', 'compensation', 'profit', 'orders', 'units', 'retUnits', 'retOrders'];
 const dayStartTR = (d) => Date.parse(d + 'T00:00:00+03:00');
 const addDay = (d, n) => trDay(dayStartTR(d) + n * 86400000 + 12 * 3600000);
 async function snapshotDay(env, day) {
@@ -2022,7 +2026,7 @@ async function api(req, env, path, ctx) {
     if (body.desiTable !== undefined) { const t = parseDesiTable(JSON.stringify(body.desiTable)); st.push(setStmt(env, 'desi_table', JSON.stringify(t))); }
     if (body.desiTables !== undefined) { const t = { tex: parseDesiTable(JSON.stringify((body.desiTables || {}).tex || [])), ptt: parseDesiTable(JSON.stringify((body.desiTables || {}).ptt || [])) }; if (!t.tex.length || !t.ptt.length) return bad('İki desi tablosu da en az bir satır içermeli.'); st.push(setStmt(env, 'desi_tables', JSON.stringify(t))); }
     if (body.desiMode !== undefined) st.push(setStmt(env, 'cargo_desi_mode', body.desiMode ? '1' : '0'));
-    for (const [k, f] of [['feeCargoT1', 'fee_cargo_t1'], ['feeCargoT2', 'fee_cargo_t2'], ['feeCargoT3', 'fee_cargo_t3'], ['feeServiceTy', 'fee_service_ty'], ['feeServiceFast', 'fee_service_fast'], ['serviceCutoff', 'service_cutoff'], ['baremMaxDesi', 'barem_max_desi'], ['feeCargoSh', 'fee_cargo_sh'], ['stopaj', 'stopaj']]) {
+    for (const [k, f] of [['feeCargoT1', 'fee_cargo_t1'], ['feeCargoT2', 'fee_cargo_t2'], ['feeCargoT3', 'fee_cargo_t3'], ['feeServiceTy', 'fee_service_ty'], ['feeServiceFast', 'fee_service_fast'], ['serviceCutoff', 'service_cutoff'], ['baremMaxDesi', 'barem_max_desi'], ['feeCargoSh', 'fee_cargo_sh'], ['feePackOrder', 'fee_pack_order'], ['feePackUnit', 'fee_pack_unit'], ['stopaj', 'stopaj']]) {
       if (body[k] !== undefined) { const n = numOrNull(body[k]); if (n === null || n < 0 || n > 100000) return bad('Gider değeri geçersiz.'); st.push(setStmt(env, f, n)); }
     }
     if (body.pushStock !== undefined) st.push(setStmt(env, 'ty_push', body.pushStock ? '1' : '0'));
