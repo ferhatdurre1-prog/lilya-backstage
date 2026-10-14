@@ -1516,7 +1516,7 @@ async function snapshotDay(env, day) {
   const data = {}; for (const k of STAT_KEYS) data[k] = Math.round((Number(r.summary[k]) || 0) * 100) / 100;
   // Değişmediyse hiçbir şey yazılmaz (yazılan satır = maliyet)
   const prev = await env.DB.prepare('SELECT data FROM daily_stats WHERE day=?1').bind(day).first();
-  if (prev && prev.data === JSON.stringify(data)) { const pc = await env.DB.prepare('SELECT COUNT(*) n FROM product_daily WHERE day=?1').bind(day).first(); if (pc && pc.n === r.products.filter(x => x.units || x.retUnits || x.revenue || x.profit).length) return false; }
+  if (prev && prev.data === JSON.stringify(data)) { const pc = await env.DB.prepare('SELECT COUNT(*) n FROM product_daily WHERE day=?1').bind(day).first(); if (pc && pc.n === r.products.filter(x => x.units || x.retUnits || x.revenue || x.profit).length) { await env.DB.prepare('UPDATE daily_stats SET computed_at=?2 WHERE day=?1').bind(day, iso()).run(); return false; } }
   const st = [env.DB.prepare('INSERT INTO daily_stats(day, data, computed_at) VALUES(?1,?2,?3) ON CONFLICT(day) DO UPDATE SET data=excluded.data, computed_at=excluded.computed_at').bind(day, JSON.stringify(data), iso()),
     env.DB.prepare('DELETE FROM product_daily WHERE day=?1').bind(day)];
   const prs = r.products.filter(x => x.units || x.retUnits || x.revenue || x.profit);
@@ -1532,6 +1532,17 @@ async function refreshStats(env, deadline, maxDays) {
   let first = g.stats_first;
   if (!first) { const r = await env.DB.prepare('SELECT MIN(date) d FROM orders').first(); if (!r || !r.d) return { n: 0 }; first = trDay(Date.parse(r.d)); await setSetting(env, 'stats_first', first); }
   const todo = [today, addDay(today, -1)], LIM = Math.min(15, maxDays || 15);
+  // Sonradan değişen günler (Trendyol gerçek kesintisi, iade, geç gelen sipariş) hemen yeniden hesaplanır;
+  // böylece ana ekrandaki hafta/ay kârı ile Kâr ekranının canlı hesabı aynı kalır.
+  try {
+    const since = addDay(today, -70);
+    const [chg, snap] = await env.DB.batch([
+      env.DB.prepare(`SELECT substr(datetime(o.date,'+3 hours'),1,10) day, MAX(MAX(COALESCE(o.updated_at,'')), MAX(COALESCE(f.updated_at,''))) u FROM orders o LEFT JOIN order_fin f ON f.order_no=o.order_no WHERE o.date >= ?1 GROUP BY day`).bind(iso(dayStartTR(since))),
+      env.DB.prepare('SELECT day, computed_at FROM daily_stats WHERE day >= ?1').bind(since)]);
+    const at = new Map(snap.results.map(x => [x.day, x.computed_at || '']));
+    const dirty = chg.results.filter(x => x.day && x.day < addDay(today, -1) && at.has(x.day) && x.u > at.get(x.day)).map(x => x.day).sort().reverse();
+    for (const d of dirty) if (todo.length < LIM && !todo.includes(d)) todo.push(d);
+  } catch (e) {}
   // eksik günler: en yeniden eskiye (önce son günler dolsun)
   const { results } = await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1').bind(first).all(); const have = new Set(results.map(x => x.day));
   for (let d = addDay(today, -2); d >= first && todo.length < LIM; d = addDay(d, -1)) if (!have.has(d)) todo.push(d);
