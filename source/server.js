@@ -62,7 +62,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ty_qty INTEGER').run(); } catch (e) { /* sütun zaten var */ }
   let priceCol = false;
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ty_price REAL').run(); priceCol = true; } catch (e) {}
-  for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   if (priceCol && await env.DB.prepare(`SELECT 1 FROM settings WHERE k='ty_prod_done' AND v<>''`).first()) await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]);
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tydate'`).first())) {
     const sh = await env.DB.prepare(`SELECT v FROM settings WHERE k='ty_shift'`).first();
@@ -89,6 +89,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_desi REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_passive1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_passive1','1')`), setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ordslice1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ordslice1','1')`), setStmt(env, 'ty_orders_exact', '')]); } catch (e) {} }
   for (const c of ['auto_at TEXT', 'desi REAL', 'chk_at TEXT', 'claim_id TEXT', 'item_id TEXT', 'customer TEXT', 'amount REAL', 'reason TEXT', 'cnote TEXT', 'cargo TEXT', 'cargo_link TEXT']) { try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ' + c).run(); } catch (e) {} }
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
@@ -858,10 +859,14 @@ async function syncTrendyolProducts(env, maxPages = 4) {
       const img = (c.images && c.images[0] && c.images[0].url) || '';
       for (const v of (c.variants || [])) {
         const attrs = (v.attributes || []).map(a => a.attributeValue).filter(Boolean).join(' / ');
-        items.push({ sku: v.stockCode || '', barcode: v.barcode || '', name: (c.title || '') + (attrs && (c.variants || []).length > 1 ? ' · ' + attrs : ''), image: img, stock: v.stock && Number.isFinite(v.stock.quantity) ? v.stock.quantity : null, price: v.price && Number.isFinite(Number(v.price.salePrice)) ? Number(v.price.salePrice) : null, comm: Number.isFinite(Number(v.commission)) ? Number(v.commission) : null, vat: Number.isFinite(Number(v.vatRate)) ? Number(v.vatRate) : null });
+        items.push({ passive: v.archived === true || v.blacklisted === true, sku: v.stockCode || '', barcode: v.barcode || '', name: (c.title || '') + (attrs && (c.variants || []).length > 1 ? ' · ' + attrs : ''), image: img, stock: v.stock && Number.isFinite(v.stock.quantity) ? v.stock.quantity : null, price: v.price && Number.isFinite(Number(v.price.salePrice)) ? Number(v.price.salePrice) : null, comm: Number.isFinite(Number(v.commission)) ? Number(v.commission) : null, vat: Number.isFinite(Number(v.vatRate)) ? Number(v.vatRate) : null });
       }
     }
-    if (items.length) { const st = await ingestProducts(env, 'trendyol', items, { useStock, tyQty: true }); stats.created += st.created; stats.updated += st.updated; }
+    if (items.length) { const st = await ingestProducts(env, 'trendyol', items, { useStock, tyQty: true }); stats.created += st.created; stats.updated += st.updated;
+      // Trendyol'da pasif (arşivlenmiş / kara listede) ürünler işaretlenir; listelerde gizlenir, tekrar aktif olunca kendiliğinden görünür
+      const ps = items.filter(x => x.sku || x.barcode).map(x => env.DB.prepare('UPDATE products SET ty_passive=?1 WHERE key=?2 AND ty_passive IS NOT ?1').bind(x.passive ? 1 : 0, skuKey(x.sku || x.barcode)));
+      for (let j = 0; j < ps.length; j += 90) await env.DB.batch(ps.slice(j, j + 90));
+      if (items.some(x => x.passive)) await env.DB.batch([REV(env)]); }
     try { await storeProductInfo(env, r.content || []); } catch (e) {}
     total += items.length;
     const pages = r.totalPages || 0;
@@ -1504,7 +1509,7 @@ async function computePricing(env) {
 /* ---------- API ---------- */
 function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { outDesi: Number(r.o_desi) > 0 ? Number(r.o_desi) : null, autoAt: r.auto_at || null, retDesi: r.desi || r.f_ret_desi || null, retCargo: r.f_ret_cargo ?? null, claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
-function mapProduct(r) { return { sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
+function mapProduct(r) { return { passive: r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
   const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg']);
