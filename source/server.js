@@ -2031,6 +2031,8 @@ async function api(req, env, path, ctx) {
     }
     if (body.pushStock !== undefined) st.push(setStmt(env, 'ty_push', body.pushStock ? '1' : '0'));
     if (body.resyncProducts) st.push(setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z'));
+    // Kesinti/paketleme değerleri değişince raporlardaki kayıtlı günler yeniden hesaplanır
+    if (['feeCargoT1','feeCargoT2','feeCargoT3','feeServiceTy','feeServiceFast','serviceCutoff','baremMaxDesi','feeCargoSh','feePackOrder','feePackUnit','stopaj','desiTables','desiMode'].some(k => body[k] !== undefined)) st.push(env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', ''));
     if (st.length) { st.push(REV(env)); await env.DB.batch(st); }
     return json({ ok: true });
   }
