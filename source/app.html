@@ -490,8 +490,8 @@ function viewLogin(){
       <p class="small" style="margin:0">Şifre, Cloudflare hesabında saklanır. Sıfırlamak için:</p>
       <ol class="small" style="margin:0;padding-left:18px;display:grid;gap:6px">
         <li><a href="https://dash.cloudflare.com" target="_blank" rel="noopener">dash.cloudflare.com</a> adresine Cloudflare hesabınla gir.</li>
-        <li><b>Workers ve Pages</b> (Workers &amp; Pages) → <b>lilya-backstage</b> → <b>Ayarlar</b> (Settings) → <b>Değişkenler ve Gizli Bilgiler</b> (Variables and Secrets).</li>
-        <li><b>APP_PASSWORD</b> satırında <b>Düzenle</b>'ye bas, yeni şifreni yaz ve kaydet (Deploy).</li>
+        <li><b>Workers &amp; Pages</b> → <b>lilya-backstage</b> → <b>Settings</b> → <b>Variables and Secrets</b>.</li>
+        <li><b>APP_PASSWORD</b> satırında kalem simgesine (<b>Edit</b>) bas, yeni şifreni yaz, <b>Deploy</b>'a bas.</li>
         <li>Buraya dön: "İlk giriş" ekranı gelir. Yeni kullanıcı adını belirleyip yeni şifrenle gir.</li>
       </ol>
       <p class="small muted" style="margin:0">Şifre değişince kullanıcı adı da sıfırlanır, yani kullanıcı adını unuttuysan da aynı yol geçerli.${I && I.passkeys ? ' Face ID kuruluysa şifreye gerek kalmadan yüzünle de girebilirsin.' : ''}</p>
@@ -640,7 +640,7 @@ function viewQuestions(){
   if (t.qnaErr) h += `<div class="banner bad"><div>Sorular alınamadı: ${esc(String(t.qnaErr).slice(27))}</div></div>`;
   const D = Q.data && Q.data.tab === Q.tab ? Q.data : null;
   if (!D) return h + (Q.err ? `<div class="banner bad"><div>${esc(Q.err)}</div></div>` : loading());
-  if (!D.ai) h += `<div class="banner" style="background:var(--accent-soft)"><div><b>Yapay zekâ taslağı henüz kapalı.</b> Açmak için Anthropic'ten bir API anahtarı alıp Cloudflare'de <b>ANTHROPIC_API_KEY</b> adıyla gizli değişken olarak eklemen gerekiyor (Workers ve Pages → lilya-backstage → Ayarlar → Değişkenler ve Gizli Bilgiler). O zamana kadar cevapları kendin yazıp buradan gönderebilirsin.</div></div>`;
+  if (!D.ai) h += `<div class="banner" style="background:var(--accent-soft)"><div><b>Yapay zekâ taslağı henüz kapalı.</b> Açmak için Anthropic'ten bir API anahtarı alıp Cloudflare'de <b>Workers &amp; Pages → lilya-backstage → Settings → Variables and Secrets → + Add</b> → Type: <b>Secret</b>, ad: <b>ANTHROPIC_API_KEY</b> olarak eklemen gerekiyor. O zamana kadar cevapları kendin yazıp buradan gönderebilirsin.</div></div>`;
   // genel bilgiler
   h += `<details class="card" ${Q.genOpen ? 'open' : ''} style="gap:8px"><summary style="cursor:pointer;font-weight:700;font-size:16px" data-act="q-gen-toggle">Mağaza genel bilgileri ${D.general ? '' : '<span class="pill p-warn" style="margin-left:6px">Boş</span>'}</summary>
     <p class="muted small" style="margin:0">Kargoya veriş süresi, iade koşulları, paketleme, garanti gibi her ürün için geçerli bilgiler. Yapay zekâ cevap yazarken bunları kullanır.</p>
@@ -1888,12 +1888,12 @@ function usageCard(){
   return `<div class="card" style="gap:12px"><div class="spread"><h3 style="margin:0">Aylık kullanım · 5 $ paket</h3><span class="pill" style="background:${col};color:#fff">${['Normal','Tasarruf','Sıkı','Durdurma'][U.level || 0]}</span></div>
     <p class="small" style="margin:0;color:${col};font-weight:600">${lvTxt}</p>${rows}
     ${!U.hasToken ? `<details><summary class="small" style="cursor:pointer;color:var(--accent);font-weight:600">İşlemci süresini de ölçmek için Cloudflare anahtarı ekle (önerilir)</summary><ol class="small" style="margin:8px 0 0;padding-left:18px;display:grid;gap:5px">
-      <li>dash.cloudflare.com → sağ üstte profil → <b>Profilim</b> → <b>API Belirteçleri</b> → <b>Belirteç Oluştur</b> → <b>Özel belirteç</b>.</li>
-      <li>İzin: <b>Hesap → Hesap Analizi (Account Analytics) → Okuma</b>. Başka izin verme. Oluştur'a bas, belirteci kopyala.</li>
-      <li>Hesap kimliği: Workers ve Pages sayfasının sağında yazan <b>Account ID</b>.</li>
-      <li>Workers ve Pages → lilya-backstage → Ayarlar → Değişkenler ve Gizli Bilgiler → iki gizli değişken ekle: <b>CF_API_TOKEN</b> (belirteç) ve <b>CF_ACCOUNT_ID</b> (hesap kimliği).</li>
+      <li>dash.cloudflare.com → sağ üstte profil simgesi → <b>My Profile</b> → solda <b>API Tokens</b> → <b>Create Token</b>.</li>
+      <li>En altta <b>Custom token</b> → <b>Get started</b>. Ad: <b>Backstage usage</b>. <b>Permissions</b>: <b>Account</b> · <b>Account Analytics</b> · <b>Read</b>. <b>Account Resources</b>: Include · hesabın. <b>Continue to summary</b> → <b>Create Token</b> → çıkan belirteci kopyala (bir kez gösterilir).</li>
+      <li><b>Account ID</b>: ana sayfada <b>Workers &amp; Pages</b> sayfasının sağ tarafında yazar, kopyala.</li>
+      <li><b>Workers &amp; Pages</b> → <b>lilya-backstage</b> → <b>Settings</b> → <b>Variables and Secrets</b> → <b>+ Add</b> → Type: <b>Secret</b>, Variable name: <b>CF_API_TOKEN</b>, Value: belirteç → <b>Deploy</b>. Aynısını <b>CF_ACCOUNT_ID</b> (Account ID) için tekrarla.</li>
       <li>Belirteci buraya yazma. Eklendikten sonra en geç 1 saat içinde gerçek rakamlar burada görünür.</li></ol></details>` : (U.cfErr ? `<p class="small" style="margin:0;color:var(--bad)">Cloudflare kullanım verisi alınamadı: ${esc(String(U.cfErr).slice(27))}</p>` : `<p class="small muted" style="margin:0">Rakamlar Cloudflare'in kendi ölçümünden (saatte bir güncellenir)${U.cf ? ' · ' + esc(fmtDate(U.cf.at)) : ''}.</p>`)}
-    <p class="small muted" style="margin:0">Cloudflare'de ayrıca <b>Bildirimler → Kullanıma dayalı faturalandırma</b> uyarısı kurarsan, ek ücret ihtimalinde e-posta da gelir.</p></div>`;
+    <p class="small muted" style="margin:0">Cloudflare'de ayrıca <b>Notifications → Add → Usage Based Billing</b> uyarısı kurarsan, ek ücret ihtimalinde e-posta da gelir.</p></div>`;
 }
 function sheetImport(){
   const I = S.imp, st = startedAt(), set = S.settings || {};
