@@ -852,7 +852,7 @@ function viewHome(){
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
   const ps = [...S.products.values()];
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
-  const pend = S.returns.filter(r => r.status === 'requested'), urgent = pend.filter(r => { const ms = retDeadline(r); return ms !== null && ms < 24*3600000; }).length;
+  const rg = retGroups().filter(g => g.bucket === 'action'), pendN = rg.length, urgent = rg.filter(g => { const ms = retDeadline(g.r); return ms !== null && ms < 24*3600000; }).length;
   const losers = H ? H.losers || 0 : 0;
   const st = tyState();
   if (!S.loaded.products) return h + `<div class="card"><h3>Aksiyonlar</h3><div class="act-grid">${'<div class="skel" style="height:66px;border-radius:12px"></div>'.repeat(4)}</div></div>`;
@@ -861,8 +861,8 @@ function viewHome(){
   let conn = '';
   if (st.cls === 'err' || st.cls === 'warn') conn = `<button class="alert-row" data-act="open-import" style="margin-top:4px"><div class="ic" style="background:var(--bad-soft);color:var(--bad)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg></div><div class="tx"><b>${esc(st.text)}</b><span>${esc(st.err || 'Bağlantıyı kontrol et')}</span></div></button>`;
   h += `<div class="card"><h3 style="margin:0">Aksiyonlar</h3>${conn}<div class="act-grid">
-    ${act('Bekleyen iadeler', pend.length, 'tab', 'returns')}
-    ${act('Süresi dolan iade', urgent, 'tab', 'returns', true)}
+    ${act('Aksiyon bekleyen iade', pendN, 'ret-tab', 'action')}
+    ${act('Süresi dolan iade', urgent, 'ret-tab', 'action', true)}
     ${act('Tükenen ürünler', zero, 'home-stock', 'zero', true)}
     ${act('Stoğu azalan', low, 'home-stock', 'low')}
     ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
@@ -2231,6 +2231,7 @@ document.addEventListener('click', async e => {
     case 'ret-accept': await returnDecision(id, true); break;
     case 'ret-reject': await returnDecision(id, false); break;
     case 'ret-shape': openSheet('ret-shape'); break;
+    case 'ret-tab': S.rfilter = id; S.drawer = false; renderDrawer(); setTab('returns'); break;
     case 'ret-sel': { const k = JSON.stringify(retIds(id)), s2 = retSel(); s2.has(k) ? s2.delete(k) : s2.add(k); render(); break; }
     case 'ret-selall': { const s2 = retSel(); const all = retGroups().filter(g => g.bucket === 'action' && g.r.extStatus === 'WaitingInAction' && g.r.canTy).map(g => JSON.stringify(g.rows.map(x => x.id))); if (s2.size === all.length) s2.clear(); else all.forEach(k => s2.add(k)); render(); break; }
     case 'ret-bulk': await retBulkApprove(); break;
