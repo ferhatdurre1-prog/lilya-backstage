@@ -400,7 +400,7 @@ function tyState(){
   if (errAt && errAt >= okAt) return {cls:'err', text:'Trendyol hatası', err:t.err.slice(27)};
   if (!okAt) return {cls:'', text:'Trendyol ilk eşitleme bekleniyor'};
   const stale = Date.now() + S.skew - okAt > 3 * 60000;
-  if (Date.now() + S.skew - okAt > 15 * 60000) return {cls:'err', text:'Trendyol eşitlemesi durdu · son: ' + ago(t.ok), err:'Son 15 dakikadır Trendyol\'dan veri alınamadı. Cloudflare günlük limiti dolmuş olabilir.'};
+  if (Date.now() + S.skew - okAt > 15 * 60000) return {cls:'err', text:'Trendyol eşitlemesi durdu · son: ' + ago(t.ok), err:'Son 15 dakikadır Trendyol\'dan veri alınamadı. Arka plan eşitlemesi gecikiyor; birkaç dakika içinde kendiliğinden toparlanır.'};
   return {cls: stale ? 'warn' : 'ok', text:'Trendyol · ' + ago(t.ok)};
 }
 function renderSync(){
@@ -630,7 +630,7 @@ async function loadQna(force){
   Q.loading = true; try { const d = await api('/api/qna/list', {status: Q.tab}); d.tab = Q.tab; Q.data = d; Q.at = Date.now(); Q.err = ''; } catch(e) { Q.err = errText(e); }
   Q.loading = false; if (S.tab === 'questions') render();
 }
-function ago(t){ const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000)); return m < 60 ? `${m} dk önce` : m < 1440 ? `${Math.floor(m/60)} sa önce` : `${Math.floor(m/1440)} gün önce`; }
+function qAgo(t){ const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000)); return m < 60 ? `${m} dk önce` : m < 1440 ? `${Math.floor(m/60)} sa önce` : `${Math.floor(m/1440)} gün önce`; }
 function viewQuestions(){
   const Q = qS(); loadQna(false); const t = S.sync.trendyol || {};
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Müşteri soruları</h2><p class="lead small">Trendyol'daki sorular 2 dakikada bir gelir. Yapay zekâ ürün bilgisinden cevap taslağı hazırlar; sen düzeltip gönderirsin.</p></div>`;
@@ -647,7 +647,7 @@ function viewQuestions(){
   const items = D.items || [];
   if (!items.length) return h + `<div class="panel empty"><h4>${Q.tab === 'waiting' ? 'Cevap bekleyen soru yok' : 'Henüz cevaplanan soru yok'}</h4><p>${Q.tab === 'waiting' ? 'Yeni soru gelince burada görünür ve ana ekranda bildirilir.' : 'Buradan gönderdiğin cevaplar burada listelenir.'}</p></div>`;
   for (const q of items) {
-    const head = `<div style="display:flex;gap:12px;align-items:flex-start">${q.image ? `<div class="thumb"><img alt="" loading="lazy" referrerpolicy="no-referrer" src="${esc(q.image)}"></div>` : ''}<div style="min-width:0;flex:1"><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.product_name || '')}</div><div class="small muted">${esc(ago(q.created_at))}${q.web_url ? ` · <a href="${esc(q.web_url)}" target="_blank" rel="noopener">Ürün sayfası</a>` : ''}</div></div></div>
+    const head = `<div style="display:flex;gap:12px;align-items:flex-start">${q.image ? `<div class="thumb"><img alt="" loading="lazy" referrerpolicy="no-referrer" src="${esc(q.image)}"></div>` : ''}<div style="min-width:0;flex:1"><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.product_name || '')}</div><div class="small muted">${esc(qAgo(q.created_at))}${q.web_url ? ` · <a href="${esc(q.web_url)}" target="_blank" rel="noopener">Ürün sayfası</a>` : ''}</div></div></div>
       <div style="background:var(--surface-2);border-radius:12px;padding:12px 14px;font-size:15px;line-height:1.45"><b>Soru:</b> ${esc(q.text)}</div>`;
     if (Q.tab === 'answered') { h += `<div class="card" style="gap:10px">${head}<div style="border-left:3px solid var(--good);padding:2px 0 2px 12px;font-size:14.5px">${q.answer ? esc(q.answer) : '<span class="muted">Trendyol panelinden cevaplandı.</span>'}</div><div class="small muted">${q.answered_at ? 'Cevap: ' + esc(fmtDate(q.answered_at)) : ''}</div></div>`; continue; }
     const val = Q.drafts[q.id] !== undefined ? Q.drafts[q.id] : (q.draft || '');

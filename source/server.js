@@ -437,7 +437,7 @@ async function fetchOrderPackages(env, start, end) {
 const TY_TZ = 3 * 3600000;
 function tyWindow(hwm, maxBackDays, now) {
   const end = now + TY_TZ + 10 * 60000;                       // Trendyol saatine göre "şimdi" + pay
-  let start = hwm ? hwm - TY_TZ - 60 * 60000 : now - maxBackDays * 86400000; // 4 saat geriden başla
+  let start = hwm ? hwm - TY_TZ - 15 * 60000 : now - maxBackDays * 86400000; // son okunandan 15 dk geriden (geç işlenen değişiklikler için pay)
   if (end - start > 14 * 86400000 - 120000) start = end - 14 * 86400000 + 120000;
   return { start, end };
 }
