@@ -855,7 +855,6 @@ async function pollOnce(env, full, budget) {
     if (left() > 30000 && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env)); }
     if (left() > 35000 && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
     if (left() > 25000 && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
-    if (left() > 20000) await step('stats', () => refreshStats(env, Date.now() + Math.min(12000, left() - 15000)));
   }
   result.ms = Date.now() - t;
   return result;
@@ -1250,15 +1249,18 @@ async function snapshotDay(env, day) {
   const data = {}; for (const k of STAT_KEYS) data[k] = Math.round((Number(r.summary[k]) || 0) * 100) / 100;
   const st = [env.DB.prepare('INSERT INTO daily_stats(day, data, computed_at) VALUES(?1,?2,?3) ON CONFLICT(day) DO UPDATE SET data=excluded.data, computed_at=excluded.computed_at').bind(day, JSON.stringify(data), iso()),
     env.DB.prepare('DELETE FROM product_daily WHERE day=?1').bind(day)];
-  for (const x of r.products) if (x.units || x.retUnits || x.revenue || x.profit) st.push(env.DB.prepare('INSERT INTO product_daily(day, pkey, sku, name, units, ret_units, revenue, profit) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)').bind(day, x.key, x.sku || '', x.name || '', x.units || 0, x.retUnits || 0, x.revenue || 0, x.profit || 0));
-  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  const prs = r.products.filter(x => x.units || x.retUnits || x.revenue || x.profit);
+  for (let i = 0; i < prs.length; i += 12) { const part = prs.slice(i, i + 12), args = [];
+    for (const x of part) args.push(day, x.key, x.sku || '', String(x.name || '').slice(0, 120), x.units || 0, x.retUnits || 0, x.revenue || 0, x.profit || 0);
+    st.push(env.DB.prepare('INSERT INTO product_daily(day, pkey, sku, name, units, ret_units, revenue, profit) VALUES ' + part.map((_, j) => '(' + [1,2,3,4,5,6,7,8].map(k => '?' + (j * 8 + k)).join(',') + ')').join(',')).bind(...args)); }
+  await env.DB.batch(st);
 }
 // Her dakika: bugün + dün; son 70 gün sırayla yeniden (geç gelen iade/fatura için); daha eski eksik günler bir kez
 async function refreshStats(env, deadline) {
   const today = trDay(Date.now()); const g = await getSettings(env, ['stats_cursor', 'stats_first']);
   let first = g.stats_first;
   if (!first) { const r = await env.DB.prepare('SELECT MIN(date) d FROM orders').first(); if (!r || !r.d) return { n: 0 }; first = trDay(Date.parse(r.d)); await setSetting(env, 'stats_first', first); }
-  const todo = [today, addDay(today, -1)], LIM = 40;
+  const todo = [today, addDay(today, -1)], LIM = 15;
   // eksik günler: en yeniden eskiye (önce son günler dolsun)
   const { results } = await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1').bind(first).all(); const have = new Set(results.map(x => x.day));
   for (let d = addDay(today, -2); d >= first && todo.length < LIM; d = addDay(d, -1)) if (!have.has(d)) todo.push(d);
@@ -1686,9 +1688,9 @@ export default {
       }
       if (path === '/perf') {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at']);
+        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err']);
         const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
-        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null });
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, slow: dg.slow, errs: Object.keys(dg.errs || {}) }, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
@@ -1704,7 +1706,11 @@ export default {
       return bad('Sunucu hatası: ' + String(e && e.message || e).slice(0, 300), 500);
     }
   },
-  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); }
+  // Ana eşitleme her dakika; raporlar 2 dakikada bir ayrı çalışmada (sorgu sınırı ayrı sayılsın, eşitlemeyi yavaşlatmasın)
+  async scheduled(event, env, ctx) {
+    if (event && event.cron === '*/2 * * * *') ctx.waitUntil((async () => { await init(env); try { await refreshStats(env, Date.now() + 25000); await setSetting(env, 'stats_run', iso()); } catch (e) { try { await setSetting(env, 'stats_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } catch (x) {} } })());
+    else ctx.waitUntil(cronRun(env));
+  }
 };
 
 const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d2235"/><stop offset=".55" stop-color="#0f121c"/><stop offset="1" stop-color="#06070b"/></linearGradient><radialGradient id="g1" cx="860" cy="140" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#6366f1" stop-opacity=".62"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/></radialGradient><radialGradient id="g2" cx="120" cy="980" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient><linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset=".5" stop-color="#818cf8"/><stop offset="1" stop-color="#22d3ee"/></linearGradient><clipPath id="r"><rect width="1024" height="1024" rx="230"/></clipPath></defs><g clip-path="url(#r)"><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#g1)"/><rect width="1024" height="1024" fill="url(#g2)"/><g fill="#fff"><rect x="262" y="236" width="156" height="548" rx="40"/><rect x="262" y="628" width="392" height="156" rx="40"/></g><circle cx="742" cy="706" r="78" fill="url(#ac)"/></g></svg>`;
