@@ -1486,8 +1486,8 @@ async function makeLabelsPdf(){
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
     const doc = new window.jspdf.jsPDF({unit:'mm', format:[w, h], orientation: w > h ? 'landscape' : 'portrait', compress:true});
     let n = 0; const add = (cv) => { if (n++) doc.addPage([w, h], w > h ? 'landscape' : 'portrait'); doc.addImage(cv.toDataURL('image/png'), 'PNG', 0, 0, w, h, undefined, 'FAST'); };
+    for (const cv of drawSummaryPages(list, w, h)) add(cv); // toplam ürün listesi en başta
     for (const p of list) for (const cv of drawLabelPages(p, w, h, L.sid)) add(cv);
-    for (const cv of drawSummaryPages(list, w, h)) add(cv);
     const name = `kargo-etiketleri-${L.car || ''}-${todayTR()}-${list.length}.pdf`, blob = doc.output('blob'), file = new File([blob], name, {type:'application/pdf'});
     if (navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
     const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
