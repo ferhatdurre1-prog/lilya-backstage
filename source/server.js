@@ -88,7 +88,7 @@ async function init0(env) {
   }
   try { await env.DB.prepare('ALTER TABLE order_fin ADD COLUMN ret_cargo REAL').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ext_at TEXT').run(); } catch (e) {}
-  for (const c of ['claim_id TEXT', 'item_id TEXT', 'customer TEXT', 'amount REAL', 'reason TEXT', 'cnote TEXT', 'cargo TEXT', 'cargo_link TEXT']) { try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['chk_at TEXT', 'claim_id TEXT', 'item_id TEXT', 'customer TEXT', 'amount REAL', 'reason TEXT', 'cnote TEXT', 'cargo TEXT', 'cargo_link TEXT']) { try { await env.DB.prepare('ALTER TABLE returns ADD COLUMN ' + c).run(); } catch (e) {} }
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS order_cust(order_no TEXT PRIMARY KEY, channel TEXT, data TEXT, updated_at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE order_cust ADD COLUMN sname TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS product_info(main_id TEXT PRIMARY KEY, title TEXT, descr TEXT, attrs TEXT, image TEXT, updated_at TEXT, note TEXT)').run();
@@ -655,19 +655,35 @@ async function syncTrendyolClaims(env) {
   for (const c of claims) if (c.lastModifiedDate && c.lastModifiedDate > maxMod) maxMod = c.lastModifiedDate;
   const res = await applyClaimItems(env, claimItems(claims), s);
   await setSetting(env, 'ty_claims_hwm', String(claims.length ? maxMod : (hwm || Math.min(end, now))));
-  // Ayrıntısı eksik açık iadeler (bu güncellemeden önce kaydedilenler) sipariş numarasıyla tamamlanır: turda en fazla 8 sipariş
-  let filled = 0;
+  // Açık iadeler Trendyol'la tek tek karşılaştırılır: değişikliği kaçırılmış (iptal, onay, kargoya verildi vb.) talepler burada düzelir.
+  // Her açık iade en geç 30 dakikada bir kontrol edilir; turda en fazla 10 talep.
+  let filled = 0, checked = 0;
+  const lookup = async (cid, orderNo, createdAt) => {
+    if (cid && cid !== '-') { const r = await ty(env, `order/sellers/${sid}/claims`, { claimIds: cid, size: 50, page: 0 }); return r.content || []; }
+    let r = await ty(env, `order/sellers/${sid}/claims`, { orderNumber: orderNo, size: 50, page: 0 });
+    if ((r.content || []).length) return r.content;
+    const c = Date.parse(createdAt) || now, st = c - 86400000, en = Math.min(st + 13 * 86400000, now);
+    r = await ty(env, `order/sellers/${sid}/claims`, { orderNumber: orderNo, startDate: st, endDate: en, size: 50, page: 0 });
+    return r.content || [];
+  };
   try {
-    const { results } = await env.DB.prepare(`SELECT DISTINCT order_no FROM returns WHERE channel='trendyol' AND id LIKE 'ty-%' AND claim_id IS NULL AND order_no<>'' ORDER BY (status='requested') DESC, created_at DESC LIMIT 8`).all();
-    for (const { order_no } of results) {
-      let list = [];
-      try { const r = await ty(env, `order/sellers/${sid}/claims`, { orderNumber: order_no, size: 50, page: 0 }); list = r.content || []; } catch (e) { if (e.status === 429) break; }
+    const cut = iso(now - 30 * 60000);
+    const { results } = await env.DB.prepare(`SELECT COALESCE(NULLIF(claim_id,'-'), '') cid, order_no, MIN(created_at) created_at FROM returns
+      WHERE channel='trendyol' AND id LIKE 'ty-%' AND order_no<>'' AND (status='requested' OR claim_id IS NULL) AND (chk_at IS NULL OR chk_at < ?1)
+      GROUP BY cid, order_no ORDER BY MAX(status='requested') DESC, MIN(COALESCE(chk_at,'')) ASC LIMIT 10`).bind(cut).all();
+    for (const g of results) {
+      let list;
+      try { list = await lookup(g.cid, g.order_no, g.created_at); } catch (e) { if (e.status === 429) break; continue; }
+      if (g.cid) list = list.filter(c => String(c.id || c.claimId) === g.cid);
       const its = claimItems(list);
       if (its.length) { await applyClaimItems(env, its, s); filled++; }
-      await env.DB.prepare(`UPDATE returns SET claim_id='-' WHERE channel='trendyol' AND id LIKE 'ty-%' AND order_no=?1 AND claim_id IS NULL`).bind(order_no).run();
+      const stamp = iso();
+      if (g.cid) await env.DB.prepare(`UPDATE returns SET chk_at=?2 WHERE claim_id=?1`).bind(g.cid, stamp).run();
+      else await env.DB.prepare(`UPDATE returns SET chk_at=?2, claim_id=COALESCE(claim_id,'-') WHERE channel='trendyol' AND id LIKE 'ty-%' AND order_no=?1 AND (claim_id IS NULL OR claim_id='-')`).bind(g.order_no, stamp).run();
+      checked++;
     }
   } catch (e) {}
-  return { claims: claims.length, added: res.added, accepted: res.accepted, filled };
+  return { claims: claims.length, added: res.added, accepted: res.accepted, filled, checked };
 }
 /* Trendyol'da iade onayı / ret talebi (yalnızca "Aksiyon bekliyor" durumundakiler) */
 async function tySend(env, method, path, params, body) {
