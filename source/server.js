@@ -1982,7 +1982,17 @@ async function api(req, env, path, ctx) {
     const J = `FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ${W}`;
     const tot = await env.DB.prepare(`SELECT COUNT(*) n ${J}`).bind(...args).first();
     const { results } = await env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname ${J} ORDER BY o.date DESC LIMIT ${size} OFFSET ${(page - 1) * size}`).bind(...args).all();
-    return json({ ok: true, page, size, total: tot ? tot.n : 0, orders: results.map(mapOrder) });
+    // Her siparişin kârı: Kâr ekranıyla aynı hesap, bu sayfadaki siparişlerin tarih aralığı için
+    const prof = {};
+    try {
+      const ds = results.map(r => Date.parse(r.date)).filter(Number.isFinite);
+      if (ds.length) {
+        const pr = await computeProfit(env, iso(Math.min(...ds)), iso(Math.max(...ds) + 1));
+        const ids = new Set(results.map(r => r.id));
+        for (const x of pr.orders) if (ids.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual };
+      }
+    } catch (e) {}
+    return json({ ok: true, page, size, total: tot ? tot.n : 0, orders: results.map(r => ({ ...mapOrder(r), prof: prof[r.id] || null })) });
   }
   if (path === '/api/orders/search') {
     // Sipariş no, müşteri adı, ürün adı / stok kodu / barkod ile arama (son 300 siparişin dışındakiler dahil)
