@@ -1445,6 +1445,30 @@ function drawLabelPages(p, W, H, sid){
   });
   return pages;
 }
+// PDF'in sonunda toplam ürün özeti: seçilen etiketlerdeki her üründen toplam kaç adet var (çoktan aza)
+function drawSummaryPages(list, W, H){
+  const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
+  const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
+  const agg = new Map();
+  for (const p of list) for (const l of p.lines) { const k = l.sku || l.name; const a = agg.get(k) || {sku: l.sku, name: l.name, qty: 0, orders: new Set()}; a.qty += l.qty; a.orders.add(p.orderNo); agg.set(k, a); }
+  const rows = [...agg.values()].sort((a, b) => b.qty - a.qty || String(a.sku).localeCompare(String(b.sku), 'tr'));
+  const totalQty = rows.reduce((t, r) => t + r.qty, 0);
+  const colQ = mm(14), nameW = cw - colQ - mm(2), pages = []; let c, y, cv;
+  const start = (first) => { cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; y = m;
+    font(c, 4.4, true); c.fillText(first ? 'TOPLAM ÜRÜN LİSTESİ' : 'TOPLAM ÜRÜN LİSTESİ (devam)', m, y); y += mm(5.6);
+    font(c, 2.8, false); c.fillText(`${list.length} etiket · ${rows.length} çeşit ürün · ${totalQty} adet · ${new Date().toLocaleDateString('tr-TR')}`, m, y); y += mm(4.2);
+    c.lineWidth = mm(0.4); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(1.4);
+    font(c, 2.4, true); c.fillText('ÜRÜN', m, y); const a = 'ADET'; c.fillText(a, PW - m - c.measureText(a).width, y); y += mm(3.6); pages.push(cv); };
+  start(true);
+  for (const r of rows) {
+    font(c, 2.9, false); const nl = wrapText(c, (r.sku ? r.sku + ' · ' : '') + (r.name || ''), nameW).slice(0, 3); const h = nl.length * mm(3.5) + mm(2.2);
+    if (y + h > PH - m) start(false);
+    font(c, 2.9, false); nl.forEach((t, k) => c.fillText(t, m, y + k * mm(3.5)));
+    font(c, 4.2, true); const q = String(r.qty); c.fillText(q, PW - m - c.measureText(q).width, y);
+    y += h; c.lineWidth = mm(0.12); c.setLineDash([mm(0.6), mm(0.6)]); c.beginPath(); c.moveTo(m, y - mm(1)); c.lineTo(PW - m, y - mm(1)); c.stroke(); c.setLineDash([]);
+  }
+  return pages;
+}
 async function makeLabelsPdf(){
   const L = S.sheet; if (!L || !L.data) return;
   const w = Number(($('#lbl-w') || {}).value) || lblSize().w, h = Number(($('#lbl-h') || {}).value) || lblSize().h;
@@ -1457,7 +1481,9 @@ async function makeLabelsPdf(){
     await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
     const doc = new window.jspdf.jsPDF({unit:'mm', format:[w, h], orientation: w > h ? 'landscape' : 'portrait', compress:true});
-    let n = 0; for (const p of list) for (const cv of drawLabelPages(p, w, h, L.sid)) { if (n++) doc.addPage([w, h], w > h ? 'landscape' : 'portrait'); doc.addImage(cv.toDataURL('image/png'), 'PNG', 0, 0, w, h, undefined, 'FAST'); }
+    let n = 0; const add = (cv) => { if (n++) doc.addPage([w, h], w > h ? 'landscape' : 'portrait'); doc.addImage(cv.toDataURL('image/png'), 'PNG', 0, 0, w, h, undefined, 'FAST'); };
+    for (const p of list) for (const cv of drawLabelPages(p, w, h, L.sid)) add(cv);
+    for (const cv of drawSummaryPages(list, w, h)) add(cv);
     const name = `kargo-etiketleri-${todayTR()}-${list.length}.pdf`, blob = doc.output('blob'), file = new File([blob], name, {type:'application/pdf'});
     if (navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
     const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
