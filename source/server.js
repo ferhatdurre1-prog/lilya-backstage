@@ -1953,13 +1953,15 @@ async function api(req, env, path, ctx) {
             date: p.orderDate ? iso(Number(p.orderDate) - TY_ORDER_DATE_SHIFT) : null, provider: t(p.cargoProviderName), tracking: t(p.cargoTrackingNumber), sender: t(p.cargoSenderNumber),
             desi: Number(p.cargoDeci ?? p.deci) || null, fast: /sameday|bugun|bugün/i.test(String(p.fastDeliveryType || '')),
             to: { name: t(sa.fullName) || t([p.customerFirstName, p.customerLastName].filter(Boolean).join(' ')), address: t(sa.fullAddress || [sa.address1, sa.address2].filter(Boolean).join(' ')), district: t(sa.district), city: t(sa.city), phone: t(sa.phone) },
-            lines: (p.lines || []).filter(l => !/cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))).map(l => ({ sku: t(l.merchantSku || l.stockCode || l.barcode), name: t(l.productName), qty: Number(l.quantity) || 1 })) });
+            total: Number(p.totalPrice ?? p.packageTotalPrice) || null,
+            lines: (p.lines || []).filter(l => !/cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))).map(l => { const q = Number(l.quantity) || 1, unit = Number(l.price) || 0;
+              return { sku: t(l.merchantSku || l.stockCode || l.barcode), name: t(l.productName), size: t(l.productSize), color: t(l.productColor), qty: q, unit, amount: Number(l.amount) > 0 ? Number(l.amount) : Math.round(unit * q * 100) / 100 }; }) });
         }
         if (page + 1 >= (r.totalPages || 0)) break;
       }
     }
     out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    return json({ ok: true, packages: out });
+    return json({ ok: true, sellerId: String(env.TRENDYOL_SELLER_ID || ''), packages: out });
   }
   if (path === '/api/returns/reasons') {
     if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
