@@ -586,7 +586,7 @@ async function backfillReturnDesi(env) {
   let todo = s.ret_desi_bf ? JSON.parse(s.ret_desi_bf) : JSON.parse(s.cargo_inv_done || '[]');
   if (!todo.length) { await setSetting(env, 'ret_desi_bf', 'done'); return null; }
   const sid = env.TRENDYOL_SELLER_ID; let n = 0, found = 0;
-  for (const id of todo.slice(0, 2)) {
+  for (const id of todo.slice(0, 1)) {
     const by = new Map();
     for (let p = 0; p < 20; p++) {
       const it = await ty(env, `finance/che/sellers/${sid}/cargo-invoice/${encodeURIComponent(id)}/items`, { page: p, size: 500 });
@@ -703,7 +703,7 @@ async function syncTrendyolClaims(env) {
   await setSetting(env, 'ty_claims_hwm', String(claims.length ? maxMod : (hwm || Math.min(end, now))));
   return { claims: claims.length, added: res.added, accepted: res.accepted };
 }
-async function reconcileTrendyolClaims(env) {
+async function reconcileTrendyolClaims(env, deadline) {
   const sid = env.TRENDYOL_SELLER_ID, now = Date.now();
   const s = await getSettings(env, ['auto_accept', 'started_at']);
   // Açık iadeler Trendyol'la tek tek karşılaştırılır: değişikliği kaçırılmış (iptal, onay, kargoya verildi vb.) talepler burada düzelir.
@@ -723,6 +723,7 @@ async function reconcileTrendyolClaims(env) {
       WHERE channel='trendyol' AND id LIKE 'ty-%' AND order_no<>'' AND (status='requested' OR claim_id IS NULL) AND (chk_at IS NULL OR chk_at < ?1)
       GROUP BY cid, order_no ORDER BY MAX(status='requested') DESC, MIN(COALESCE(chk_at,'')) ASC LIMIT 10`).bind(cut).all();
     for (const g of results) {
+      if (deadline && Date.now() > deadline) break;
       let list;
       try { list = await lookup(g.cid, g.order_no, g.created_at); } catch (e) { if (e.status === 429) break; continue; }
       if (g.cid) list = list.filter(c => String(c.id || c.claimId) === g.cid);
@@ -1057,12 +1058,13 @@ async function heavySteps(env, budget, result, step, left, t) {
     const lvl = (GUARD_CACHE && GUARD_CACHE.v && GUARD_CACHE.v.level) || 0, mult = lvl >= 2 ? 6 : lvl === 1 ? 3 : 1;
     const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms * mult;
     const ok = (need) => qLeft(env) > need;
-    if (left() > 30000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env));
-    if (left() > 30000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
-    if (left() > 30000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
-    if (left() > 30000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
-    if (left() > 35000 && ok(350) && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
-    if (left() > 25000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
+    // Sıra önemli: seyrek ama kritik işler (kesintiler = gerçek kâr, ürün listesi) önce; sık ve küçük işler kalan sürede
+    if (left() > 28000 && ok(350) && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
+    if (left() > 20000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
+    if (left() > 15000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
+    if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
+    if (left() > 8000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env, Date.now() + Math.min(15000, left() - 5000)));
+    if (left() > 8000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
   }
   result.ms = Date.now() - t;
   return result;
