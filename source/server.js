@@ -911,8 +911,9 @@ function tyConfigured(env) { return !!(env.TRENDYOL_SELLER_ID && env.TRENDYOL_AP
 // Bir çalışmada veritabanına en fazla ~1000 sorgu atılabilir (Cloudflare D1). Sayaç ile her işten önce kalan bütçe kontrol edilir.
 const Q_LIMIT = 880;
 function countingDB(db, counter) {
-  const wrap = (st) => ({ __raw: st, bind: (...a) => wrap(st.bind(...a)), first: (...a) => { counter.n++; return st.first(...a); }, all: () => { counter.n++; return st.all(); }, run: () => { counter.n++; return st.run(); }, raw: (...a) => { counter.n++; return st.raw(...a); } });
-  return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n += list.length; return db.batch(list.map(x => (x && x.__raw) || x)); }, exec: (q) => { counter.n++; return db.exec(q); } };
+  const m = (res) => { const a = Array.isArray(res) ? res : [res]; for (const x of a) if (x && x.meta) { counter.w = (counter.w || 0) + (x.meta.rows_written || 0); counter.r = (counter.r || 0) + (x.meta.rows_read || 0); } return res; };
+  const wrap = (st) => ({ __raw: st, bind: (...a) => wrap(st.bind(...a)), first: (...a) => { counter.n++; return st.first(...a); }, all: () => { counter.n++; return st.all().then(m); }, run: () => { counter.n++; return st.run().then(m); }, raw: (...a) => { counter.n++; return st.raw(...a); } });
+  return { prepare: (sql) => wrap(db.prepare(sql)), batch: (list) => { counter.n += list.length; return db.batch(list.map(x => (x && x.__raw) || x)).then(m); }, exec: (q) => { counter.n++; return db.exec(q); } };
 }
 const qLeft = (env) => env.__q ? Q_LIMIT - env.__q.n : Infinity;
 async function heavySteps(env, budget, result, step, left, t) {
@@ -1001,8 +1002,12 @@ async function cronRun(env) {
       if (i === 0) { const reserve = 5 * Math.min(170, Math.max(45, counter.n - q0 + 25)); try { envc.__q = { get n() { return counter.n + reserve; } }; absorb(await pollOnce(envc, true, t0 + 50000, 'heavy')); } catch (e) { diag.errs.heavy = String(e.message || e).slice(0, 150); } envc.__q = counter; }
     }
     // Raporlar: kalan bütçeyle birkaç gün
-    if (qLeft(envc) > 120 && Date.now() - t0 < 56000) { try { const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.floor((qLeft(envc) - 60) / 30))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
-    diag.queries = counter.n;
+    // Raporlar 5 dakikada bir, az sayıda gün (eksik gün varken daha fazla); değişmeyen gün yazılmaz
+    const sAt = Number(await envc.DB.prepare(`SELECT v FROM settings WHERE k='run_stats_at'`).first().then(r => r && r.v)) || 0;
+    if (qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= 5 * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
+    diag.queries = counter.n; diag.wr = counter.w || 0; diag.rd = counter.r || 0;
+    // Aylık kullanım tahmini için son 60 turun ortalaması
+    try { const u = JSON.parse((await getSetting(env, 'usage_avg')) || '{"w":0,"r":0,"n":0}'); const k = Math.min(60, u.n + 1); u.w = u.w + (diag.wr - u.w) / k; u.r = u.r + (diag.rd - u.r) / k; u.n = k; u.at = iso(); await setSetting(env, 'usage_avg', JSON.stringify(u)); } catch (e) {}
   } finally {
     diag.ms = Date.now() - t0;
     try { await env.DB.batch([setStmt(env, 'ty_diag', JSON.stringify(diag)), env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`)]); } catch (e) { await unlock(env); }
@@ -1316,8 +1321,8 @@ function mapReturn(r) { return { extAt: r.ext_at || null, id: r.id, channel: r.c
 function mapProduct(r) { return { sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err']);
-  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, qnaWaiting: Number(s.qna_waiting) || 0, qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg']);
+  return { rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
 }
 /* ---------- piyasa bandı (döviz, borsa, emtia) ---------- */
 const MKT_SYMS = { USD: 'USDTRY=X', EUR: 'EURTRY=X', BIST: 'XU100.IS', GOLD: 'GC=F', SILVER: 'SI=F', BRENT: 'BZ=F' };
@@ -1365,6 +1370,9 @@ const addDay = (d, n) => trDay(dayStartTR(d) + n * 86400000 + 12 * 3600000);
 async function snapshotDay(env, day) {
   const a = dayStartTR(day); const r = await computeProfit(env, iso(a), iso(a + 86400000));
   const data = {}; for (const k of STAT_KEYS) data[k] = Math.round((Number(r.summary[k]) || 0) * 100) / 100;
+  // Değişmediyse hiçbir şey yazılmaz (yazılan satır = maliyet)
+  const prev = await env.DB.prepare('SELECT data FROM daily_stats WHERE day=?1').bind(day).first();
+  if (prev && prev.data === JSON.stringify(data)) { const pc = await env.DB.prepare('SELECT COUNT(*) n FROM product_daily WHERE day=?1').bind(day).first(); if (pc && pc.n === r.products.filter(x => x.units || x.retUnits || x.revenue || x.profit).length) return false; }
   const st = [env.DB.prepare('INSERT INTO daily_stats(day, data, computed_at) VALUES(?1,?2,?3) ON CONFLICT(day) DO UPDATE SET data=excluded.data, computed_at=excluded.computed_at').bind(day, JSON.stringify(data), iso()),
     env.DB.prepare('DELETE FROM product_daily WHERE day=?1').bind(day)];
   const prs = r.products.filter(x => x.units || x.retUnits || x.revenue || x.profit);
@@ -1372,6 +1380,7 @@ async function snapshotDay(env, day) {
     for (const x of part) args.push(day, x.key, x.sku || '', String(x.name || '').slice(0, 120), x.units || 0, x.retUnits || 0, x.revenue || 0, x.profit || 0);
     st.push(env.DB.prepare('INSERT INTO product_daily(day, pkey, sku, name, units, ret_units, revenue, profit) VALUES ' + part.map((_, j) => '(' + [1,2,3,4,5,6,7,8].map(k => '?' + (j * 8 + k)).join(',') + ')').join(',')).bind(...args)); }
   await env.DB.batch(st);
+  return true;
 }
 // Her dakika: bugün + dün; son 70 gün sırayla yeniden (geç gelen iade/fatura için); daha eski eksik günler bir kez
 async function refreshStats(env, deadline, maxDays) {
@@ -1385,7 +1394,7 @@ async function refreshStats(env, deadline, maxDays) {
   // son 70 gün dönüşümlü
   let cur = g.stats_cursor && g.stats_cursor >= addDay(today, -70) && g.stats_cursor < today ? g.stats_cursor : addDay(today, -70);
   if (cur < first) cur = first;
-  while (todo.length < Math.min(12, LIM) && cur < today) { if (!todo.includes(cur)) todo.push(cur); cur = addDay(cur, 1); }
+  for (let k = 0; k < 2 && todo.length < LIM && cur < today; ) { if (!todo.includes(cur)) { todo.push(cur); k++; } cur = addDay(cur, 1); }
   todo.length = Math.min(todo.length, LIM);
   const busy = Number(await getSetting(env, 'stats_busy')) || 0; if (Date.now() - busy < 60000) return { n: 0, busy: true };
   await setSetting(env, 'stats_busy', String(Date.now()));
@@ -1856,9 +1865,9 @@ export default {
       }
       if (path === '/perf') {
         const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err', 'run_err', 'ty_orders_exact', 'ty_orders_hwm', 'ty_ok']);
+        const g = await getSettings(env, ['perf_profit', 'ty_diag', 'cron_busy', 'cron_at', 'stats_run', 'stats_err', 'run_err', 'ty_orders_exact', 'ty_orders_hwm', 'ty_ok', 'usage_avg']);
         const pp = JSON.parse(g.perf_profit || 'null'), dg = JSON.parse(g.ty_diag || 'null');
-        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, queries: dg.queries, slow: dg.slow, errs: dg.errs || {} }, runErr: g.run_err || null, exact: g.ty_orders_exact || null, hwm: g.ty_orders_hwm ? iso(Number(g.ty_orders_hwm)) : null, tyOk: g.ty_ok || null, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
+        return json({ now: iso(), ping, cold: COLD_MS, profit: pp && { at: pp.at, days: pp.days, ms: pp.ms, ping: pp.ping, ph: pp.ph, cold: pp.cold }, cron: dg && { at: dg.at, polls: dg.polls, ms: dg.ms, queries: dg.queries, wr: dg.wr, rd: dg.rd, slow: dg.slow, errs: dg.errs || {} }, usage: g.usage_avg ? JSON.parse(g.usage_avg) : null, runErr: g.run_err || null, exact: g.ty_orders_exact || null, hwm: g.ty_orders_hwm ? iso(Number(g.ty_orders_hwm)) : null, tyOk: g.ty_ok || null, cronBusy: g.cron_busy || null, cronAt: g.cron_at ? iso(Number(g.cron_at)) : null, statsRun: g.stats_run || null, statsErr: g.stats_err || null });
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {

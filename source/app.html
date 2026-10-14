@@ -1850,7 +1850,14 @@ function diagHtml(t){
   const slow = Object.entries(d.slow || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, v]) => `${STEP_NAMES[k] || k} ${(v/1000).toFixed(1).replace('.', ',')} sn`).join(', ');
   const errs = Object.entries(d.errs || {}).map(([k, v]) => `${STEP_NAMES[k.replace(/Err$/, '')] || k}: ${v}`);
   const gaps = (t.gaps || []).slice(0, 3).map(g => `${fmtDate(g.from)} → ${g.min} dk`);
-  return `<p class="muted small" style="margin:0">Son tur ${esc(ago(d.at))}: ${fmtN(d.polls)} eşitleme, ${(d.ms/1000).toFixed(0)} sn${slow ? ' · en uzun: ' + esc(slow) : ''}.${gaps.length ? ' Son duraklamalar: ' + esc(gaps.join(' · ')) + '.' : ''}</p>${errs.length ? `<p class="small" style="margin:0;color:var(--bad)">${esc(errs.join(' · '))}</p>` : ''}`;
+  return `<p class="muted small" style="margin:0">Son tur ${esc(ago(d.at))}: ${fmtN(d.polls)} eşitleme, ${(d.ms/1000).toFixed(0)} sn${slow ? ' · en uzun: ' + esc(slow) : ''}.${gaps.length ? ' Son duraklamalar: ' + esc(gaps.join(' · ')) + '.' : ''}</p>${errs.length ? `<p class="small" style="margin:0;color:var(--bad)">${esc(errs.join(' · '))}</p>` : ''}` + usageLine();
+}
+function usageLine(){
+  const u = ((S.sync || {}).trendyol || {}).usage; if (!u || !u.n) return '';
+  const perMonth = (x) => x * 60 * 24 * 30; const w = perMonth(u.w), r = perMonth(u.r);
+  const fmtM = (x) => x >= 1e9 ? (x / 1e9).toLocaleString('tr-TR', {maximumFractionDigits:1}) + ' milyar' : (x / 1e6).toLocaleString('tr-TR', {maximumFractionDigits:1}) + ' milyon';
+  const ok = w < 40e6 && r < 20e9;
+  return `<p class="small" style="margin:6px 0 0;color:${ok ? 'var(--good)' : 'var(--bad)'}">Arka plan veritabanı kullanımı (tahmini aylık): ${fmtM(w)} satır yazma / 50 milyon dahil · ${fmtM(r)} satır okuma / 25 milyar dahil${ok ? ' — paket içinde, ek ücret yok.' : ' — sınıra yakın!'}</p>`;
 }
 function tyCardLive(){
   const t = (S.sync && S.sync.trendyol) || {}; const st = tyState();
