@@ -101,6 +101,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS product_daily(day TEXT, pkey TEXT, sku TEXT, name TEXT, units INTEGER, ret_units INTEGER, revenue REAL, profit REAL, PRIMARY KEY(day, pkey))').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, name TEXT, amount REAL, created_at TEXT)').run();
+  try { await env.DB.prepare("ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'gider'").run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
@@ -1349,7 +1350,7 @@ async function computeProfit(env, from, to) {
     env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%'),
     env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT COUNT(*) n FROM ad_spend'),
-    env.DB.prepare('SELECT id, day, name, amount, created_at FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo)])]);
+    env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo)])]);
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const rets = new Map(), pend = new Map(), defQ = new Map(), undOrders = new Set();
@@ -1496,9 +1497,10 @@ async function computeProfit(env, from, to) {
   const otherFees = miscFree.filter(x => !(adTracked && isAd(x.type))).map(x => ({ type: x.type, amount: R2(x.amount || 0), n: x.n }));
   sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices);
   // Elle girilen işletme giderleri (paketleme malzemesi vb.): girildiği günün gideri
-  const expenses = expR.results.map(x => ({ id: x.id, day: x.day, name: x.name, amount: R2(x.amount || 0) }));
-  sum.expenses = expenses.reduce((a, x) => a + x.amount, 0);
-  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses; sum.profit += sum.compensation;
+  const expenses = expR.results.map(x => ({ id: x.id, day: x.day, name: x.name, amount: R2(x.amount || 0), kind: x.kind === 'gelir' ? 'gelir' : 'gider' }));
+  sum.expenses = expenses.filter(x => x.kind === 'gider').reduce((a, x) => a + x.amount, 0);
+  sum.extraIncome = R2(expenses.filter(x => x.kind === 'gelir').reduce((a, x) => a + x.amount, 0));
+  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses; sum.profit += sum.compensation + sum.extraIncome;
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
@@ -1576,7 +1578,7 @@ async function marketData(env) {
   return out;
 }
 /* ---------- raporlar: her günün kesin sonucu ayrı tabloda saklanır (yıl sonu toplamları için) ---------- */
-const STAT_KEYS = ['revenue', 'commission', 'cargo', 'retCargo', 'penalty', 'service', 'stopaj', 'cost', 'ads', 'expenses', 'otherFees', 'compensation', 'profit', 'orders', 'units', 'retUnits', 'retOrders'];
+const STAT_KEYS = ['revenue', 'commission', 'cargo', 'retCargo', 'penalty', 'service', 'stopaj', 'cost', 'ads', 'expenses', 'extraIncome', 'otherFees', 'compensation', 'profit', 'orders', 'units', 'retUnits', 'retOrders'];
 const dayStartTR = (d) => Date.parse(d + 'T00:00:00+03:00');
 const addDay = (d, n) => trDay(dayStartTR(d) + n * 86400000 + 12 * 3600000);
 async function snapshotDay(env, day) {
@@ -1720,13 +1722,13 @@ async function api(req, env, path, ctx) {
   if (path === '/api/passkey/list') return json({ user: await authUser(env), items: (await env.DB.prepare('SELECT id, label, created_at, used_at FROM wa_creds ORDER BY created_at DESC').all()).results });
   if (path === '/api/passkey/delete') { if (body.all) await env.DB.prepare('DELETE FROM wa_creds').run(); else await env.DB.prepare('DELETE FROM wa_creds WHERE id=?1').bind(String(body.id || '')).run(); return json({ ok: true }); }
   if (path === '/api/expenses/add' || path === '/api/expenses/update') {
-    const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), day = String(body.day || trDay(Date.now()));
-    if (!name) return bad('Gider adını yaz.');
+    const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), day = String(body.day || trDay(Date.now())), kind = body.kind === 'gelir' ? 'gelir' : 'gider';
+    if (!name) return bad(kind === 'gelir' ? 'Gelir adını yaz.' : 'Gider adını yaz.');
     if (!isFinite(amount) || amount <= 0 || amount > 1e8) return bad('Geçerli bir tutar yaz.');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return bad('Tarih geçersiz.');
     const st = path === '/api/expenses/update'
-      ? env.DB.prepare('UPDATE expenses SET day=?1, name=?2, amount=?3 WHERE id=?4').bind(day, name, Math.round(amount * 100) / 100, Number(body.id) || 0)
-      : env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at) VALUES(?1,?2,?3,?4)').bind(day, name, Math.round(amount * 100) / 100, iso());
+      ? env.DB.prepare('UPDATE expenses SET day=?1, name=?2, amount=?3, kind=?5 WHERE id=?4').bind(day, name, Math.round(amount * 100) / 100, Number(body.id) || 0, kind)
+      : env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at, kind) VALUES(?1,?2,?3,?4,?5)').bind(day, name, Math.round(amount * 100) / 100, iso(), kind);
     const old = path === '/api/expenses/update' ? await env.DB.prepare('SELECT day FROM expenses WHERE id=?1').bind(Number(body.id) || 0).first() : null;
     await env.DB.batch([st, setStmt(env, 'home_cache', ''), REV(env)]);
     // Raporlar ve ana ekran hemen güncel olsun
