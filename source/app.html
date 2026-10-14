@@ -286,7 +286,8 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .toast.bad{background:var(--bad);color:#fff}
 .skel{height:64px;border-top:1px solid var(--line);background:linear-gradient(90deg,var(--surface) 0%,var(--surface-2) 50%,var(--surface) 100%);background-size:200% 100%;animation:sk 1.4s infinite}
 @keyframes sk{to{background-position:-200% 0}}
-.ticker{overflow:hidden;margin:-2px 0 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:12px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent)}
+body[data-tab="home"] .hero>.wrap{padding-top:10px}
+.ticker{overflow:hidden;margin:0;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:12px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent)}
 .ticker .rail{display:flex;width:max-content;animation:tick var(--dur,40s) linear infinite}
 .ticker:active .rail{animation-play-state:paused}
 .ticker .ti{display:flex;align-items:baseline;gap:6px;padding:8px 14px;white-space:nowrap;font-size:13px;border-right:1px solid rgba(255,255,255,.12)}
@@ -308,6 +309,7 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 </style>
 
 <div class="hero"><div class="wrap">
+  <div class="ticker" id="ticker" hidden aria-label="Piyasalar"></div>
   <header class="top">
     <button class="burger" id="burger" data-act="menu" aria-label="Menü" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
     <button class="brandbtn" data-act="tab" data-id="home" aria-label="Ana ekran"><div class="mark" aria-hidden="true">L</div>
@@ -317,8 +319,6 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
       <button class="btn" data-act="open-import" aria-label="Bağlantılar ve yedek"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7l1.7-1.7"/></svg><span class="hide-sm">Bağlantılar</span></button>
     </div>
   </header>
-  <div class="ticker" id="ticker" hidden aria-label="Piyasalar"></div>
-  <div class="wx" id="wx" hidden></div>
 </div></div>
 <div class="wrap">
   <nav class="tabs" id="tabs" aria-label="Bölümler"></nav>
@@ -456,6 +456,7 @@ let wxAt = 0;
 const WX = {0:['☀️','Açık'],1:['🌤️','Az bulutlu'],2:['⛅','Parçalı bulutlu'],3:['☁️','Kapalı'],45:['🌫️','Sisli'],48:['🌫️','Kırağılı sis'],51:['🌦️','Hafif çisenti'],53:['🌦️','Çisenti'],55:['🌦️','Yoğun çisenti'],56:['🌧️','Dondurucu çisenti'],57:['🌧️','Dondurucu çisenti'],61:['🌧️','Hafif yağmur'],63:['🌧️','Yağmurlu'],65:['🌧️','Kuvvetli yağmur'],66:['🌧️','Dondurucu yağmur'],67:['🌧️','Dondurucu yağmur'],71:['🌨️','Hafif kar'],73:['🌨️','Karlı'],75:['❄️','Yoğun kar'],77:['🌨️','Kar taneleri'],80:['🌦️','Sağanak'],81:['🌧️','Sağanak'],82:['⛈️','Kuvvetli sağanak'],85:['🌨️','Kar sağanağı'],86:['❄️','Yoğun kar sağanağı'],95:['⛈️','Gök gürültülü'],96:['⛈️','Dolu ihtimali'],99:['⛈️','Dolulu fırtına']};
 function wxCoords(){ try { return JSON.parse(localStorage.getItem('lb_geo') || 'null'); } catch(e) { return null; } }
 async function loadWeather(force){
+  return; // hava durumu kaldırıldı
   if (!S.authed || document.visibilityState !== 'visible' || (!force && Date.now() - wxAt < 15 * 60000)) return; wxAt = Date.now();
   try { const g = wxCoords(); const d = await api('/api/weather', g ? {lat: g.lat, lon: g.lon} : {}); renderWeather(d, !!g); try { localStorage.setItem('lb_wx', JSON.stringify(d)); } catch(e) {} } catch(e) { wxAt = Date.now() - 13 * 60000; }
 }
@@ -847,7 +848,7 @@ function viewHome(){
     h += `<div class="home-grid">
       ${kpi('Bugün ciro', 'value', 'var(--blue)', 'var(--blue-soft)', fmtTL(T.rev), YS ? `Dün bu saatte ${fmtTL(YS.rev)}${vs(T.rev, YS.rev)}` : (Y.rev ? `Dün ${fmtTL(Y.rev)}` : 'Dün satış yok'), 'color:var(--blue)', 'today-products')}
       ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : (Y.prof ? `Dün ${tlS(Y.prof)}` : ''), profitCls(T.prof), 'today-products')}
-      ${kpi('Bugün sipariş', 'orders', 'var(--orange)', 'var(--warn-soft)', fmtN(T.n), `${fmtN(T.u)} adet${YS ? ` · dün bu saatte ${fmtN(YS.n)}${vs(T.n, YS.n)}` : ''}`, 'color:var(--orange)', 'today-orders')}
+      ${(() => { const nw = (S.sync.trendyol || {}).newOrders || {n:0, u:0}; return `<div class="kpi" data-act="orders-new" style="--c:var(--orange);--cs:var(--warn-soft);cursor:pointer"><div class="hd"><div class="k">Yeni</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.orders}</svg></div></div><div class="v" style="color:var(--orange)">${fmtN(nw.n)}</div><div class="s">${fmtN(nw.u)} adet · yeni ve işleme alınan</div></div>`; })()}
       ${kpi('Bu ay net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit) || 'color:var(--violet)', 'month-products')}
     </div>` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
@@ -865,8 +866,6 @@ function viewHome(){
   if (st.cls === 'err' || st.cls === 'warn') conn = `<button class="alert-row" data-act="open-import" style="margin-top:4px"><div class="ic" style="background:var(--bad-soft);color:var(--bad)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg></div><div class="tx"><b>${esc(st.text)}</b><span>${esc(st.err || 'Bağlantıyı kontrol et')}</span></div></button>`;
   h += `<div class="card"><h3 style="margin:0">Aksiyonlar</h3>${conn}<div class="act-grid">
     ${act('Aksiyon bekleyen iade', pendN, 'ret-tab', 'action')}
-    ${act('Süresi dolan iade', urgent, 'ret-tab', 'action', true)}
-    ${act('Tükenen ürünler', zero, 'home-stock', 'zero', true)}
     ${act('Stoğu azalan', low, 'home-stock', 'low')}
     ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
     ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true)}
@@ -875,7 +874,7 @@ function viewHome(){
 }
 // Ana ekran: son gelen siparişler (kârıyla), dokununca sipariş açılır
 function homeRecent(){
-  const N = 6;
+  const N = 3;
   if (!S.homeOrd || S.homeOrd.rev !== S.rev) {
     if (S.homeOrdLoading !== S.rev) { const rev = S.rev; S.homeOrdLoading = rev;
       api('/api/orders/page', {page:1, filter:'all'}).then(r => { S.homeOrd = {rev, orders: r.orders.slice(0, N)}; S.homeOrdLoading = null; if (S.tab === 'home') render(); }).catch(() => { S.homeOrdLoading = null; }); }
@@ -1163,7 +1162,7 @@ function viewOrders(){
   const PD = S.oPage;
   if (!PD || PD.key !== key) { if (!S.oLoading || S.oLoading !== key) { S.oLoading = key; api('/api/orders/page', {page:S.opage||1, filter:S.ofilter, channel:S.och||'', q:S.oq.trim()}).then(r => { S.oPage = {key, ...r}; S.oLoading = null; if (S.tab === 'orders') render(); }).catch(e => { S.oLoading = null; toast(errText(e), true); }); } }
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="oq" type="search" placeholder="Sipariş no, müşteri adı, ürün, stok kodu veya barkod" value="${esc(S.oq)}" aria-label="Sipariş ara" autocomplete="off"></div></div>
-  <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['cancelled','İptal'],['returned','İade var']].map(([id,l]) => `<button class="chip" data-act="ofilter" data-id="${id}" aria-pressed="${S.ofilter===id}">${l}</button>`).join('')}</div>
+  <div class="filters"><div class="chips">${[['all','Tümü'],['new','Yeni'],['active','Aktif'],['cancelled','İptal'],['returned','İade var']].map(([id,l]) => `<button class="chip" data-act="ofilter" data-id="${id}" aria-pressed="${S.ofilter===id}">${l}</button>`).join('')}</div>
   ${used.length > 1 ? `<div class="chips"><button class="chip" data-act="och" data-id="" aria-pressed="${!S.och}">Tüm kanallar</button>${used.map(c => `<button class="chip" data-act="och" data-id="${c}" aria-pressed="${S.och===c}">${esc((CHANNELS[c]||{name:c}).name)}</button>`).join('')}</div>` : ''}</div>`;
   const base = key.split('|').slice(0, 4).join('|'); const pd = S.oPage && S.oPage.key.split('|').slice(0, 4).join('|') === base ? S.oPage : null; const os = pd ? pd.orders : [];
   const pages = pd ? Math.max(1, Math.ceil(pd.total / pd.size)) : 1, cur = pd ? pd.page : (S.opage || 1);
@@ -2297,6 +2296,7 @@ document.addEventListener('click', async e => {
       try { await api('/api/qna/answer', {id, text}); Q.data.items = Q.data.items.filter(x => x.id !== id); delete Q.drafts[id]; toast('Cevap gönderildi.'); refresh(true); }
       catch(e) { toast(errText(e), true); }
       delete Q.busy[id]; render(); break; }
+    case 'orders-new': S.ofilter = 'new'; S.opage = 1; setTab('orders'); break;
     case 'home-go': { if (id === 'reports') { repS().gran = 'day'; setTab('reports'); break; }
       const P = profS(); const [per, sub] = id.split('-'); P.period = per === 'month' ? 'month' : 'today'; P.sub = sub === 'orders' ? 'orders' : 'products'; P.opage = 1; P.data = null; P.key = ''; setTab('profit'); break; }
     case 'rep-quick': { const R = repS(); [R.cf, R.ct] = id.split('|'); render(); break; }
