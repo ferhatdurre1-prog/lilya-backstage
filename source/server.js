@@ -608,6 +608,9 @@ function shOrdersToInput(nodes) {
   }
   return out;
 }
+// Stok kodu eşleştirmesi Türkçe İ/ı ve büyük-küçük harf farkını önemsemez (Trendyol'da "LİLYAHOME1652", Shopify'da "LILYAHOME1652" olabilir)
+const skuFold = (x) => String(x || '').trim().replace(/İ/g, 'I').replace(/ı/g, 'i').toUpperCase();
+async function skuFoldMap(env) { const { results } = await env.DB.prepare('SELECT key, sku FROM products').all(); const m = new Map(); for (const r of results) { const f = skuFold(r.sku); if (f && !m.has(f)) m.set(f, r); } return m; }
 async function syncShopifyOrders(env, opts = {}) {
   const c = await shCreds(env); if (!shConfigured(c)) return null;
   const s = await getSettings(env, ['sh_hwm', 'sh_start']);
@@ -623,9 +626,46 @@ async function syncShopifyOrders(env, opts = {}) {
     after = ord.pageInfo.endCursor;
   }
   const input = shOrdersToInput(nodes);
+  if (input.length) { const fm = await skuFoldMap(env); for (const o of input) for (const l of o.lines) { const e = l.sku && fm.get(skuFold(l.sku)); if (e) l.sku = e.sku; } }
   const stats = input.length ? await ingestOrders(env, 'shopify', input, { source: 'shopify', start }) : null;
   await env.DB.batch([setStmt(env, 'sh_hwm', maxUp), setStmt(env, 'sh_ok', iso()), setStmt(env, 'sh_err', '')]);
   return { orders: input.length, more: !!after, stats };
+}
+// Shopify ürünleri (her varyant ayrı ürün): stok koduyla mevcut ürünlerle eşleşir; uygulamada olmayanlar eklenir ve
+// ilk eklenişte Shopify'daki stok adedi başlangıç stoğu olur (Trendyol'daki gibi). Var olan ürünün stoğuna dokunulmaz.
+async function syncShopifyProducts(env) {
+  const c = await shCreds(env); if (!shConfigured(c)) return null;
+  const Q = (inv) => `query($after:String){productVariants(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id sku barcode title ${inv ? 'inventoryQuantity' : ''} image{url} product{title status featuredMedia{preview{image{url}}}}}}}`;
+  let inv = true, after = null; const vs = [];
+  for (let page = 0; page < 30; page++) {
+    let d; try { d = await shGql(env, c, Q(inv), { after }); } catch (e) { if (inv && /inventory|access|scope/i.test(String(e.message))) { inv = false; page--; continue; } throw e; }
+    vs.push(...d.productVariants.nodes);
+    if (!d.productVariants.pageInfo.hasNextPage) break; after = d.productVariants.pageInfo.endCursor;
+  }
+  const list = vs.filter(v => v.product && v.product.status !== 'ARCHIVED');
+  const noCode = list.filter(v => !String(v.sku || '').trim() && !String(v.barcode || '').trim());
+  const bmap = await barcodeMap(env, list.filter(v => !String(v.sku || '').trim()).map(v => String(v.barcode || '').trim()).filter(Boolean));
+  const items = new Map(), fm = await skuFoldMap(env);
+  for (const v of list) {
+    const fe = String(v.sku || '').trim() && fm.get(skuFold(v.sku));
+    const r = fe ? { pkey: fe.key, sku: fe.sku } : resolveLine({ sku: v.sku, barcode: v.barcode }, bmap); if (!r) continue;
+    const vt = String(v.title || ''); const name = String(v.product.title || '') + (vt && !/^default title$/i.test(vt) ? ' · ' + vt : '');
+    const img = (v.image && v.image.url) || (((v.product.featuredMedia || {}).preview || {}).image || {}).url || '';
+    const x = items.get(r.pkey) || { pkey: r.pkey, sku: r.sku || String(v.sku || v.barcode || '').trim(), name, barcode: String(v.barcode || '').trim(), image: img, qty: 0 };
+    if (inv && Number.isFinite(Number(v.inventoryQuantity))) x.qty += Math.max(0, Number(v.inventoryQuantity)); items.set(r.pkey, x);
+  }
+  const keys = [...items.keys()];
+  const have = new Map((await selectIn(env, 'SELECT key, channels FROM products', 'key', keys)).map(r => [r.key, JSON.parse(r.channels || '[]')]));
+  const st = []; let added = 0, matched = 0, linked = 0;
+  for (const x of items.values()) {
+    const ch = have.get(x.pkey);
+    if (!ch) { added++; st.push(...ensureProduct(env, x.pkey, x, 'shopify')); if (x.qty > 0) st.push(...setQty(env, x.pkey, x.qty, { type: 'count', channel: 'shopify', note: 'Shopify başlangıç stoğu' })); }
+    else { if (ch.some(k => k !== 'shopify')) matched++; if (!ch.includes('shopify')) { linked++; st.push(env.DB.prepare(`UPDATE products SET channels=json_insert(channels,'$[#]','shopify'), image=CASE WHEN image='' THEN ?2 ELSE image END WHERE key=?1 AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify')`).bind(x.pkey, x.image)); } }
+  }
+  if (st.length) { for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); await env.DB.batch([REV(env)]); }
+  const res = { at: iso(), variants: list.length, products: items.size, added, matched, linked, noCode: noCode.length, noCodeNames: noCode.slice(0, 30).map(v => String(v.product.title || '') + (v.title && !/^default title$/i.test(v.title) ? ' · ' + v.title : '')), inv };
+  await setSetting(env, 'sh_prod', JSON.stringify(res));
+  return res;
 }
 // Anlık bildirim: yeni sipariş, iptal ve iade olunca Shopify haber verir (imza Client secret ile doğrulanır)
 async function ensureShopifyHooks(env, force) {
@@ -1297,7 +1337,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     if (left() > 15000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
     if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));
     // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
-    if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
+    if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) > 6 * 3600000 && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 8000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env, Date.now() + Math.min(15000, left() - 5000)));
     if (left() > 8000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
@@ -2147,6 +2187,7 @@ async function api(req, env, path, ctx) {
     catch (e) { return bad(String(e.message || e)); }
     const start = body.start && Date.parse(body.start) ? new Date(Date.parse(body.start)).toISOString() : iso();
     await env.DB.batch([setStmt(env, 'sh_shop', c.shop), setStmt(env, 'sh_cid', cid), setStmt(env, 'sh_secret', secret), setStmt(env, 'sh_name', c.name || ''), setStmt(env, 'sh_start', start), setStmt(env, 'sh_hwm', start), setStmt(env, 'sh_err', ''), setStmt(env, 'sh_hook_ok', ''), setStmt(env, 'sh_hook_try', '0'), setStmt(env, 'run_sh_at', '0')]);
+    try { await syncShopifyProducts(env); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · Ürünler: ' + String(e.message || e).slice(0, 200)); }
     let first = null; try { first = await syncShopifyOrders(env); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); }
     try { await ensureShopifyHooks(env, true); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); }
     return json({ ok: true, name: c.name, first });
@@ -2159,12 +2200,15 @@ async function api(req, env, path, ctx) {
     try { const r = await syncShopifyOrders(env, { pages: 5 }); await env.DB.batch([setStmt(env, 'sh_err', '')]); return json({ ok: true, r }); }
     catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
   }
+  if (path === '/api/shopify/products') {
+    try { return json({ ok: true, r: await syncShopifyProducts(env) }); } catch (e) { return bad(String(e.message || e)); }
+  }
   if (path === '/api/shopify/status') {
-    const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err']);
+    const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err', 'sh_prod']);
     // Shopify'dan gelip başka kanalda (Trendyol) karşılığı olmayan stok kodları: büyük ihtimalle farklı yazılmış
     const { results } = await env.DB.prepare(`SELECT key, sku, name, qty FROM products WHERE EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify') AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='trendyol') ORDER BY sku LIMIT 100`).all();
     const n = await env.DB.prepare(`SELECT COUNT(*) n FROM orders WHERE channel='shopify'`).first();
-    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', orders: (n && n.n) || 0, unmatched: results });
+    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
   }
   if (path === '/api/returns/kept') {
     // Ürün müşteride kaldı (ücret iadesi yapıldı, ürün geri gelmeyecek): stoğa eklenmez/eklendiyse geri alınır; kârda ürün maliyeti zarar sayılır, dönüş kargosu yok
