@@ -2350,6 +2350,37 @@ function usageCard(){
       <li>Belirteci buraya yazma. Eklendikten sonra en geç 1 saat içinde gerçek rakamlar burada görünür.</li></ol></details>` : (U.cfErr ? `<p class="small" style="margin:0;color:var(--bad)">Cloudflare kullanım verisi alınamadı: ${esc(String(U.cfErr).slice(27))}</p>` : `<p class="small muted" style="margin:0">Rakamlar Cloudflare'in kendi ölçümünden (saatte bir güncellenir)${U.cf ? ' · ' + esc(fmtDate(U.cf.at)) : ''}.</p>`)}
     <p class="small muted" style="margin:0">Cloudflare'de ayrıca <b>Notifications → Add → Usage Based Billing</b> uyarısı kurarsan, ek ücret ihtimalinde e-posta da gelir.</p></div>`;
 }
+// Shopify bağlantısı: siparişler ortak stoktan düşer (iptal / stoğa iade geri ekler)
+function shopifyCard(){
+  const H = S.shop;
+  if (!H || (H.loadedAt && Date.now() - H.loadedAt > 30000 && !H.loading)) { if (!H || !H.loading) { S.shop = {...(H || {}), loading: true}; api('/api/shopify/status', {}).then(d => { S.shop = {...d, loadedAt: Date.now()}; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }).catch(e => { S.shop = {err: errText(e), loadedAt: Date.now()}; }); } }
+  const d = S.shop || {};
+  if (d.loading && d.connected === undefined) return `<div class="card"><h3>${chBadge('shopify')} Otomatik eşitleme</h3>${loading()}</div>`;
+  if (!d.connected) return `<div class="card"><h3 style="margin:0">${chBadge('shopify')} Bağlan</h3>
+    <p class="muted small" style="margin:0">Shopify siparişleri gelince ortak stoktan düşer; iptal edilen ya da iadesi stoğa alınan ürünler geri eklenir. Trendyol'a stok gönderimi açıksa Trendyol stoğu da güncellenir.</p>
+    <details class="small"><summary><b>Client ID ve Client secret nasıl alınır?</b></summary><ol style="margin:6px 0 0 18px;padding:0;display:grid;gap:4px">
+      <li>Shopify mağaza sahibi hesabıyla <b>dev.shopify.com/dashboard</b> adresine gir (mağazanın bağlı olduğu organizasyon seçili olsun).</li>
+      <li><b>Apps → Create app</b>; adı <i>Lilya Backstage</i> yaz.</li>
+      <li>Sürüm (Version) ayarlarında <b>Access scopes</b>: <span class="mono">read_orders</span>, <span class="mono">read_products</span> seç; <b>App URL</b> boşsa <span class="mono">${esc(location.origin)}</span> yaz; <b>Release</b> ile yayımla.</li>
+      <li>Uygulama sayfasında <b>Install app</b> ile kendi mağazana kur.</li>
+      <li><b>Settings</b> sekmesinden <b>Client ID</b> ve <b>Client secret</b>'ı kopyala, aşağıya yapıştır.</li></ol></details>
+    <form id="f-shop" class="grid2">
+      <label class="f">Mağaza adresi<input class="input mono" id="sh-shop" placeholder="lilyahome.myshopify.com" value="${esc(d.shop || '')}" required autocomplete="off"></label>
+      <label class="f">Stoktan düşme başlangıcı<input class="input" type="datetime-local" id="sh-start" value="${new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16)}"></label>
+      <label class="f">Client ID<input class="input mono" id="sh-cid" required autocomplete="off"></label>
+      <label class="f">Client secret<input class="input mono" id="sh-secret" type="password" required autocomplete="off"></label>
+      <div class="row"><button class="btn primary" type="submit">Bağlan</button></div>
+    </form>
+    <p class="muted small" style="margin:0">Başlangıçtan önceki siparişler kaydedilir ama stoktan düşülmez (o anki depo sayımı onları zaten içeriyor).</p>${d.err ? `<div class="banner bad" style="margin:0"><div>${esc(d.err)}</div></div>` : ''}</div>`;
+  const um = d.unmatched || [];
+  return `<div class="card"><div class="spread"><h3 style="margin:0">${chBadge('shopify')} Otomatik eşitleme</h3><button class="btn sm" data-act="sh-sync">Şimdi eşitle</button></div>
+    <dl class="kv"><dt>Mağaza</dt><dd>${esc(d.name || d.shop)}</dd><dt>Siparişler</dt><dd>${d.hook ? 'Anlık (Shopify bildirimi)' : '2 dakikada bir'}${d.hookAt ? ' · son ' + esc(ago(d.hookAt.slice(0, 24))) : ''}${d.ok ? '<div class="muted" style="font-size:12px">Son kontrol ' + esc(ago(d.ok)) + ' · ' + fmtN(d.orders) + ' sipariş kayıtlı</div>' : ''}</dd>
+    <dt>Stoktan düşme başlangıcı</dt><dd>${d.start ? esc(fmtDate(d.start)) : '—'}</dd></dl>
+    ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Shopify:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}
+    ${d.hookErr && !d.hook ? `<div class="small" style="color:var(--bad)">Anlık bildirim kurulamadı: ${esc(d.hookErr.slice(27))}</div>` : ''}
+    ${um.length ? `<details class="small"><summary><b style="color:var(--orange)">${fmtN(um.length)} stok kodu Trendyol ürünleriyle eşleşmedi</b></summary><p class="muted" style="margin:6px 0">Bu kodlar Shopify'da Trendyol'dakinden farklı yazılmış olabilir; ayrı ürün olarak stok tutulur. Shopify'da stok kodunu Trendyol'dakiyle aynı yaparsan sonraki siparişler aynı ürüne düşer.</p><div class="mono" style="font-size:12px;display:grid;gap:2px">${um.map(x => `<span>${esc(x.sku)} · ${esc(x.name || '')}</span>`).join('')}</div></details>` : d.orders ? '<div class="small muted">Bütün stok kodları Trendyol ürünleriyle eşleşti.</div>' : ''}
+    <div class="row"><button class="btn sm ghost" data-act="sh-disconnect">Bağlantıyı kaldır</button></div></div>`;
+}
 function sheetImport(){
   const I = S.imp, st = startedAt(), set = S.settings || {};
   const stage = !I ? `<label class="drop" id="drop" for="imp-file"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--brand)"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 002 2h12a2 2 0 002-2v-4"/></svg><b>Dosya seç ya da buraya bırak</b><span class="muted small">Excel (.xlsx), CSV veya yedek (.json)</span></label><input type="file" id="imp-file" accept=".xlsx,.xls,.csv,.json,.txt" hidden>` : importPreview(I);
@@ -2362,8 +2393,9 @@ function sheetImport(){
     <label class="chk small"><input type="checkbox" id="set-prodinit" ${set.prodInitial!==false?'checked':''}>Trendyol'dan ilk kez gelen ürünlerde Trendyol stok adedini başlangıç stoğu yap</label>
     <div class="row"><button class="btn sm ghost" data-act="resync-products">Ürün listesini şimdi yeniden tara</button></div>
   </div>
-  <div class="card"><h3>${chBadge('shopify')} ve diğer kanallar · dosyadan aktar</h3>
-    <p class="muted small" style="margin:0">Shopify'ın otomatik bağlantısı sıradaki adım. O zamana kadar Shopify'dan indirdiğin sipariş/ürün CSV'sini ya da eski uygulamanın yedeğini buraya yükleyebilirsin. Aynı dosyayı tekrar yüklemek stoğu iki kez düşürmez.</p>
+  ${shopifyCard()}
+  <div class="card"><h3>Dosyadan aktar</h3>
+    <p class="muted small" style="margin:0">Diğer kanalların sipariş/ürün dosyasını (CSV, Excel) ya da eski uygulamanın yedeğini buraya yükleyebilirsin. Aynı dosyayı tekrar yüklemek stoğu iki kez düşürmez.</p>
     ${stage}
   </div>
   <div class="card"><h3>Stok takibi başlangıcı</h3>
@@ -2637,6 +2669,8 @@ document.addEventListener('click', async e => {
     case 'cost-reset': S.costImp = null; renderSheet(false); break;
     case 'cost-run': await runCosts(); break;
     case 'sync-now': await syncNow(); break;
+    case 'sh-sync': await run(async () => { const r = await api('/api/shopify/sync', {}); S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify: ${r.r ? r.r.orders : 0} sipariş güncellendi.`); }); break;
+    case 'sh-disconnect': if (!(await confirmBox('Shopify bağlantısı kaldırılsın mı? Kayıtlı siparişler silinmez; yeni siparişler gelmez.', 'Kaldır', true))) break; await run(async () => { await api('/api/shopify/disconnect', {}); S.shop = null; renderSheet(false); toast('Shopify bağlantısı kaldırıldı.'); }); break;
     case 'resync-products': await saveSetting({resyncProducts:true}, 'Ürün listesi bir sonraki eşitlemede yeniden taranacak.'); break;
     case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
     case 'close': closeSheet(); break;
@@ -2676,6 +2710,7 @@ document.addEventListener('submit', async e => {
   else if (id === 'f-period') { const P = profS(); P.cf = $('#pf-from').value; P.ct = $('#pf-to').value; if (!P.cf || !P.ct) return toast('İki tarihi de seç.', true); P.data = null; P.key = ''; render(); }
   else if (id === 'f-ad') { const day = $('#ad-day').value, amount = num($('#ad-amt').value); if (!day) return toast('Gün seç.', true); if (!isFinite(amount) || amount < 0) return toast('Harcamayı sayı olarak yaz. Örn. 350,50', true); await saveAds([{day, amount}], 'manuel', amount ? `${day} için ${fmtTL(amount)} reklam gideri kaydedildi.` : `${day} reklam kaydı silindi.`); }
   else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeCargoT3:v('#fe-ct3'), feeServiceTy:v('#fe-sty'), feeServiceFast:v('#fe-sfast'), serviceCutoff:v('#fe-scut'), baremMaxDesi:v('#fe-bmd'), feeCargoSh:v('#fe-csh'), feePackOrder:v('#fe-pko'), feePackUnit:v('#fe-pku'), stopaj:v('#fe-stp')}; if (!(body.serviceCutoff >= 0 && body.serviceCutoff <= 24)) return toast('Son sipariş saati 0–24 arasında olmalı.', true); if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); body.desiMode = $('#fe-desimode').checked; try { body.desiTables = {tex: parseDesi($('#fe-desi-tex').value), ptt: parseDesi($('#fe-desi-ptt').value)}; } catch(err) { return toast(err.message, true); } if (!body.desiTables.tex.length || !body.desiTables.ptt.length) return toast('İki desi tablosu da dolu olmalı.', true); await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
+  else if (id === 'f-shop') { const st = $('#sh-start').value; await run(async () => { const r = await api('/api/shopify/connect', {shop: $('#sh-shop').value, cid: $('#sh-cid').value, secret: $('#sh-secret').value, start: st ? new Date(st).toISOString() : ''}); S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify bağlandı: ${r.name || ''}${r.first ? ' · ' + r.first.orders + ' sipariş okundu' : ''}`); }); }
   else if (id === 'f-start') { const v = $('#st-date').value; if (!v) return toast('Bir tarih seç.', true); await saveSetting({startedAt:new Date(v).toISOString()}, 'Başlangıç tarihi kaydedildi.'); if (S.imp && S.imp.preview) computePreview(); }
 });
 let qTimer;

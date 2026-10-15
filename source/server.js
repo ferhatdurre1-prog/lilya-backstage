@@ -548,6 +548,106 @@ async function ensureTyWebhook(env, force) {
     return { ok: true, created: true };
   } catch (e) { await setSetting(env, 'hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return null; }
 }
+/* ---------- Shopify: siparişler ortak stoktan düşer ----------
+   Kimlik: Shopify Dev Dashboard uygulamasının Client ID / Client secret'ı (mağazayla aynı organizasyonda); 24 saatlik erişim anahtarı
+   client_credentials ile alınıp saklanır. Siparişler GraphQL Admin API'den güncellenme saatine göre okunur; bildirim (webhook) gelince hemen. */
+const SH_API = '2026-07';
+async function shCreds(env) {
+  const s = await getSettings(env, ['sh_shop', 'sh_cid', 'sh_secret', 'sh_token', 'sh_token_exp']);
+  const shop = String(env.SHOPIFY_SHOP || s.sh_shop || '').trim().replace(/^https?:\/\//, '').replace(/\.myshopify\.com.*$/, '').replace(/\/.*$/, '');
+  return { shop, cid: env.SHOPIFY_CLIENT_ID || s.sh_cid || '', secret: env.SHOPIFY_CLIENT_SECRET || s.sh_secret || '', token: s.sh_token || '', exp: Number(s.sh_token_exp) || 0 };
+}
+const shConfigured = (c) => !!(c.shop && c.cid && c.secret);
+async function shToken(env, c, force) {
+  if (!force && c.token && c.exp - Date.now() > 10 * 60000) return c.token;
+  const r = await fetch(`https://${c.shop}.myshopify.com/admin/oauth/access_token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'client_credentials', client_id: c.cid, client_secret: c.secret }).toString() });
+  const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {}
+  if (!r.ok || !j || !j.access_token) {
+    const msg = (j && (j.error_description || j.error || (j.errors && JSON.stringify(j.errors)))) || t.slice(0, 160);
+    throw new Error(r.status === 404 ? 'Mağaza adresi bulunamadı (xxx.myshopify.com adresini kontrol et).' : /shop_not_permitted/.test(t) ? 'Uygulama bu mağazayla aynı Shopify organizasyonunda değil (shop_not_permitted).' : /invalid_client|client/i.test(String(msg)) ? 'Client ID ya da Client secret hatalı.' : 'Shopify anahtarı alınamadı: ' + msg);
+  }
+  c.token = j.access_token; c.exp = Date.now() + (Number(j.expires_in) || 86399) * 1000;
+  await env.DB.batch([setStmt(env, 'sh_token', c.token), setStmt(env, 'sh_token_exp', String(c.exp))]);
+  return c.token;
+}
+async function shGql(env, c, query, variables) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const token = await shToken(env, c, attempt > 0 && attempt === 1);
+    const r = await fetch(`https://${c.shop}.myshopify.com/admin/api/${SH_API}/graphql.json`, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Shopify-Access-Token': token }, body: JSON.stringify({ query, variables }) });
+    if (r.status === 401 && attempt === 0) continue;
+    if (r.status === 429) { await sleep(1500 * (attempt + 1)); continue; }
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j) throw new Error(`Shopify ${r.status}`);
+    if (j.errors && j.errors.length) { const m = j.errors.map(e => e.message).join(' · '); if (/throttl/i.test(m) && attempt < 2) { await sleep(2000); continue; } throw new Error('Shopify: ' + m.slice(0, 200)); }
+    return j.data;
+  }
+  throw new Error('Shopify isteği tamamlanamadı.');
+}
+const SH_ORDERS_Q = `query($q:String!,$after:String){orders(first:40,after:$after,sortKey:UPDATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt updatedAt cancelledAt test
+  lineItems(first:60){nodes{id sku name quantity currentQuantity variant{sku barcode image{url}} image{url} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} originalUnitPriceSet{shopMoney{amount}}}}
+  refunds{refundLineItems(first:60){nodes{quantity restockType lineItem{id}}}}}}}`;
+function shOrdersToInput(nodes) {
+  const out = [];
+  for (const o of nodes) {
+    if (o.test) continue;
+    const restocked = new Map(), refunded = new Map();
+    for (const rf of (o.refunds || [])) for (const x of ((rf.refundLineItems || {}).nodes || [])) if (x.lineItem) { const n = Number(x.quantity) || 0; refunded.set(x.lineItem.id, (refunded.get(x.lineItem.id) || 0) + n); if (/RETURN|CANCEL|LEGACY_RESTOCK/.test(String(x.restockType || ''))) restocked.set(x.lineItem.id, (restocked.get(x.lineItem.id) || 0) + n); }
+    const bySku = new Map();
+    for (const l of ((o.lineItems || {}).nodes || [])) {
+      const sku = String(l.sku || (l.variant && l.variant.sku) || '').trim(), barcode = String((l.variant && l.variant.barcode) || '').trim();
+      if (!sku && !barcode) continue;
+      const q = Number(l.quantity) || 0; if (q <= 0) continue;
+      let want = o.cancelledAt ? 0 : Math.max(0, q - (restocked.get(l.id) || 0));
+      if (Number(l.currentQuantity) === 0 && !restocked.get(l.id)) want = 0; // sipariş düzenlemesiyle çıkarılan satır
+      const unit = Number(((l.discountedUnitPriceAfterAllDiscountsSet || l.originalUnitPriceSet || {}).shopMoney || {}).amount);
+      const k = sku || barcode; const a = bySku.get(k) || { sku, barcode, name: l.name || '', image: ((l.variant && l.variant.image) || l.image || {}).url || '', q: 0, want: 0, rev: 0 };
+      a.q += q; a.want += want; if (Number.isFinite(unit) && !o.cancelledAt) a.rev += unit * Math.max(0, q - (refunded.get(l.id) || 0)); bySku.set(k, a); // para iadesi yapılan adetler ciroya girmez
+    }
+    const lines = [...bySku.values()].map(a => ({ sku: a.sku, barcode: a.barcode, name: a.name, image: a.image, qty: a.want > 0 ? a.want : a.q, status: a.want > 0 ? 'active' : 'cancelled', fin: { revenue: Math.round(a.rev * 100) / 100, rate: 0, vat: 20 } }));
+    if (lines.length) out.push({ orderNo: String(o.name || '').trim(), date: o.createdAt, lines });
+  }
+  return out;
+}
+async function syncShopifyOrders(env, opts = {}) {
+  const c = await shCreds(env); if (!shConfigured(c)) return null;
+  const s = await getSettings(env, ['sh_hwm', 'sh_start']);
+  const start = s.sh_start || iso();
+  const since = s.sh_hwm || start;
+  const q = `updated_at:>='${new Date(Date.parse(since) - 5 * 60000).toISOString()}'`;
+  let after = null, maxUp = since, nodes = [];
+  for (let page = 0; page < (opts.pages || 3); page++) {
+    const d = await shGql(env, c, SH_ORDERS_Q, { q, after });
+    const ord = d.orders; nodes.push(...ord.nodes);
+    for (const o of ord.nodes) if (o.updatedAt > maxUp) maxUp = o.updatedAt;
+    if (!ord.pageInfo.hasNextPage) { after = null; break; }
+    after = ord.pageInfo.endCursor;
+  }
+  const input = shOrdersToInput(nodes);
+  const stats = input.length ? await ingestOrders(env, 'shopify', input, { source: 'shopify', start }) : null;
+  await env.DB.batch([setStmt(env, 'sh_hwm', maxUp), setStmt(env, 'sh_ok', iso()), setStmt(env, 'sh_err', '')]);
+  return { orders: input.length, more: !!after, stats };
+}
+// Anlık bildirim: yeni sipariş, iptal ve iade olunca Shopify haber verir (imza Client secret ile doğrulanır)
+async function ensureShopifyHooks(env, force) {
+  const c = await shCreds(env); if (!shConfigured(c)) return null;
+  const s = await getSettings(env, ['sh_hook_ok', 'sh_hook_try', 'self_origin']);
+  if (!s.self_origin) return null;
+  const url = s.self_origin + '/hook/shopify';
+  if (!force && (s.sh_hook_ok === url || Date.now() - (Number(s.sh_hook_try) || 0) < 3600000)) return null;
+  await setSetting(env, 'sh_hook_try', String(Date.now()));
+  // Yeni API sürümlerinde adres alanı "uri"; eskilerde "callbackUrl" (ikisi de denenir)
+  let mode = 'uri', d;
+  try { d = await shGql(env, c, `{webhookSubscriptions(first:50){nodes{id topic uri}}}`); }
+  catch (e) { mode = 'cb'; d = await shGql(env, c, `{webhookSubscriptions(first:50){nodes{id topic endpoint{__typename ... on WebhookHttpEndpoint{callbackUrl}}}}}`); }
+  const have = new Set(d.webhookSubscriptions.nodes.filter(w => (mode === 'uri' ? w.uri : w.endpoint && w.endpoint.callbackUrl) === url).map(w => w.topic));
+  for (const topic of ['ORDERS_CREATE', 'ORDERS_CANCELLED', 'ORDERS_EDITED', 'REFUNDS_CREATE']) {
+    if (have.has(topic)) continue;
+    const r = await shGql(env, c, `mutation($t:WebhookSubscriptionTopic!,$u:${mode === 'uri' ? 'String' : 'URL'}!){webhookSubscriptionCreate(topic:$t,webhookSubscription:{${mode === 'uri' ? 'uri' : 'callbackUrl'}:$u,format:JSON}){userErrors{message}}}`, { t: topic, u: url });
+    const ue = r.webhookSubscriptionCreate.userErrors; if (ue && ue.length && !/already|taken|zaten/i.test(ue.map(e => e.message).join(' '))) throw new Error('Shopify bildirimi: ' + ue.map(e => e.message).join(' · '));
+  }
+  await setSetting(env, 'sh_hook_ok', url);
+  return { ok: true };
+}
 async function backfillTrendyolOrders(env) {
   const v = await getSetting(env, 'fin_backfill_day');
   if (v === 'done') return null;
@@ -1196,6 +1296,8 @@ async function heavySteps(env, budget, result, step, left, t) {
     if (left() > 20000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
     if (left() > 15000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
     if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));
+    // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
+    if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 8000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env, Date.now() + Math.min(15000, left() - 5000)));
     if (left() > 8000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
@@ -2037,6 +2139,33 @@ async function api(req, env, path, ctx) {
     try { await env.DB.batch(st); } catch (e) { return bad(tyApproved ? 'Trendyol\'da onaylandı ama stok güncellenemedi; sayfayı yenileyip "Depoya ulaştı" ile stoğu ekle.' : 'Bu iade az önce başka bir yerden işlendi.', 409); }
     return json({ ok: true, tyApproved });
   }
+  if (path === '/api/shopify/connect') {
+    const shop = String(body.shop || '').trim(), cid = String(body.cid || '').trim(), secret = String(body.secret || '').trim();
+    if (!shop || !cid || !secret) return bad('Mağaza adresi, Client ID ve Client secret gerekli.');
+    const c = { shop: shop.replace(/^https?:\/\//, '').replace(/\.myshopify\.com.*$/, '').replace(/\/.*$/, ''), cid, secret, token: '', exp: 0 };
+    try { await shToken(env, c, true); const d = await shGql(env, c, '{shop{name currencyCode}}'); c.name = d.shop.name; }
+    catch (e) { return bad(String(e.message || e)); }
+    const start = body.start && Date.parse(body.start) ? new Date(Date.parse(body.start)).toISOString() : iso();
+    await env.DB.batch([setStmt(env, 'sh_shop', c.shop), setStmt(env, 'sh_cid', cid), setStmt(env, 'sh_secret', secret), setStmt(env, 'sh_name', c.name || ''), setStmt(env, 'sh_start', start), setStmt(env, 'sh_hwm', start), setStmt(env, 'sh_err', ''), setStmt(env, 'sh_hook_ok', ''), setStmt(env, 'sh_hook_try', '0'), setStmt(env, 'run_sh_at', '0')]);
+    let first = null; try { first = await syncShopifyOrders(env); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); }
+    try { await ensureShopifyHooks(env, true); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); }
+    return json({ ok: true, name: c.name, first });
+  }
+  if (path === '/api/shopify/disconnect') {
+    await env.DB.batch(['sh_cid', 'sh_secret', 'sh_token', 'sh_token_exp', 'sh_hook_ok'].map(k => setStmt(env, k, '')));
+    return json({ ok: true });
+  }
+  if (path === '/api/shopify/sync') {
+    try { const r = await syncShopifyOrders(env, { pages: 5 }); await env.DB.batch([setStmt(env, 'sh_err', '')]); return json({ ok: true, r }); }
+    catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
+  }
+  if (path === '/api/shopify/status') {
+    const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err']);
+    // Shopify'dan gelip başka kanalda (Trendyol) karşılığı olmayan stok kodları: büyük ihtimalle farklı yazılmış
+    const { results } = await env.DB.prepare(`SELECT key, sku, name, qty FROM products WHERE EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify') AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='trendyol') ORDER BY sku LIMIT 100`).all();
+    const n = await env.DB.prepare(`SELECT COUNT(*) n FROM orders WHERE channel='shopify'`).first();
+    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', orders: (n && n.n) || 0, unmatched: results });
+  }
   if (path === '/api/returns/kept') {
     // Ürün müşteride kaldı (ücret iadesi yapıldı, ürün geri gelmeyecek): stoğa eklenmez/eklendiyse geri alınır; kârda ürün maliyeti zarar sayılır, dönüş kargosu yok
     const r = await env.DB.prepare('SELECT * FROM returns WHERE id=?1').bind(String(body.id || '')).first(); if (!r) return bad('İade bulunamadı.', 404);
@@ -2361,6 +2490,17 @@ export default {
     try {
       if (!env.APP_PASSWORD) return new Response('Kurulum eksik: APP_PASSWORD gizli değişkeni tanımlanmalı.', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       // Sayfa ve simgeler veritabanını beklemeden hemen gönderilir
+      if (path === '/hook/shopify') {
+        if (req.method !== 'POST') return new Response('ok');
+        await init(env); USE.req++;
+        const raw = await req.arrayBuffer(); const c = await shCreds(env);
+        if (!shConfigured(c)) return new Response('yok', { status: 404 });
+        const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(c.secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const sig = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, raw))));
+        if (sig !== (req.headers.get('x-shopify-hmac-sha256') || '')) return new Response('yetkisiz', { status: 401 });
+        ctx.waitUntil((async () => { await sleep(1500); try { const r = await syncShopifyOrders(env, { pages: 1 }); await setSetting(env, 'sh_hook_at', iso() + ' · ' + (r ? r.orders + ' sipariş' : '')); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } })());
+        return new Response('ok');
+      }
       if (path === '/hook/ty') {
         // Trendyol sipariş bildirimi: anahtar doğrulanır, yeni sipariş hemen işlenir
         if (req.method !== 'POST') return new Response('ok');
