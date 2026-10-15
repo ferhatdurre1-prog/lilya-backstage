@@ -1781,7 +1781,7 @@ async function homeData(env, ctx, force) {
 async function computeHome(env) {
   const t00 = Date.now(), today = trDay(t00);
   const t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', w0d = addDay(today, -6);
-  const fromD = m0d < w0d ? m0d : w0d, yday = addDay(today, -1);
+  const f30 = addDay(today, -29), fromD = [m0d, w0d, f30].sort()[0], yday = addDay(today, -1);
   const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
   // Ay toplamı Kâr ekranıyla birebir aynı olsun diye kayıtlı günlerden toplanmaz, aynı hesapla canlı alınır
   const [T, YS, statsR, pdR, M] = await Promise.all([
@@ -1792,14 +1792,16 @@ async function computeHome(env) {
     computeProfit(env, iso(dayStartTR(m0d)), iso(t0 + 86400000))]);
   const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
   // Kaydı olmayan geçmiş gün varsa canlı hesaplanıp kaydedilir
-  for (let d = fromD; d < today; d = addDay(d, 1)) if (!byDay.has(d)) { try { await snapshotDay(env, d); const r = await env.DB.prepare('SELECT data FROM daily_stats WHERE day=?1').bind(d).first(); if (r) byDay.set(d, JSON.parse(r.data)); } catch (e) {} }
+  let snaps = 0;
+  for (let d = fromD; d < today; d = addDay(d, 1)) if (!byDay.has(d) && snaps++ < 6) { try { await snapshotDay(env, d); const r = await env.DB.prepare('SELECT data FROM daily_stats WHERE day=?1').bind(d).first(); if (r) byDay.set(d, JSON.parse(r.data)); } catch (e) {} }
   const days = [];
   for (let i = 6; i >= 0; i--) { const d = addDay(today, -i); const x = i === 0 ? T.summary : (byDay.get(d) || {}); days.push({ d, rev: Number(x.revenue) || 0, prof: Number(x.profit) || 0, n: Number(x.orders) || 0, u: Number(x.units) || 0 }); }
   const mRev = M.summary.revenue, mProf = M.summary.profit;
   const pp = new Map(pdR.results.map(x => [x.pkey, x.p || 0])); for (const x of T.products) pp.set(x.key, (pp.get(x.key) || 0) + (x.profit || 0));
   const R2 = (n) => Math.round(n * 100) / 100;
   const out = { day: today, at: Date.now(), ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
-    month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
+    month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
+    last30: (() => { let rev = Number(T.summary.revenue) || 0, prof = Number(T.summary.profit) || 0; for (let d = f30; d < today; d = addDay(d, 1)) { const x = byDay.get(d) || {}; rev += Number(x.revenue) || 0; prof += Number(x.profit) || 0; } return { from: f30, to: today, revenue: R2(rev), profit: R2(prof) }; })(), losers: [...pp.values()].filter(v => v < 0).length };
   await setSetting(env, 'home_cache', JSON.stringify(out)); await setSetting(env, 'home_err', '');
   return out;
 }

@@ -65,6 +65,10 @@ button,input,select,textarea{font:inherit;color:inherit}
 .hero{background:var(--hero);color:#fff;border-radius:0 0 26px 26px;padding-bottom:12px;margin-bottom:18px}
 body[data-tab="home"] .hero{padding-bottom:52px;margin-bottom:0}
 body[data-tab="home"] main{margin-top:-40px;position:relative}
+.mkpi-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:-4px 0 10px}
+.mkpi{display:flex;align-items:center;justify-content:space-between;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:8px 11px;font:inherit;color:var(--ink);cursor:pointer;min-width:0}
+.mkpi span{font-size:11.5px;color:var(--ink-2);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mkpi b{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
 /* Ana ekran sıkı düzen: telefonda her şey kaydırmadan tek ekrana sığsın */
 @media (max-width:640px){
 body[data-tab="home"] .top{padding-block:10px 8px}
@@ -876,7 +880,9 @@ function viewHome(){
       ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : (Y.prof ? `Dün ${tlS(Y.prof)}` : ''), profitCls(T.prof), 'today-products')}
       ${(() => { const nw = (S.sync.trendyol || {}).newOrders || {n:0, u:0}; return `<div class="kpi" data-act="orders-new" style="--c:var(--orange);--cs:var(--warn-soft);cursor:pointer"><div class="hd"><div class="k">Bekleyen siparişler</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.orders}</svg></div></div><div class="v" style="color:var(--orange)">${fmtN(nw.n)}</div></div>`; })()}
       ${kpi('Bu ay net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit) || 'color:var(--violet)', 'month-products')}
-    </div>` + homeRecent();
+    </div>${(() => { const L30 = H.last30, yd = Y.d ? new Date(Y.d) : null, ydS = yd ? new Date(yd.getTime() - yd.getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '';
+      const tile = (k, v, id) => `<button class="mkpi" data-act="rep-open" data-id="${id}"><span>${k}</span><b style="${profitCls(v)}">${tlS(v)}</b></button>`;
+      return `<div class="mkpi-row">${tile('Dün net kâr', Y.prof || 0, ydS + '|' + ydS)}${L30 ? tile('Son 30 gün net kâr', L30.profit, L30.from + '|' + L30.to) : ''}</div>`; })()}` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
