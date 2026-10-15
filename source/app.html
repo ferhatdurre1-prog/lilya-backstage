@@ -65,6 +65,31 @@ button,input,select,textarea{font:inherit;color:inherit}
 .hero{background:var(--hero);color:#fff;border-radius:0 0 26px 26px;padding-bottom:12px;margin-bottom:18px}
 body[data-tab="home"] .hero{padding-bottom:52px;margin-bottom:0}
 body[data-tab="home"] main{margin-top:-40px;position:relative}
+/* Ana ekran sıkı düzen: telefonda her şey kaydırmadan tek ekrana sığsın */
+@media (max-width:640px){
+body[data-tab="home"] .top{padding-block:10px 8px}
+body[data-tab="home"] .hero{padding-bottom:40px}
+body[data-tab="home"] .ticker{margin:-2px 0 8px}
+body[data-tab="home"] .ticker .ti{padding:6px 12px;font-size:12.5px}
+body[data-tab="home"] main{margin-top:-32px}
+body[data-tab="home"] .home-grid{gap:8px;margin-bottom:8px}
+body[data-tab="home"] .kpi{padding:9px 11px;border-radius:13px}
+body[data-tab="home"] .kpi .k{font-size:11.5px}
+body[data-tab="home"] .kpi .ki{width:22px;height:22px;border-radius:7px}
+body[data-tab="home"] .kpi .ki svg{width:13px;height:13px}
+body[data-tab="home"] .kpi .v{font-size:19px;margin-top:2px}
+body[data-tab="home"] .kpi .s{font-size:10.5px;margin-top:1px;line-height:1.3}
+body[data-tab="home"] .card{padding:10px 12px;gap:6px;border-radius:14px;margin-bottom:8px}
+body[data-tab="home"] .card h3{font-size:15px}
+body[data-tab="home"] .hlist .item{padding-top:6px;padding-bottom:6px;gap:10px}
+body[data-tab="home"] .hlist .thumb{width:36px;height:36px;border-radius:8px}
+body[data-tab="home"] .hlist .ttl{font-size:13.5px;-webkit-line-clamp:1}
+body[data-tab="home"] .hlist .meta{font-size:11.5px}
+body[data-tab="home"] .act-grid{gap:6px}
+body[data-tab="home"] .act{padding:7px 6px;gap:1px;border-radius:10px}
+body[data-tab="home"] .act .l{font-size:12px}
+body[data-tab="home"] .act .n{font-size:17px}
+}
 .hero .eyebrow{color:rgba(255,255,255,.6)} .hero .brandtxt h1{color:#fff}
 .hero .mark{background:url(/icon.svg?v=3) center/cover no-repeat;color:transparent;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.4),inset 0 0 0 1px rgba(255,255,255,.12)}
 .hero .burger{color:#fff}
@@ -867,9 +892,9 @@ function viewHome(){
   if (st.cls === 'err' || st.cls === 'warn') conn = `<button class="alert-row" data-act="open-import" style="margin-top:4px"><div class="ic" style="background:var(--bad-soft);color:var(--bad)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg></div><div class="tx"><b>${esc(st.text)}</b><span>${esc(st.err || 'Bağlantıyı kontrol et')}</span></div></button>`;
   h += `<div class="card"><h3 style="margin:0">Aksiyonlar</h3>${conn}<div class="act-grid">
     ${act('Aksiyon bekleyen iade', pendN, 'ret-tab', 'action')}
-    ${act('Stoğu azalan', low, 'home-stock', 'low')}
-    ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
     ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true)}
+    ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
+    ${act('Stoğu azalan', low, 'home-stock', 'low')}
   </div></div>`;
   return h;
 }
