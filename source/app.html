@@ -1393,31 +1393,93 @@ function drawLogo(c, x, y, s){
 const tl2 = (n) => (Number(n) || 0).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' TL';
 // Kargo etiketi (Trendyol'da kullanılan şablonun düzenli hali). 8 nokta/mm (203 dpi); kağıdın kısa kenarına göre ölçeklenir.
 // Ürünler sığmazsa "Ek sayfa 2/3" başlığıyla sonraki etikete devam eder; toplam tutar son sayfada.
-function drawLabelPages(p, W, H, sid){
+/* ============ Vektör PDF (termal yazıcıda net baskı) ============
+   Yazılar resim değil gerçek yazı olarak PDF'e konur; yazıcı kendi çözünürlüğünde basar (Trendyol etiketi gibi).
+   Helvetica (gömülmez) + Türkçe harfler için özel kodlama. Ölçüler 8 piksel = 1 mm kabul edilen tuval koordinatlarındadır. */
+const HELV_W = {"Helvetica":{"32":278,"33":278,"34":355,"35":556,"36":556,"37":889,"38":667,"39":191,"40":333,"41":333,"42":389,"43":584,"44":278,"45":333,"46":278,"47":278,"48":556,"49":556,"50":556,"51":556,"52":556,"53":556,"54":556,"55":556,"56":556,"57":556,"58":278,"59":278,"60":584,"61":584,"62":584,"63":556,"64":1015,"65":667,"66":667,"67":722,"68":722,"69":667,"70":611,"71":778,"72":722,"73":278,"74":500,"75":667,"76":556,"77":833,"78":722,"79":778,"80":667,"81":778,"82":722,"83":667,"84":611,"85":722,"86":667,"87":944,"88":667,"89":667,"90":611,"91":278,"92":278,"93":278,"94":469,"95":556,"96":333,"97":556,"98":556,"99":500,"100":556,"101":556,"102":278,"103":556,"104":556,"105":222,"106":222,"107":500,"108":222,"109":833,"110":556,"111":556,"112":556,"113":556,"114":333,"115":500,"116":278,"117":556,"118":500,"119":722,"120":500,"121":500,"122":500,"123":334,"124":260,"125":334,"126":584,"160":278,"161":333,"162":556,"163":556,"164":556,"165":556,"166":260,"167":556,"168":333,"169":737,"170":370,"171":556,"172":584,"173":333,"174":737,"175":333,"176":400,"177":584,"178":333,"179":333,"180":333,"181":556,"182":537,"183":278,"184":333,"185":333,"186":365,"187":556,"188":834,"189":834,"190":834,"191":611,"192":667,"193":667,"194":667,"195":667,"196":667,"197":667,"198":1000,"199":722,"200":667,"201":667,"202":667,"203":667,"204":278,"205":278,"206":278,"207":278,"208":722,"209":722,"210":778,"211":778,"212":778,"213":778,"214":778,"215":584,"216":778,"217":722,"218":722,"219":722,"220":722,"221":667,"222":667,"223":611,"224":556,"225":556,"226":556,"227":556,"228":556,"229":556,"230":889,"231":500,"232":556,"233":556,"234":556,"235":556,"236":278,"237":278,"238":278,"239":278,"240":556,"241":556,"242":556,"243":556,"244":556,"245":556,"246":556,"247":584,"248":611,"249":556,"250":556,"251":556,"252":556,"253":500,"254":556,"255":500,"286":778,"287":556,"304":278,"305":278,"350":667,"351":500,"8211":556,"8212":1000,"8216":222,"8217":222,"8220":333,"8221":333,"8226":350,"8230":1000,"8364":556},"Helvetica-Bold":{"32":278,"33":333,"34":474,"35":556,"36":556,"37":889,"38":722,"39":238,"40":333,"41":333,"42":389,"43":584,"44":278,"45":333,"46":278,"47":278,"48":556,"49":556,"50":556,"51":556,"52":556,"53":556,"54":556,"55":556,"56":556,"57":556,"58":333,"59":333,"60":584,"61":584,"62":584,"63":611,"64":975,"65":722,"66":722,"67":722,"68":722,"69":667,"70":611,"71":778,"72":722,"73":278,"74":556,"75":722,"76":611,"77":833,"78":722,"79":778,"80":667,"81":778,"82":722,"83":667,"84":611,"85":722,"86":667,"87":944,"88":667,"89":667,"90":611,"91":333,"92":278,"93":333,"94":584,"95":556,"96":333,"97":556,"98":611,"99":556,"100":611,"101":556,"102":333,"103":611,"104":611,"105":278,"106":278,"107":556,"108":278,"109":889,"110":611,"111":611,"112":611,"113":611,"114":389,"115":556,"116":333,"117":611,"118":556,"119":778,"120":556,"121":556,"122":500,"123":389,"124":280,"125":389,"126":584,"160":278,"161":333,"162":556,"163":556,"164":556,"165":556,"166":280,"167":556,"168":333,"169":737,"170":370,"171":556,"172":584,"173":333,"174":737,"175":333,"176":400,"177":584,"178":333,"179":333,"180":333,"181":611,"182":556,"183":278,"184":333,"185":333,"186":365,"187":556,"188":834,"189":834,"190":834,"191":611,"192":722,"193":722,"194":722,"195":722,"196":722,"197":722,"198":1000,"199":722,"200":667,"201":667,"202":667,"203":667,"204":278,"205":278,"206":278,"207":278,"208":722,"209":722,"210":778,"211":778,"212":778,"213":778,"214":778,"215":584,"216":778,"217":722,"218":722,"219":722,"220":722,"221":667,"222":667,"223":611,"224":556,"225":556,"226":556,"227":556,"228":556,"229":556,"230":889,"231":556,"232":556,"233":556,"234":556,"235":556,"236":278,"237":278,"238":278,"239":278,"240":611,"241":611,"242":611,"243":611,"244":611,"245":611,"246":611,"247":584,"248":611,"249":611,"250":611,"251":611,"252":611,"253":556,"254":611,"255":556,"286":778,"287":611,"304":278,"305":278,"350":667,"351":556,"8211":556,"8212":1000,"8216":278,"8217":278,"8220":500,"8221":500,"8226":350,"8230":1000,"8364":556}};
+const TR_CODE = {287:129, 286:141, 305:143, 304:144, 351:157, 350:164};
+const CP1252 = {8364:128, 8218:130, 8222:132, 8230:133, 8216:145, 8217:146, 8220:147, 8221:148, 8226:149, 8211:150, 8212:151};
+function pdfBytesOf(str){ const out = []; for (const ch of String(str)) { const cp = ch.codePointAt(0);
+  if (TR_CODE[cp]) out.push(TR_CODE[cp]); else if (CP1252[cp]) out.push(CP1252[cp]); else if (cp === 8378) out.push(84, 76); else if (cp >= 32 && cp < 127) out.push(cp); else if (cp >= 160 && cp < 256 && cp !== 164) out.push(cp); else out.push(63); } return out; }
+function helvWidth(str, bold){ const t = HELV_W[bold ? 'Helvetica-Bold' : 'Helvetica']; let w = 0; for (const ch of String(str)) { const cp = ch.codePointAt(0); w += t[cp] || (cp === 8378 ? (t[84] + t[76]) : t[63] || 556); } return w / 1000; }
+class MiniPdf {
+  constructor(Wmm, Hmm){ this.W = Wmm * 72 / 25.4; this.H = Hmm * 72 / 25.4; this.pages = []; this.images = []; }
+  addPage(){ const ctx = new PdfCtx(this); this.pages.push(ctx); return ctx; }
+  imageFor(img){ let e = this.images.find(x => x.img === img); if (e) return e;
+    const w = Math.min(img.naturalWidth || img.width, 1200), h = Math.round(w * (img.naturalHeight || img.height) / (img.naturalWidth || img.width));
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, w, h); c.drawImage(img, 0, 0, w, h);
+    const d = c.getImageData(0, 0, w, h).data, rb = Math.ceil(w / 8), bits = new Uint8Array(rb * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (d[i] * 0.3 + d[i+1] * 0.59 + d[i+2] * 0.11 >= 140) bits[y * rb + (x >> 3)] |= 0x80 >> (x & 7); }
+    e = {img, w, h, bits, name: 'Im' + (this.images.length + 1)}; this.images.push(e); return e; }
+  output(){
+    const enc = new TextEncoder(), chunks = [], offs = []; let len = 0;
+    const put = (x) => { const b = typeof x === 'string' ? enc.encode(x) : x; chunks.push(b); len += b.length; };
+    const obj = (n, body, stream) => { offs[n] = len; put(`${n} 0 obj\n${body}\n`); if (stream) { put('stream\n'); put(stream); put('\nendstream\n'); } put('endobj\n'); };
+    put('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+    const nP = this.pages.length, firstImg = 6, firstPage = firstImg + this.images.length;
+    obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    obj(2, `<< /Type /Pages /Count ${nP} /Kids [${this.pages.map((_, i) => `${firstPage + i * 2} 0 R`).join(' ')}] >>`);
+    obj(3, '<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [129 /gbreve 141 /Gbreve 143 /dotlessi 144 /Idotaccent 157 /scedilla 164 /Scedilla] >>');
+    obj(4, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 3 0 R >>');
+    obj(5, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding 3 0 R >>');
+    this.images.forEach((im, i) => obj(firstImg + i, `<< /Type /XObject /Subtype /Image /Width ${im.w} /Height ${im.h} /ImageMask true /BitsPerComponent 1 /Decode [0 1] /Length ${im.bits.length} >>`, im.bits));
+    const xo = this.images.map((im, i) => `/${im.name} ${firstImg + i} 0 R`).join(' ');
+    this.pages.forEach((pg, i) => { const n = firstPage + i * 2, body = enc.encode(pg.ops.join('\n'));
+      obj(n, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${this.W.toFixed(2)} ${this.H.toFixed(2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> /XObject << ${xo} >> >> /Contents ${n + 1} 0 R >>`);
+      obj(n + 1, `<< /Length ${body.length} >>`, body); });
+    const total = firstPage + nP * 2, xref = len;
+    put(`xref\n0 ${total}\n0000000000 65535 f \n` + Array.from({length: total - 1}, (_, i) => String(offs[i + 1]).padStart(10, '0') + ' 00000 n \n').join(''));
+    put(`trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+    const out = new Uint8Array(len); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out;
+  }
+}
+// Tuval (canvas) ile aynı komutları PDF çizim komutlarına çevirir; koordinat: 8 px = 1 mm, üst-sol başlangıç
+class PdfCtx {
+  constructor(doc){ this.doc = doc; this.ops = ['0 g 0 G 1 J 1 j']; this.k = 72 / 25.4 / 8; this._size = 12; this._bold = false; this.lineWidth = 1; this.isPdf = true; this._path = []; }
+  X(x){ return (x * this.k).toFixed(2); } Y(y){ return (this.doc.H - y * this.k).toFixed(2); }
+  set font(v){ const m = /([\d.]+)px/.exec(v); this._size = m ? Number(m[1]) : 12; this._bold = /\b(700|bold)\b/.test(v); }
+  get font(){ return `${this._bold ? '700 ' : ''}${this._size}px Helvetica`; }
+  measureText(t){ return {width: helvWidth(t, this._bold) * this._size}; }
+  fillText(t, x, y){ const b = pdfBytesOf(t); let s = ''; for (const c of b) s += (c === 40 || c === 41 || c === 92) ? '\\' + String.fromCharCode(c) : (c < 32 || c > 126) ? '\\' + c.toString(8).padStart(3, '0') : String.fromCharCode(c);
+    this.ops.push(`BT /${this._bold ? 'F2' : 'F1'} ${(this._size * this.k).toFixed(2)} Tf ${this.X(x)} ${this.Y(y + this._size * 0.78)} Td (${s}) Tj ET`); }
+  fillRect(x, y, w, h){ if (w >= this.doc.W / this.k * 0.98) return; this.ops.push(`${this.X(x)} ${this.Y(y + h)} ${(w * this.k).toFixed(3)} ${(h * this.k).toFixed(3)} re f`); }
+  strokeRect(x, y, w, h){ this.ops.push(`${(this.lineWidth * this.k).toFixed(2)} w ${this.X(x)} ${this.Y(y + h)} ${(w * this.k).toFixed(2)} ${(h * this.k).toFixed(2)} re S`); }
+  setLineDash(a){ this.ops.push(a && a.length ? `[${a.map(v => (v * this.k).toFixed(2)).join(' ')}] 0 d` : '[] 0 d'); }
+  beginPath(){ this._path = []; } moveTo(x, y){ this._path.push(`${this.X(x)} ${this.Y(y)} m`); } lineTo(x, y){ this._path.push(`${this.X(x)} ${this.Y(y)} l`); }
+  bezierCurveTo(a, b, c2, d, e, f){ this._path.push(`${this.X(a)} ${this.Y(b)} ${this.X(c2)} ${this.Y(d)} ${this.X(e)} ${this.Y(f)} c`); } closePath(){ this._path.push('h'); }
+  stroke(){ this.ops.push(`${(this.lineWidth * this.k).toFixed(2)} w ${this._path.join(' ')} S`); }
+  drawImage(img, x, y, w, h){ const im = this.doc.imageFor(img); this.ops.push(`q ${(w * this.k).toFixed(2)} 0 0 ${(h * this.k).toFixed(2)} ${this.X(x)} ${this.Y(y + h)} cm /${im.name} Do Q`); }
+  save(){} restore(){}
+}
+function lblRoundRect(c, x, y, w, h, r){ const q = r * 0.448; c.beginPath(); c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.bezierCurveTo(x + w - q, y, x + w, y + q, x + w, y + r); c.lineTo(x + w, y + h - r); c.bezierCurveTo(x + w, y + h - q, x + w - q, y + h, x + w - r, y + h); c.lineTo(x + r, y + h); c.bezierCurveTo(x + q, y + h, x, y + h - q, x, y + h - r); c.lineTo(x, y + r); c.bezierCurveTo(x, y + q, x + q, y, x + r, y); c.closePath(); c.stroke(); }
+// Code128 barkodu çubuk çubuk dikdörtgen olarak çizer (PDF'te vektör kalır, yazıcıda keskin)
+function lblBarcode(c, text, x, y, w, h){ const o = {}; JsBarcode(o, text, {format:'CODE128', displayValue:false, margin:0}); const bits = (o.encodings || []).map(e => e.data).join(''); if (!bits) return;
+  const mw = w / bits.length; for (let i = 0; i < bits.length; ) { if (bits[i] !== '1') { i++; continue; } let j = i; while (bits[j] === '1') j++; c.fillRect(x + i * mw, y, (j - i) * mw, h); i = j; } }
+function drawLabelPages(p, W, H, sid, mk){
   const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
   const orderLabel = String(p.orderNo), custName = (p.to.name || '').toLocaleUpperCase('tr-TR');
   const dateStr = p.date ? new Date(p.date).toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
   const colQty = mm(11), colAmt = mm(19), pad = mm(1.6), nameW = cw - colQty - colAmt - 2 * pad - mm(1);
-  const PER = 4, footH = mm(9), gap = mm(1.2);  // alt kenarda yazıcının basamadığı pay için geniş boşluk
+  const PER = 4, footH = mm(12), gap = mm(1.2);  // alt kenarda yazıcının basamadığı pay için geniş boşluk
   const items = p.lines.map(l => ({l, name: [String(l.name || l.sku || '').replace(/,?\s*one size\b/ig, '').trim(), l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ')})); // yer kazanmak için stok kodu ve 'one size' yazılmaz
   const chunks = []; for (let i = 0; i < items.length; i += PER) chunks.push(items.slice(i, i + PER)); if (!chunks.length) chunks.push([]);
   const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
-  const newCanvas = () => { const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; return {cv, c}; };
+  const newCanvas = mk || (() => { const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; return {cv, c}; });
   const rule = (c, y, w) => { c.lineWidth = mm(w || 0.3); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); };
   const xQty = PW - m - colAmt - colQty / 2;
   const tableHead = (c, y) => { font(c, 2.4, true); c.fillText('ÜRÜN', m + pad, y); const a = 'ADET'; c.fillText(a, xQty - c.measureText(a).width / 2, y); const t = 'BİRİM FİYAT'; c.fillText(t, PW - m - pad - c.measureText(t).width, y); return y + mm(3.6); };
   // ürün kutusu: ad kutuya sığacak en büyük boyutta (uzunsa küçülür, kısaysa büyür)
   const box = (c, it, x, y, w, h) => {
-    c.lineWidth = mm(0.3); const r = mm(1.2); c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); c.stroke();
+    c.lineWidth = mm(0.3); lblRoundRect(c, x, y, w, h, mm(1.2));
     if (!it) return;
     const sep = PW - m - colAmt - colQty; c.lineWidth = mm(0.15); c.beginPath(); c.moveTo(sep, y + mm(1)); c.lineTo(sep, y + h - mm(1)); c.stroke();
     let sz = 5, lines = [];
-    for (; sz >= 2.3; sz -= 0.1) { font(c, sz, true); lines = wrapText(c, it.name, nameW); if (lines.length * sz * 1.2 * D * u <= h - 2 * pad && lines.every(t => c.measureText(t).width <= nameW)) break; }
+    for (; sz >= 2.3; sz -= 0.1) { font(c, sz, false); lines = wrapText(c, it.name, nameW); if (lines.length * sz * 1.2 * D * u <= h - 2 * pad && lines.every(t => c.measureText(t).width <= nameW)) break; }
     const lh = mm(sz * 1.2), ty = y + (h - lines.length * lh) / 2 + mm(sz * 0.1);
-    font(c, sz, true); lines.forEach((t, k) => c.fillText(t, x + pad, ty + k * lh));
+    font(c, sz, false); lines.forEach((t, k) => c.fillText(t, x + pad, ty + k * lh));
     const qs = Math.min(5, Math.max(3, h / D / u * 0.32)); font(c, qs, true); const q = String(it.l.qty); c.fillText(q, xQty - c.measureText(q).width / 2, y + (h - mm(qs)) / 2);
-    const ps = Math.min(3.6, qs * 0.75); font(c, ps, true); const a = tl2(it.l.unit || it.l.amount); c.fillText(a, PW - m - pad - c.measureText(a).width, y + (h - mm(ps)) / 2);
+    const ps = Math.min(3.6, qs * 0.75); font(c, ps, false); const a = tl2(it.l.unit || it.l.amount); c.fillText(a, PW - m - pad - c.measureText(a).width, y + (h - mm(ps)) / 2);
   };
   const boxes = (c, y0, list) => { const bottom = PH - m - footH - mm(1), bh = (bottom - y0 - gap * (PER - 1)) / PER; for (let k = 0; k < PER; k++) box(c, list[k], m, y0 + k * (bh + gap), cw, bh); };
   const pages = chunks.map((list, i) => {
@@ -1425,29 +1487,29 @@ function drawLabelPages(p, W, H, sid){
     if (i === 0) {
       if (dateStr) { font(c, 3.2, false); c.fillText(dateStr, PW - m - c.measureText(dateStr).width, m); }
       const bx = PW * 0.44, bw = PW - m - bx, by = m + mm(5.5), bh = mm(19);
-      if (p.tracking && window.JsBarcode) { const bc = document.createElement('canvas'); try { JsBarcode(bc, p.tracking, {format:'CODE128', displayValue:false, margin:0, height:100, width:4}); c.imageSmoothingEnabled = false; c.drawImage(bc, bx, by, bw, bh); } catch(e) {} }
+      if (p.tracking && window.JsBarcode) { try { lblBarcode(c, p.tracking, bx, by, bw, bh); } catch(e) {} }
       else { c.lineWidth = mm(0.3); c.setLineDash([mm(1.2), mm(1)]); c.strokeRect(bx, by, bw, bh); c.setLineDash([]); font(c, 3.2, true); const t = 'Takip numarası bekleniyor'; c.fillText(t, bx + (bw - c.measureText(t).width) / 2, by + bh / 2 - mm(1.6)); }
       let yR = by + bh + mm(1.6); font(c, 3, false); c.fillText('Sipariş No: ' + orderLabel, bx, yR); yR += mm(4.2);
-      if (p.tracking) { let sz = 3; const t = 'Kargo Kampanya Kodu: ' + p.tracking; font(c, sz, true); while (c.measureText(t).width > bw && sz > 2.2) { sz -= 0.1; font(c, sz, true); } c.fillText(t, bx, yR); yR += mm(sz * 1.15); }
+      if (p.tracking) { let sz = 3; const t = 'Kargo Kampanya Kodu: ' + p.tracking; font(c, sz, false); while (c.measureText(t).width > bw && sz > 2.2) { sz -= 0.1; font(c, sz, false); } c.fillText(t, bx, yR); yR += mm(sz * 1.15); }
       // logo barkodla aynı dikey merkezde
       const lgW = bx - m - mm(4), lgH = lgW * 352 / 900, lgY = by + (bh - lgH) / 2;
-      if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, lgY, lgW, lgH); else drawLogo(c, m - mm(1), m - mm(1), mm(24));
+      if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, lgY, lgW, lgH); else if (!c.isPdf) drawLogo(c, m - mm(1), m - mm(1), mm(24));
       // müşteri adı: logonun altında, çizginin hemen üstünde (kampanya kodu satırıyla aynı hizada biter)
-      font(c, 2.8, true); const nl = wrapText(c, custName, bx - m - mm(3)), lh = mm(3.5);
+      font(c, 2.8, false); const nl = wrapText(c, custName, bx - m - mm(3)), lh = mm(3.5);
       const ruleY = Math.max(yR, lgY + lgH + nl.length * lh) + mm(0.8);
       nl.forEach((t, k) => c.fillText(t, m, ruleY - mm(0.8) - (nl.length - k) * lh));
       rule(c, ruleY, 0.4); y = ruleY + mm(1.2);
     } else {
-      y = m; font(c, 3, true);
+      y = m; font(c, 3, false);
       for (const t of wrapText(c, `Sipariş No: ${orderLabel} · ${custName}`, cw)) { c.fillText(t, m, y); y += mm(4); }
       rule(c, y + mm(0.4), 0.4); y += mm(1.6);
     }
     y = tableHead(c, y); boxes(c, y, list);
-    const fy = PH - m - mm(6.5);
-    if (chunks.length > 1) { font(c, 2.4, true); c.fillText(i === 0 ? `Sayfa 1/${chunks.length} · devamı ek sayfada` : `Ek sayfa ${i + 1}/${chunks.length}`, m, fy); }
-    if (i === chunks.length - 1) { font(c, 3, true); const t = 'TOPLAM TUTAR: ' + tl2(total); c.fillText(t, PW - m - c.measureText(t).width, fy); }
-    lblMono(pg.cv);
-    return pg.cv;
+    const fy = PH - m - mm(9);
+    if (chunks.length > 1) { font(c, 2.4, false); c.fillText(i === 0 ? `Sayfa 1/${chunks.length} · devamı ek sayfada` : `Ek sayfa ${i + 1}/${chunks.length}`, m, fy); }
+    if (i === chunks.length - 1) { font(c, 3.2, false); const t = 'TOPLAM TUTAR: ' + tl2(total); c.fillText(t, PW - m - c.measureText(t).width, fy); }
+    if (pg.cv) lblMono(pg.cv);
+    return pg.cv || pg.c;
   });
   return pages;
 }
@@ -1456,7 +1518,7 @@ function lblMono(cv){ const c = cv.getContext('2d'), d = c.getImageData(0, 0, cv
   for (let i = 0; i < a.length; i += 4) { const v = (a[i] * 0.3 + a[i+1] * 0.59 + a[i+2] * 0.11) < 175 ? 0 : 255; a[i] = a[i+1] = a[i+2] = v; a[i+3] = 255; }
   c.putImageData(d, 0, 0); }
 // PDF'in sonunda toplam ürün özeti: seçilen etiketlerdeki her üründen toplam kaç adet var (çoktan aza)
-function drawSummaryPages(list, W, H){
+function drawSummaryPages(list, W, H, mk){
   const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
   const agg = new Map();
@@ -1464,7 +1526,7 @@ function drawSummaryPages(list, W, H){
   const rows = [...agg.values()].sort((a, b) => b.qty - a.qty || String(a.sku).localeCompare(String(b.sku), 'tr'));
   const totalQty = rows.reduce((t, r) => t + r.qty, 0);
   const colQ = mm(14), nameW = cw - colQ - mm(2), pages = []; let c, y, cv;
-  const start = (first) => { cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; y = m;
+  const start = (first) => { if (mk) { const r = mk(); cv = r.c; c = r.c; } else { cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; } y = m;
     font(c, 4.4, true); c.fillText(first ? 'TOPLAM ÜRÜN LİSTESİ' : 'TOPLAM ÜRÜN LİSTESİ (devam)', m, y); y += mm(5.6);
     font(c, 2.8, false); c.fillText(`${list.length} etiket · ${rows.length} çeşit ürün · ${totalQty} adet · ${new Date().toLocaleDateString('tr-TR')}`, m, y); y += mm(4.2);
     c.lineWidth = mm(0.4); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(1.4);
@@ -1477,7 +1539,7 @@ function drawSummaryPages(list, W, H){
     font(c, 4.2, true); const q = String(r.qty); c.fillText(q, PW - m - c.measureText(q).width, y);
     y += h; c.lineWidth = mm(0.12); c.setLineDash([mm(0.6), mm(0.6)]); c.beginPath(); c.moveTo(m, y - mm(1)); c.lineTo(PW - m, y - mm(1)); c.stroke(); c.setLineDash([]);
   }
-  pages.forEach(lblMono);
+  if (!mk) pages.forEach(lblMono);
   return pages;
 }
 async function makeLabelsPdf(){
@@ -1488,15 +1550,14 @@ async function makeLabelsPdf(){
   const list = lblSort(L.data.filter(p => L.sel.has(p.pkgId))); if (!list.length) return toast('En az bir paket seç.', true);
   await run(async () => {
     toast('PDF hazırlanıyor…');
-    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
     await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
-    const doc = new window.jspdf.jsPDF({unit:'mm', format:[w, h], orientation: w > h ? 'landscape' : 'portrait', compress:true});
-    let n = 0; const add = (cv) => { if (n++) doc.addPage([w, h], w > h ? 'landscape' : 'portrait'); doc.addImage(cv.toDataURL('image/png'), 'PNG', 0, 0, w, h, undefined, 'FAST'); };
-    for (const cv of drawSummaryPages(list, w, h)) add(cv); // toplam ürün listesi en başta
-    for (const p of list) for (const cv of drawLabelPages(p, w, h, L.sid)) add(cv);
+    // vektör PDF: yazılar ve barkod yazıcının kendi çözünürlüğünde basılır (silik çıkmaz)
+    const doc = new MiniPdf(w, h), mk = () => ({cv: null, c: doc.addPage()});
+    drawSummaryPages(list, w, h, mk); // toplam ürün listesi en başta
+    for (const p of list) drawLabelPages(p, w, h, L.sid, mk);
     try { await api('/api/labels/mark', {printed: true, items: list.map(p => ({pkgId: p.pkgId, orderNo: p.orderNo}))}); const now = new Date().toISOString(); list.forEach(p => p.printedAt = p.printedAt || now); if (L.view !== 'printed') { lblView(L); renderSheet(false); } } catch(e) { toast('Etiketler kayıtlıya alınamadı: ' + errText(e), true); }
-    const name = `kargo-etiketleri-${L.car || ''}-${todayTR()}-${list.length}.pdf`, blob = doc.output('blob'), file = new File([blob], name, {type:'application/pdf'});
+    const name = `kargo-etiketleri-${L.car || ''}-${todayTR()}-${list.length}.pdf`, blob = new Blob([doc.output()], {type:'application/pdf'}), file = new File([blob], name, {type:'application/pdf'});
     if (navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
     const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
     toast(`${fmtN(list.length)} etiket PDF olarak hazırlandı.`);
