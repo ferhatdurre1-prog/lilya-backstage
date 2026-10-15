@@ -213,7 +213,24 @@ function cleanFin(fin, price, qty) {
   const p = numOrNull(price);
   return p !== null && p >= 0 ? { revenue: Math.round(p * qty * 100) / 100, rate: null, vat: null } : null;
 }
+// Aynı siparişi iki iş (Trendyol bildirimi + eşitleme) aynı anda işlemesin: stok iki kez düşmesin
+async function ingestLock(env) {
+  for (let i = 0; i < 25; i++) {
+    const now = Date.now();
+    const r = await env.DB.prepare(`UPDATE settings SET v=?1 WHERE k='lock_ingest' AND CAST(v AS INTEGER) < ?2`).bind(String(now + 20000), now).run();
+    if (r.meta && r.meta.changes === 1) return true;
+    if (i === 0) { const x = await env.DB.prepare(`INSERT OR IGNORE INTO settings(k,v) VALUES('lock_ingest',?1)`).bind(String(now + 20000)).run(); if (x.meta && x.meta.changes === 1) return true; }
+    await sleep(300);
+  }
+  return false;
+}
 async function ingestOrders(env, channel, input, opts = {}) {
+  if (opts.dry || opts.noLock) return ingestOrdersRaw(env, channel, input, opts);
+  if (!(await ingestLock(env))) { const e = new Error('Siparişler şu an başka bir işte işleniyor; birkaç saniye sonra tekrar denenecek.'); e.status = 409; throw e; }
+  try { return await ingestOrdersRaw(env, channel, input, opts); }
+  finally { try { await env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_ingest'`).run(); } catch (e) {} }
+}
+async function ingestOrdersRaw(env, channel, input, opts = {}) {
   const dry = !!opts.dry, source = opts.source || 'import';
   const start = opts.start !== undefined ? opts.start : await getSetting(env, 'started_at');
   const bmap = await barcodeMap(env, input.flatMap(o => (o.lines || []).filter(l => !String(l.sku || '').trim()).map(l => String(l.barcode || '').trim())));
@@ -455,7 +472,8 @@ function tyWindow(hwm, maxBackDays, now) {
 async function syncTrendyolOrders(env) {
   const now = Date.now();
   const s = await getSettings(env, ['ty_orders_hwm', 'ty_shift', 'ty_orders_exact']);
-  const hwm = Number(s.ty_orders_hwm) || 0, exact = Number(s.ty_orders_exact) || 0;
+  // Trendyol bazen ileri tarihli değişiklik saati döndürebilir; okuma noktası şimdiden ileri kaçarsa yeni siparişler atlanmasın
+  const hwm = Math.min(Number(s.ty_orders_hwm) || 0, now + TY_TZ + 5 * 60000), exact = Number(s.ty_orders_exact) || 0;
   let { start, end } = tyWindow(hwm, 13, now);
   const fullEnd = end;
   // Trendyol'un lastModifiedDate değeri ile sorgu saati arasındaki fark (ty_shift: 0 ya da 3 saat). Dilim sınırları bununla çevrilir;
@@ -487,6 +505,48 @@ async function syncTrendyolOrders(env) {
   else if (exact && end < fullEnd) await env.DB.batch([setStmt(env, 'ty_orders_exact', String(end + off)), setStmt(env, 'ty_orders_hwm', String(Math.max(hwm, maxMod)))]); // dilim bitti, sonraki dilime geç
   else await env.DB.batch([setStmt(env, 'ty_orders_exact', ''), setStmt(env, 'ty_orders_hwm', String(list.length ? maxMod : (hwm || Math.min(end, now))))]);
   return { packages: list.length, remaining: truncated ? all.length - list.length : 0, stats };
+}
+/* ---------- Trendyol anlık sipariş bildirimi (webhook) ----------
+   Trendyol yeni sipariş olduğu anda uygulamaya haber verir; sipariş 10 saniyelik turu beklemeden düşer.
+   Yalnızca henüz kayıtlı olmayan siparişler bildirimden işlenir; durum değişiklikleri (iptal, kargo, teslim) her zamanki eşitlemeyle gelir
+   (bildirimler sırasız/tekrarlı gelebildiği için eski bir durum yenisinin üstüne yazılmasın). */
+async function handleTyHook(env, pkgsIn) {
+  const pkgs = pkgsIn.filter(p => p && (p.shipmentPackageId || p.id) && p.orderNumber && Array.isArray(p.lines));
+  if (!pkgs.length) return { n: 0 };
+  const nos = [...new Set(pkgs.map(p => String(p.orderNumber)))];
+  const have = new Set((await selectIn(env, 'SELECT order_no FROM orders', 'id', nos.map(n => orderId('trendyol', n)))).map(r => String(r.order_no)));
+  const fresh = pkgs.filter(p => !have.has(String(p.orderNumber)));
+  if (!fresh.length) return { n: 0, known: pkgs.length };
+  const shift = Number(await getSetting(env, 'ty_shift')) || 0;
+  await recordAuditPkgs(env, fresh);
+  const stats = await ingestOrders(env, 'trendyol', tyPackagesToOrders(fresh, shift), { source: 'trendyol' });
+  try { await recordCustomers(env, fresh); } catch (e) {}
+  return { n: fresh.length, stats };
+}
+async function tyHookApi(env, method, path, body) {
+  const r = await fetch(`https://apigw.trendyol.com/integration/webhook/sellers/${env.TRENDYOL_SELLER_ID}/webhooks${path}`, { method, headers: { ...tyHeaders(env), storeFrontCode: 'TR', ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const txt = await r.text();
+  if (!r.ok) { const e = new Error(`Trendyol bildirim ${r.status}: ${txt.slice(0, 200)}`); e.status = r.status; throw e; }
+  try { return JSON.parse(txt); } catch (e) { return txt; }
+}
+// Bildirim adresini Trendyol'a bir kez kaydeder (uygulamanın adresi ilk girişte öğrenilir); kapanmışsa yeniden kurar
+async function ensureTyWebhook(env, force) {
+  const s = await getSettings(env, ['hook_id', 'hook_key', 'hook_try', 'hook_at', 'self_origin']);
+  if (!s.self_origin) return null;
+  const now = Date.now();
+  if (!force && now - (Number(s.hook_try) || 0) < (s.hook_id ? 6 * 3600000 : 3600000)) return null;
+  await setSetting(env, 'hook_try', String(now));
+  const url = s.self_origin + '/hook/ty';
+  let list = []; try { const r = await tyHookApi(env, 'GET', ''); list = Array.isArray(r) ? r : (r && (r.content || r.webhooks)) || []; } catch (e) { await setSetting(env, 'hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return null; }
+  const mine = list.filter(w => w && w.url === url);
+  if (s.hook_id && s.hook_key && mine.some(w => w.id === s.hook_id && w.status !== 'PASSIVE')) return { ok: true };
+  for (const w of mine) { try { await tyHookApi(env, 'DELETE', '/' + encodeURIComponent(w.id)); } catch (e) {} }
+  const key = [...crypto.getRandomValues(new Uint8Array(24))].map(b => b.toString(16).padStart(2, '0')).join('');
+  try {
+    const r = await tyHookApi(env, 'POST', '', { url, authenticationType: 'API_KEY', apiKey: key, subscribedStatuses: ['CREATED'] });
+    await env.DB.batch([setStmt(env, 'hook_id', String((r && r.id) || 'ok')), setStmt(env, 'hook_key', key), setStmt(env, 'hook_err', '')]);
+    return { ok: true, created: true };
+  } catch (e) { await setSetting(env, 'hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return null; }
 }
 async function backfillTrendyolOrders(env) {
   const v = await getSetting(env, 'fin_backfill_day');
@@ -1096,6 +1156,7 @@ async function syncTrendyolFinance(env, force, deadline) {
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   return { orders: agg.size, rows, cargoInvoices: cargoInv, stat };
 }
+let SELF_ORIGIN = null;
 async function tryLock(env, ms) {
   const now = Date.now();
   const r = await env.DB.prepare(`UPDATE settings SET v=?1 WHERE k='lock_sync' AND CAST(v AS INTEGER) < ?2`).bind(String(now + ms), now).run();
@@ -1122,6 +1183,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     if (left() > 28000 && ok(350) && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
     if (left() > 20000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
     if (left() > 15000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
+    if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 8000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env, Date.now() + Math.min(15000, left() - 5000)));
     if (left() > 8000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
@@ -1601,12 +1663,12 @@ function mapReturn(r) { return { outDesi: Number(r.o_desi) > 0 ? Number(r.o_desi
 function mapProduct(r) { return { passive: r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
-  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg']);
+  const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg', 'hook_id', 'hook_at', 'hook_err']);
   let usage = null; try { usage = await usageGuard(env, false); } catch (e) {}
   // Trendyol'da yeni (Created) ve işleme alınan (Picking) paketler
   let newOrders = { n: 0, u: 0 };
   try { const r = await env.DB.prepare(`SELECT COUNT(DISTINCT order_no) n, COALESCE(SUM(units),0) u FROM audit_pkg WHERE status IN ('Created','Picking') AND day >= ?1`).bind(trDay(Date.now() - 30 * 86400000)).first(); if (r) newOrders = { n: r.n || 0, u: r.u || 0 }; } catch (e) {}
-  return { usage, rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), cargoCheck: (() => { try { return JSON.parse(s.fin_cargo_check || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, newOrders, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
+  return { usage, rev: s.rev, settings: { startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), cargoCheck: (() => { try { return JSON.parse(s.fin_cargo_check || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, newOrders, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', hook: { on: !!s.hook_id, at: s.hook_at || '', err: s.hook_err || '' }, perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
 }
 /* ---------- piyasa bandı (döviz, borsa, emtia) ---------- */
 const MKT_SYMS = { USD: 'USDTRY=X', EUR: 'EURTRY=X', BIST: 'XU100.IS', GOLD: 'GC=F', SILVER: 'SI=F', BRENT: 'BZ=F' };
@@ -2094,7 +2156,7 @@ async function api(req, env, path, ctx) {
   }
   if (path === '/api/orders/page') {
     // Sipariş ekranı: sayfa başına 100 sipariş; durum, kanal ve arama süzgeci sunucuda
-    const size = 100, page = Math.max(1, intOr(body.page, 1));
+    const size = Math.max(1, Math.min(100, intOr(body.size, 100))), page = Math.max(1, intOr(body.page, 1));
     const where = [], args = [];
     const f = String(body.filter || 'all');
     if (f === 'delivered') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')`); else if (f === 'new' || f === 'printed') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}' AND ${f === 'printed' ? '' : 'NOT '}EXISTS(SELECT 1 FROM label_printed lp WHERE lp.pkg_id=a.pkg_id))`); else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`o.status='returned'`);
@@ -2109,8 +2171,10 @@ async function api(req, env, path, ctx) {
     }
     const W = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const J = `FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ${W}`;
-    const tot = await env.DB.prepare(`SELECT COUNT(*) n ${J}`).bind(...args).first();
-    const { results } = await env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname ${J} ORDER BY o.date DESC LIMIT ${size} OFFSET ${(page - 1) * size}`).bind(...args).all();
+    const [totR, listR] = await env.DB.batch([env.DB.prepare(`SELECT COUNT(*) n ${J}`).bind(...args), env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname ${J} ORDER BY o.date DESC LIMIT ${size} OFFSET ${(page - 1) * size}`).bind(...args)]);
+    const tot = totR.results[0], results = listR.results;
+    // Kâr ayrı istekle gelir (liste beklemeden açılsın)
+    if (body.prof === false) return json({ ok: true, page, size, total: tot ? tot.n : 0, orders: results.map(r => ({ ...mapOrder(r), prof: null })) });
     // Her siparişin kârı: Kâr ekranıyla aynı hesap, bu sayfadaki siparişlerin tarih aralığı için
     const prof = {};
     try {
@@ -2122,6 +2186,16 @@ async function api(req, env, path, ctx) {
       }
     } catch (e) {}
     return json({ ok: true, page, size, total: tot ? tot.n : 0, orders: results.map(r => ({ ...mapOrder(r), prof: prof[r.id] || null })) });
+  }
+  if (path === '/api/orders/prof') {
+    // Listede görünen siparişlerin kârı (Kâr ekranıyla aynı hesap)
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).slice(0, 100); const prof = {};
+    if (ids.length) {
+      const rows = await selectIn(env, 'SELECT id, date FROM orders', 'id', ids);
+      const ds = rows.map(r => Date.parse(r.date)).filter(Number.isFinite);
+      if (ds.length) { const pr = await computeProfit(env, iso(Math.min(...ds)), iso(Math.max(...ds) + 1)); const want = new Set(ids); for (const x of pr.orders) if (want.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual }; }
+    }
+    return json({ ok: true, prof });
   }
   if (path === '/api/orders/search') {
     // Sipariş no, müşteri adı, ürün adı / stok kodu / barkod ile arama (son 300 siparişin dışındakiler dahil)
@@ -2226,6 +2300,18 @@ export default {
     try {
       if (!env.APP_PASSWORD) return new Response('Kurulum eksik: APP_PASSWORD gizli değişkeni tanımlanmalı.', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       // Sayfa ve simgeler veritabanını beklemeden hemen gönderilir
+      if (path === '/hook/ty') {
+        // Trendyol sipariş bildirimi: anahtar doğrulanır, yeni sipariş hemen işlenir
+        if (req.method !== 'POST') return new Response('ok');
+        await init(env); USE.req++;
+        const key = await getSetting(env, 'hook_key');
+        if (!key || req.headers.get('x-api-key') !== key) return new Response('yetkisiz', { status: 401 });
+        const b = await req.json().catch(() => null);
+        const pkgs = !b ? [] : Array.isArray(b) ? b : Array.isArray(b.content) ? b.content : [b];
+        try { const r = await handleTyHook(env, pkgs); await setSetting(env, 'hook_at', iso() + ' · ' + (r.n ? r.n + ' yeni paket' : 'kayıtlı')); }
+        catch (e) { await setSetting(env, 'hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); }
+        return json({ ok: true });
+      }
       if (!path.startsWith('/api/') && path !== '/perf' && path !== '/__stats' && path !== '/__run' && path !== '/manifest.webmanifest' && path !== '/icon.svg' && path !== '/apple-touch-icon.png' && path !== '/icon-192.png' && path !== '/icon-512.png')
         { USE.req++; return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } }); }
       if (path.startsWith('/api/') && path !== '/api/logout' || path === '/perf' || path === '/__stats' || path === '/__run') await init(env);
@@ -2292,6 +2378,7 @@ export default {
       if (path.startsWith('/api/')) {
         const exp = await authed(req, env);
         if (!exp) return bad('Oturum gerekli.', 401);
+        if (SELF_ORIGIN !== url.origin) { SELF_ORIGIN = url.origin; ctx.waitUntil(getSetting(env, 'self_origin').then(v => v !== url.origin ? setSetting(env, 'self_origin', url.origin) : null).catch(() => {})); }
         const uc = { n: 0 }; const envU = { ...env, DB: countingDB(env.DB, uc) };
         const res = await api(req, envU, path, ctx);
         USE.req++; USE.wr += uc.w || 0; USE.rd += uc.r || 0;

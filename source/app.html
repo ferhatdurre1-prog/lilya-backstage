@@ -873,14 +873,18 @@ function viewHome(){
   </div></div>`;
   return h;
 }
+// Sipariş kârları: liste beklemeden açılır, kârlar ayrı istekle gelip yerine oturur (önceki değerler hemen gösterilir)
+function withProf(os){ const C = S.profC; return C ? os.map(o => o.prof || !C.has(o.id) ? o : {...o, prof: C.get(o.id)}) : os; }
+function loadProf(os, tab){ const ids = os.map(o => o.id); if (!ids.length) return; S.profC = S.profC || new Map();
+  api('/api/orders/prof', {ids}).then(r => { for (const id of ids) if (r.prof[id]) S.profC.set(id, r.prof[id]); if (S.tab === tab) render(); }).catch(() => {}); }
 // Ana ekran: son gelen siparişler (kârıyla), dokununca sipariş açılır
 function homeRecent(){
   const N = 3;
   if (!S.homeOrd || S.homeOrd.rev !== S.rev) {
     if (S.homeOrdLoading !== S.rev) { const rev = S.rev; S.homeOrdLoading = rev;
-      api('/api/orders/page', {page:1, filter:'all'}).then(r => { S.homeOrd = {rev, orders: r.orders.slice(0, N)}; S.homeOrdLoading = null; if (S.tab === 'home') render(); }).catch(() => { S.homeOrdLoading = null; }); }
+      api('/api/orders/page', {page:1, filter:'all', size:N, prof:false}).then(r => { S.homeOrd = {rev, orders: r.orders.slice(0, N)}; S.homeOrdLoading = null; if (S.tab === 'home') render(); loadProf(r.orders, 'home'); }).catch(() => { S.homeOrdLoading = null; }); }
   }
-  const os = (S.homeOrd && S.homeOrd.orders) || S.orders.slice(0, N);
+  const os = withProf((S.homeOrd && S.homeOrd.orders) || S.orders.slice(0, N));
   if (!os.length) return '';
   S.extraOrders = S.extraOrders || {}; for (const o of os) if (!findOrder(o.id)) S.extraOrders[o.id] = o;
   return `<div class="card"><div class="spread"><h3 style="margin:0">Son siparişler</h3><button class="pill" data-act="tab" data-id="orders" style="background:var(--warn-soft);color:var(--orange);border:0;cursor:pointer">Tümü ›</button></div>
@@ -1161,11 +1165,11 @@ function viewOrders(){
   const used = [...new Set(S.orders.map(o => o.channel))];
   const key = [S.opage || 1, S.ofilter, S.och || '', S.oq.trim(), S.rev].join('|');
   const PD = S.oPage;
-  if (!PD || PD.key !== key) { if (!S.oLoading || S.oLoading !== key) { S.oLoading = key; api('/api/orders/page', {page:S.opage||1, filter:S.ofilter, channel:S.och||'', q:S.oq.trim()}).then(r => { S.oPage = {key, ...r}; S.oLoading = null; if (S.tab === 'orders') render(); }).catch(e => { S.oLoading = null; toast(errText(e), true); }); } }
+  if (!PD || PD.key !== key) { if (!S.oLoading || S.oLoading !== key) { S.oLoading = key; api('/api/orders/page', {page:S.opage||1, filter:S.ofilter, channel:S.och||'', q:S.oq.trim(), prof:false}).then(r => { S.oPage = {key, ...r}; S.oLoading = null; if (S.tab === 'orders') render(); loadProf(r.orders, 'orders'); }).catch(e => { S.oLoading = null; toast(errText(e), true); }); } }
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="oq" type="search" placeholder="Sipariş no, müşteri adı, ürün, stok kodu veya barkod" value="${esc(S.oq)}" aria-label="Sipariş ara" autocomplete="off"></div></div>
   <div class="filters"><div class="chips">${[['all','Tümü'],['new','Bekleyen'],['printed','Kayıtlı'],['delivered','Teslim edilen'],['active','Aktif'],['cancelled','İptal'],['returned','İade var']].map(([id,l]) => `<button class="chip" data-act="ofilter" data-id="${id}" aria-pressed="${S.ofilter===id}">${l}</button>`).join('')}</div>
   ${used.length > 1 ? `<div class="chips"><button class="chip" data-act="och" data-id="" aria-pressed="${!S.och}">Tüm kanallar</button>${used.map(c => `<button class="chip" data-act="och" data-id="${c}" aria-pressed="${S.och===c}">${esc((CHANNELS[c]||{name:c}).name)}</button>`).join('')}</div>` : ''}</div>`;
-  const base = key.split('|').slice(0, 4).join('|'); const pd = S.oPage && S.oPage.key.split('|').slice(0, 4).join('|') === base ? S.oPage : null; const os = pd ? pd.orders : [];
+  const base = key.split('|').slice(0, 4).join('|'); const pd = S.oPage && S.oPage.key.split('|').slice(0, 4).join('|') === base ? S.oPage : null; const os = pd ? withProf(pd.orders) : [];
   const pages = pd ? Math.max(1, Math.ceil(pd.total / pd.size)) : 1, cur = pd ? pd.page : (S.opage || 1);
   const pnums = []; for (let i = 1; i <= pages; i++) if (i === 1 || i === pages || Math.abs(i - cur) <= 2) pnums.push(i); else if (pnums[pnums.length - 1] !== '…') pnums.push('…');
   const pager = pd && pages > 1 ? `<div class="row" style="justify-content:center;flex-wrap:wrap;gap:6px;margin:14px 0"><button class="btn sm" data-act="opage" data-id="${cur-1}" ${cur<=1?'disabled':''}>‹ Önceki</button>${pnums.map(n => n === '…' ? '<span class="muted">…</span>' : `<button class="btn sm ${n===cur?'primary':'ghost'}" data-act="opage" data-id="${n}">${n}</button>`).join('')}<button class="btn sm" data-act="opage" data-id="${cur+1}" ${cur>=pages?'disabled':''}>Sonraki ›</button></div>` : '';
@@ -2270,7 +2274,7 @@ function tyCardLive(){
   const t = (S.sync && S.sync.trendyol) || {}; const st = tyState();
   if (!t.configured) return `<p class="muted small" style="margin:0">Cloudflare'de <span class="mono">TRENDYOL_SELLER_ID</span>, <span class="mono">TRENDYOL_API_KEY</span> ve <span class="mono">TRENDYOL_API_SECRET</span> girildiğinde otomatik eşitleme başlar.</p>`;
   return `<dl class="kv"><dt>Durum</dt><dd><span class="pill ${st.cls==='ok'?'p-good':st.cls==='err'?'p-bad':'p-warn'}">${esc(st.text)}</span></dd>
-    <dt>Siparişler</dt><dd>Her 10 saniyede, uygulama kapalıyken de</dd>
+    <dt>Siparişler</dt><dd>${t.hook && t.hook.on ? 'Anlık (Trendyol bildirimi)' + (t.hook.at ? ' · son ' + esc(ago(t.hook.at.slice(0, 24))) : '') + ' + her 10 saniyede kontrol' : 'Her 10 saniyede, uygulama kapalıyken de'}${t.hook && t.hook.err && !t.hook.on ? `<div style="color:var(--bad);font-size:12px">Anlık bildirim kurulamadı: ${esc(t.hook.err.slice(27))}</div>` : ''}</dd>
     <dt>Kesintiler (kâr)</dt><dd>${t.finAt ? 'Son okuma ' + esc(ago(t.finAt)) : '6 saatte bir okunur'}${t.finErr && (!t.finAt || t.finErr.slice(0, 24) > t.finAt.slice(0, 24)) ? `<div style="color:var(--bad);font-size:12px">${esc(t.finErr.slice(27))}</div>` : ''}</dd>
     <dt>Stok → Trendyol</dt><dd>${S.settings.pushStock===false ? 'Kapalı' : t.pushAt ? 'Son gönderim ' + esc(ago(t.pushAt)) + ' · ' + fmtN(t.pushCount) + ' ürün' : 'Değişiklik olunca gönderilir'}</dd><dt>İadeler</dt><dd>Her dakika</dd><dt>Ürün listesi</dt><dd>${t.productsAt ? '6 saatte bir · son ' + esc(ago(t.productsAt)) : 'İlk tarama sürüyor'}</dd></dl>
     ${st.cls==='err' ? `<div class="banner bad" style="margin:0"><div>${esc(st.err||'')}</div></div>` : ''}
