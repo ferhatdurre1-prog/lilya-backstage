@@ -1406,13 +1406,11 @@ class MiniPdf {
   constructor(Wmm, Hmm){ this.W = Wmm * 72 / 25.4; this.H = Hmm * 72 / 25.4; this.pages = []; this.images = []; }
   addPage(){ const ctx = new PdfCtx(this); this.pages.push(ctx); return ctx; }
   imageFor(img){ let e = this.images.find(x => x.img === img); if (e) return e;
-    const w = img.getContext ? img.width : Math.min(img.naturalWidth || img.width, 1200), h = Math.round(w * (img.naturalHeight || img.height) / (img.naturalWidth || img.width));
+    const w = Math.min(img.naturalWidth || img.width, 1200), h = Math.round(w * (img.naturalHeight || img.height) / (img.naturalWidth || img.width));
     const cv = document.createElement('canvas'); cv.width = w; cv.height = h; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, w, h); c.drawImage(img, 0, 0, w, h);
     const d = c.getImageData(0, 0, w, h).data, rb = Math.ceil(w / 8), bits = new Uint8Array(rb * h);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (d[i] * 0.3 + d[i+1] * 0.59 + d[i+2] * 0.11 >= 140) bits[y * rb + (x >> 3)] |= 0x80 >> (x & 7); }
     e = {img, w, h, bits, name: 'Im' + (this.images.length + 1)}; this.images.push(e); return e; }
-  // görüntü verisini sıkıştır (Flate); tarayıcı desteklemezse sıkıştırmasız kalır
-  async compress(){ if (typeof CompressionStream === 'undefined') return; for (const im of this.images) { if (im.filter) continue; try { const z = new Uint8Array(await new Response(new Blob([im.bits]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer()); im.bits = z; im.filter = '/FlateDecode'; } catch(e) {} } }
   output(){
     const enc = new TextEncoder(), chunks = [], offs = []; let len = 0;
     const put = (x) => { const b = typeof x === 'string' ? enc.encode(x) : x; chunks.push(b); len += b.length; };
@@ -1424,7 +1422,7 @@ class MiniPdf {
     obj(3, '<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [129 /gbreve 141 /Gbreve 143 /dotlessi 144 /Idotaccent 157 /scedilla 164 /Scedilla] >>');
     obj(4, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 3 0 R >>');
     obj(5, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding 3 0 R >>');
-    this.images.forEach((im, i) => obj(firstImg + i, `<< /Type /XObject /Subtype /Image /Width ${im.w} /Height ${im.h} /ImageMask true /BitsPerComponent 1 /Decode [0 1]${im.filter ? ' /Filter ' + im.filter : ''} /Length ${im.bits.length} >>`, im.bits));
+    this.images.forEach((im, i) => obj(firstImg + i, `<< /Type /XObject /Subtype /Image /Width ${im.w} /Height ${im.h} /ImageMask true /BitsPerComponent 1 /Decode [0 1] /Length ${im.bits.length} >>`, im.bits));
     const xo = this.images.map((im, i) => `/${im.name} ${firstImg + i} 0 R`).join(' ');
     this.pages.forEach((pg, i) => { const n = firstPage + i * 2, body = enc.encode(pg.ops.join('\n'));
       obj(n, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${this.W.toFixed(2)} ${this.H.toFixed(2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> /XObject << ${xo} >> >> /Contents ${n + 1} 0 R >>`);
@@ -1456,11 +1454,9 @@ class PdfCtx {
 function lblRoundRect(c, x, y, w, h, r){ const q = r * 0.448; c.beginPath(); c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.bezierCurveTo(x + w - q, y, x + w, y + q, x + w, y + r); c.lineTo(x + w, y + h - r); c.bezierCurveTo(x + w, y + h - q, x + w - q, y + h, x + w - r, y + h); c.lineTo(x + r, y + h); c.bezierCurveTo(x + q, y + h, x, y + h - q, x, y + h - r); c.lineTo(x, y + r); c.bezierCurveTo(x, y + q, x + q, y, x + r, y); c.closePath(); c.stroke(); }
 // Code128 barkodu çubuk çubuk dikdörtgen olarak çizer (PDF'te vektör kalır, yazıcıda keskin)
 function lblBarcode(c, text, x, y, w, h){ const o = {}; JsBarcode(o, text, {format:'CODE128', displayValue:false, margin:0}); const bits = (o.encodings || []).map(e => e.data).join(''); if (!bits) return;
-  const mw = w / bits.length; for (let i = 0; i < bits.length; ) { if (bits[i] !== '1') { i++; continue; } let j = i; while (bits[j] === '1') j++; if (c.isPdf) c.fillRect(x + i * mw, y, (j - i) * mw, h); else { const a = Math.round(x + i * mw); c.fillRect(a, Math.round(y), Math.round(x + j * mw) - a, Math.round(h)); } i = j; } }
-// Etiket çizim çözünürlüğü (nokta/mm). PDF için sayfalar 24 nokta/mm (~600 dpi) siyah-beyaz resim olarak çizilir.
-let LBL_D = 8;
+  const mw = w / bits.length; for (let i = 0; i < bits.length; ) { if (bits[i] !== '1') { i++; continue; } let j = i; while (bits[j] === '1') j++; c.fillRect(x + i * mw, y, (j - i) * mw, h); i = j; } }
 function drawLabelPages(p, W, H, sid, mk){
-  const D = LBL_D, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
+  const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
   const orderLabel = String(p.orderNo), custName = (p.to.name || '').toLocaleUpperCase('tr-TR');
   const dateStr = p.date ? new Date(p.date).toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
@@ -1519,11 +1515,11 @@ function drawLabelPages(p, W, H, sid, mk){
 }
 // Termal yazıcı gri basamaz: kenar yumuşatmasından kalan gri pikseller tam siyah ya da beyaz yapılır (yazılar soluk/bulanık çıkmasın)
 function lblMono(cv){ const c = cv.getContext('2d'), d = c.getImageData(0, 0, cv.width, cv.height), a = d.data;
-  for (let i = 0; i < a.length; i += 4) { const v = (a[i] * 0.3 + a[i+1] * 0.59 + a[i+2] * 0.11) < 185 ? 0 : 255; a[i] = a[i+1] = a[i+2] = v; a[i+3] = 255; }
+  for (let i = 0; i < a.length; i += 4) { const v = (a[i] * 0.3 + a[i+1] * 0.59 + a[i+2] * 0.11) < 175 ? 0 : 255; a[i] = a[i+1] = a[i+2] = v; a[i+3] = 255; }
   c.putImageData(d, 0, 0); }
 // PDF'in sonunda toplam ürün özeti: seçilen etiketlerdeki her üründen toplam kaç adet var (çoktan aza)
 function drawSummaryPages(list, W, H, mk){
-  const D = LBL_D, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
+  const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
   const agg = new Map();
   for (const p of list) for (const l of p.lines) { const k = l.sku || l.name; const a = agg.get(k) || {sku: l.sku, name: l.name, qty: 0, orders: new Set()}; a.qty += l.qty; a.orders.add(p.orderNo); agg.set(k, a); }
@@ -1556,14 +1552,10 @@ async function makeLabelsPdf(){
     toast('PDF hazırlanıyor…');
     await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
-    // Her sayfa yüksek çözünürlükte (24 nokta/mm) çizilip saf siyah-beyaza çevrilir ve PDF'e 1-bit resim olarak konur.
-    // Yazıcı uygulaması yazıları kendisi yumuşatıp gri (buğulu) basamaz; logo gibi keskin çıkar.
-    const doc = new MiniPdf(w, h), put = (cv) => { doc.addPage().drawImage(cv, 0, 0, w * 8, h * 8); const e = doc.images[doc.images.length - 1]; e.img = null; };
-    LBL_D = Math.max(8, Math.min(24, Math.floor(Math.sqrt(14e6 / (w * h)))));  // iPhone tuval sınırı (~16 MP) aşılmasın
-    try {
-      drawSummaryPages(list, w, h).forEach(put); // toplam ürün listesi en başta
-      for (const p of list) { drawLabelPages(p, w, h, L.sid).forEach(put); await doc.compress(); }
-    } finally { LBL_D = 8; }
+    // vektör PDF: yazılar ve barkod yazıcının kendi çözünürlüğünde basılır (silik çıkmaz)
+    const doc = new MiniPdf(w, h), mk = () => ({cv: null, c: doc.addPage()});
+    drawSummaryPages(list, w, h, mk); // toplam ürün listesi en başta
+    for (const p of list) drawLabelPages(p, w, h, L.sid, mk);
     try { await api('/api/labels/mark', {printed: true, items: list.map(p => ({pkgId: p.pkgId, orderNo: p.orderNo}))}); const now = new Date().toISOString(); list.forEach(p => p.printedAt = p.printedAt || now); if (L.view !== 'printed') { lblView(L); renderSheet(false); } } catch(e) { toast('Etiketler kayıtlıya alınamadı: ' + errText(e), true); }
     const name = `kargo-etiketleri-${L.car || ''}-${todayTR()}-${list.length}.pdf`, blob = new Blob([doc.output()], {type:'application/pdf'}), file = new File([blob], name, {type:'application/pdf'});
     if (navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
