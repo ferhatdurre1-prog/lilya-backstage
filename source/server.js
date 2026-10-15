@@ -692,13 +692,17 @@ function claimItems(claims) {
     const desi = findDesi(c);
     const claimId = String(c.id || c.claimId || '');
     const customer = [c.customerFirstName, c.customerLastName].filter(Boolean).join(' ').trim().slice(0, 80);
+    // Ücret iadesi yapılıp ürün müşteride bırakıldıysa (ör. kusurlu ürün talebinde "ürün müşteride kalsın"): talep iade kargosu olmadan,
+    // açıldığı anda Trendyol tarafından (satıcı onayı değil) kabul edilmiş olarak gelir
+    const noCargo = !c.cargoTrackingNumber && !c.cargoProviderName && !c.cargoTrackingLink;
+    const instant = Number(c.claimDate) > 0 && Number(c.lastModifiedDate) > 0 && Math.abs(Number(c.lastModifiedDate) - Number(c.claimDate)) < 2 * 3600000;
     for (const it of (c.items || [])) {
       const ol = it.orderLine || {};
       for (const ci of (it.claimItems || [])) {
         const stName = (ci.claimItemStatus && ci.claimItemStatus.name) || '';
         const mapped = stName === 'Accepted' ? 'accepted' : (stName === 'Rejected' || stName === 'Cancelled') ? 'rejected' : 'requested';
         const reason = (ci.customerClaimItemReason && ci.customerClaimItemReason.name) || (ci.trendyolClaimItemReason && ci.trendyolClaimItemReason.name) || '';
-        items.push({ autoAt: Number(ci.autoApproveDate) > 0 ? iso(Number(ci.autoApproveDate)) : null, desi, id: 'ty-' + safeSeg(String(ci.id)), itemId: String(ci.id), claimId, customer, amount: numOrNull(ol.price), reason, cnote: String(ci.customerNote || '').slice(0, 300), cargo: String(c.cargoProviderName || '').slice(0, 60), cargoLink: String(c.cargoTrackingLink || '').slice(0, 300), orderNo: String(c.orderNumber || ''), sku: ol.merchantSku || '', barcode: ol.barcode || '', name: ol.productName || '', ext: stName, mapped, autoAcc: ci.autoAccepted === true, claimDate: c.claimDate ? iso(Number(c.claimDate)) : iso(), note: reason });
+        items.push({ autoAt: Number(ci.autoApproveDate) > 0 ? iso(Number(ci.autoApproveDate)) : null, desi, id: 'ty-' + safeSeg(String(ci.id)), itemId: String(ci.id), claimId, customer, amount: numOrNull(ol.price), reason, cnote: String(ci.customerNote || '').slice(0, 300), cargo: String(c.cargoProviderName || '').slice(0, 60), cargoLink: String(c.cargoTrackingLink || '').slice(0, 300), orderNo: String(c.orderNumber || ''), sku: ol.merchantSku || '', barcode: ol.barcode || '', name: ol.productName || '', ext: stName, mapped, autoAcc: ci.autoAccepted === true, kept: mapped === 'accepted' && noCargo && instant && ci.acceptedBySeller !== true && !UNDELIVERED_RE.test(reason.toLocaleLowerCase('tr-TR')), claimDate: c.claimDate ? iso(Number(c.claimDate)) : iso(), note: reason });
       }
     }
   }
@@ -709,7 +713,7 @@ async function applyClaimItems(env, items, s) {
   let added = 0, accepted = 0;
   if (!items.length) return { added, accepted };
   const bmap = await barcodeMap(env, items.filter(x => !x.sku).map(x => x.barcode));
-  const existing = new Map((await selectIn(env, 'SELECT id, status, ext_status, claim_id, desi, auto_at FROM returns', 'id', items.map(x => x.id))).map(r => [r.id, r]));
+  const existing = new Map((await selectIn(env, 'SELECT id, status, ext_status, claim_id, desi, auto_at, kept, order_no, pkey, qty FROM returns', 'id', items.map(x => x.id))).map(r => [r.id, r]));
   const meta = (it) => [it.claimId, it.itemId, it.customer, it.amount, it.reason, it.cnote, it.cargo, it.cargoLink, it.desi, it.autoAt];
   for (const it of items) {
     const r = resolveLine(it, bmap); if (!r) continue;
@@ -723,11 +727,19 @@ async function applyClaimItems(env, items, s) {
         const finalStatus = it.mapped === 'accepted' ? (preStart || (auto && !it.autoAcc) ? 'accepted' : 'requested') : it.mapped;
         if (finalStatus === 'requested' && it.mapped === 'accepted' && it.autoAcc) it.note = AUTO_ACC_NOTE + (it.note ? ' · ' + it.note : '');
         stmts.push(...ensureProduct(env, r.pkey, { sku, name: it.name, barcode: it.barcode }, 'trendyol'));
-        stmts.push(env.DB.prepare(`INSERT INTO returns(id,channel,order_no,order_id,line_key,pkey,sku,name,qty,status,source,note,ext_status,created_at,decided_at,ext_at,claim_id,item_id,customer,amount,reason,cnote,cargo,cargo_link,desi,auto_at) VALUES(?1,'trendyol',?2,?3,'',?4,?5,?6,1,?7,'trendyol',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)`)
-          .bind(it.id, it.orderNo, orderId('trendyol', it.orderNo), r.pkey, sku, it.name, finalStatus, preStart && finalStatus === 'accepted' ? 'Başlangıç öncesi; stok değişmedi' : it.note, it.ext, it.claimDate, finalStatus !== 'requested' ? now2 : null, now2, ...meta(it)));
-        if (finalStatus === 'accepted' && !preStart) { stmts.push(...changeQty(env, r.pkey, 1, { type: 'ret', channel: 'trendyol', ref: it.orderNo, note: 'Trendyol iadesi kabul edildi' })); accepted++; }
+        stmts.push(env.DB.prepare(`INSERT INTO returns(id,channel,order_no,order_id,line_key,pkey,sku,name,qty,status,source,note,ext_status,created_at,decided_at,ext_at,claim_id,item_id,customer,amount,reason,cnote,cargo,cargo_link,desi,auto_at,kept) VALUES(?1,'trendyol',?2,?3,'',?4,?5,?6,1,?7,'trendyol',?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)`)
+          .bind(it.id, it.orderNo, orderId('trendyol', it.orderNo), r.pkey, sku, it.name, it.kept ? 'accepted' : finalStatus, preStart && finalStatus === 'accepted' ? 'Başlangıç öncesi; stok değişmedi' : it.note, it.ext, it.claimDate, finalStatus !== 'requested' || it.kept ? now2 : null, now2, ...meta(it), it.kept ? 1 : null));
+        if (finalStatus === 'accepted' && !preStart && !it.kept) { stmts.push(...changeQty(env, r.pkey, 1, { type: 'ret', channel: 'trendyol', ref: it.orderNo, note: 'Trendyol iadesi kabul edildi' })); accepted++; }
         stmts.push(REV(env)); await env.DB.batch(stmts); added++;
         continue;
+      }
+      if (it.kept && (ex.kept === null || ex.kept === undefined)) {
+        // Ürün müşteride kaldı: kabul edilmiş say, stoğa eklendiyse geri al (bir kez; elle değiştirildiyse dokunulmaz)
+        const mv = ex.status === 'accepted' ? await env.DB.prepare(`SELECT COALESCE(SUM(delta),0) n FROM moves WHERE ref=?1 AND pkey=?2 AND (type='ret' OR note LIKE 'Ürün müşteride kaldı%')`).bind(ex.order_no, ex.pkey).first() : null;
+        const added = Number(mv && mv.n) || 0;
+        stmts.push(env.DB.prepare(`UPDATE returns SET kept=1, status='accepted', ext_status=?2, decided_at=COALESCE(decided_at, ?3), ext_at=?3 WHERE id=?1`).bind(ex.id, it.ext, now2));
+        if (added > 0) stmts.push(...changeQty(env, ex.pkey, -Math.min(added, ex.qty || 1), { type: 'adjust', channel: 'trendyol', ref: ex.order_no, note: 'Ürün müşteride kaldı; iade stoğu geri alındı' }));
+        stmts.push(REV(env)); await env.DB.batch(stmts); continue;
       }
       // Trendyol ayrıntıları (müşteri, tutar, sebep, kargo) eski kayıtlara bir kez eklenir
       if (!ex.claim_id || ex.claim_id === '-') stmts.push(env.DB.prepare(`UPDATE returns SET claim_id=?2, item_id=?3, customer=?4, amount=?5, reason=?6, cnote=?7, cargo=?8, cargo_link=?9, desi=?10, auto_at=?11 WHERE id=?1`).bind(it.id, ...meta(it)));
@@ -2048,7 +2060,7 @@ async function api(req, env, path, ctx) {
     const no = String(body.orderNo || '').trim(); if (!/^\d{5,20}$/.test(no)) return bad('Sipariş no geçersiz.');
     const sid = env.TRENDYOL_SELLER_ID, now = Date.now(), out = { orderNo: no, claims: [], fin: [], other: [], app: {}, errors: [] };
     const PII = /customer|address|firstName|lastName|phone|email|fullName|otp|identity|taxNumber|name$/i;
-    const flat = (o, pre = '', acc = {}, d = 0) => { if (d > 4 || !o || typeof o !== 'object') return acc; for (const [k, v] of Object.entries(o)) { const key = pre ? pre + '.' + k : k; if (PII.test(k) && !/reason|status|product/i.test(key)) continue; if (v && typeof v === 'object') { if (Array.isArray(v)) v.slice(0, 6).forEach((x, i) => flat(x, key + '[' + i + ']', acc, d + 1)); else flat(v, key, acc, d + 1); } else if (v !== null && v !== '' && !/image|url$/i.test(k)) acc[key] = typeof v === 'number' && v > 1e12 ? iso(v - TY_TZ).slice(0, 16).replace('T', ' ') : String(v).slice(0, 120); } return acc; };
+    const flat = (o, pre = '', acc = {}, d = 0) => { if (d > 4 || !o || typeof o !== 'object') return acc; for (const [k, v] of Object.entries(o)) { const key = pre ? pre + '.' + k : k; if (PII.test(k) && !/reason|status|product/i.test(key)) continue; if (v && typeof v === 'object') { if (Array.isArray(v)) v.slice(0, 6).forEach((x, i) => flat(x, key + '[' + i + ']', acc, d + 1)); else flat(v, key, acc, d + 1); } else if (v !== null && v !== '' && !/image|url$/i.test(k)) acc[key] = typeof v === 'number' && v > 1e12 ? iso(v + TY_TZ).slice(0, 16).replace('T', ' ') : String(v).slice(0, 120); } return acc; };
     try { const r = await ty(env, `order/sellers/${sid}/claims`, { orderNumber: no, startDate: now - 60 * 86400000, endDate: now, size: 20, page: 0 }); out.claims = (r.content || []).map(c => flat(c)); } catch (e) { out.errors.push('Talepler: ' + String(e.message || e).slice(0, 120)); }
     for (const type of FIN_TYPES.split(',')) {
       try { for (let page = 0; page < 5; page++) { const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionType: type, startDate: now - 15 * 86400000 + 60000, endDate: now, page, size: 1000, supplierId: sid });
