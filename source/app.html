@@ -1521,6 +1521,16 @@ function drawLabelPages(p, W, H, sid, mk){
 function lblMono(cv){ const c = cv.getContext('2d'), d = c.getImageData(0, 0, cv.width, cv.height), a = d.data;
   for (let i = 0; i < a.length; i += 4) { const v = (a[i] * 0.3 + a[i+1] * 0.59 + a[i+2] * 0.11) < 185 ? 0 : 255; a[i] = a[i+1] = a[i+2] = v; a[i+3] = 255; }
   c.putImageData(d, 0, 0); }
+// Yüksek çözünürlükte çizilen sayfayı yazıcının kendi nokta ızgarasına (8 nokta/mm = 203 dpi) indirir: her yazıcı noktası,
+// karşılık gelen küçük karelerin en az üçte biri siyahsa siyah olur. Böylece ince harfler kopmaz, yazıcı uygulaması
+// resmi büyütüp küçültmeden birebir basar (gri/benekli kenar ve büyük resimde alt kısmın kesilmesi olmaz).
+function lblToPrinter(cv, f){ if (f <= 1) return cv;
+  const W = Math.floor(cv.width / f), H = Math.floor(cv.height / f), a = cv.getContext('2d').getImageData(0, 0, W * f, H * f).data, rw = W * f;
+  const out = document.createElement('canvas'); out.width = W; out.height = H; const oc = out.getContext('2d'), od = oc.createImageData(W, H), o = od.data, need = Math.ceil(f * f / 3);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let n = 0;
+    for (let j = 0; j < f; j++) { let i = ((y * f + j) * rw + x * f) * 4; for (let k = 0; k < f; k++, i += 4) if (a[i] < 128) n++; }
+    const q = (y * W + x) * 4, v = n >= need ? 0 : 255; o[q] = o[q+1] = o[q+2] = v; o[q+3] = 255; }
+  oc.putImageData(od, 0, 0); return out; }
 // PDF'in sonunda toplam ürün özeti: seçilen etiketlerdeki her üründen toplam kaç adet var (çoktan aza)
 function drawSummaryPages(list, W, H, mk){
   const D = LBL_D, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
@@ -1558,8 +1568,8 @@ async function makeLabelsPdf(){
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
     // Her sayfa yüksek çözünürlükte (24 nokta/mm) çizilip saf siyah-beyaza çevrilir ve PDF'e 1-bit resim olarak konur.
     // Yazıcı uygulaması yazıları kendisi yumuşatıp gri (buğulu) basamaz; logo gibi keskin çıkar.
-    const doc = new MiniPdf(w, h), put = (cv) => { doc.addPage().drawImage(cv, 0, 0, w * 8, h * 8); const e = doc.images[doc.images.length - 1]; e.img = null; };
-    LBL_D = Math.max(8, Math.min(24, Math.floor(Math.sqrt(14e6 / (w * h)))));  // iPhone tuval sınırı (~16 MP) aşılmasın
+    const doc = new MiniPdf(w, h), put = (cv) => { cv = lblToPrinter(cv, LBL_D / 8); doc.addPage().drawImage(cv, 0, 0, w * 8, h * 8); const e = doc.images[doc.images.length - 1]; e.img = null; };
+    LBL_D = [24, 16, 8].find(d => w * h * d * d <= 14e6) || 8;  // iPhone tuval sınırı (~16 MP) aşılmasın
     try {
       drawSummaryPages(list, w, h).forEach(put); // toplam ürün listesi en başta
       for (const p of list) { drawLabelPages(p, w, h, L.sid).forEach(put); await doc.compress(); }
