@@ -1399,8 +1399,8 @@ function drawLabelPages(p, W, H, sid){
   const orderLabel = String(p.orderNo), custName = (p.to.name || '').toLocaleUpperCase('tr-TR');
   const dateStr = p.date ? new Date(p.date).toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
   const colQty = mm(11), colAmt = mm(19), pad = mm(1.6), nameW = cw - colQty - colAmt - 2 * pad - mm(1);
-  const PER = 4, footH = mm(5.5), gap = mm(1.2);
-  const items = p.lines.map(l => ({l, name: [l.name, l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ') + (l.sku ? ` (${l.sku})` : '')}));
+  const PER = 4, footH = mm(9), gap = mm(1.2);  // alt kenarda yazıcının basamadığı pay için geniş boşluk
+  const items = p.lines.map(l => ({l, name: [String(l.name || l.sku || '').replace(/,?\s*one size\b/ig, '').trim(), l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ')})); // yer kazanmak için stok kodu ve 'one size' yazılmaz
   const chunks = []; for (let i = 0; i < items.length; i += PER) chunks.push(items.slice(i, i + PER)); if (!chunks.length) chunks.push([]);
   const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
   const newCanvas = () => { const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; return {cv, c}; };
@@ -1413,9 +1413,9 @@ function drawLabelPages(p, W, H, sid){
     if (!it) return;
     const sep = PW - m - colAmt - colQty; c.lineWidth = mm(0.15); c.beginPath(); c.moveTo(sep, y + mm(1)); c.lineTo(sep, y + h - mm(1)); c.stroke();
     let sz = 5, lines = [];
-    for (; sz >= 1.8; sz -= 0.1) { font(c, sz, false); lines = wrapText(c, it.name, nameW); if (lines.length * sz * 1.2 * D * u <= h - 2 * pad && lines.every(t => c.measureText(t).width <= nameW)) break; }
+    for (; sz >= 2.3; sz -= 0.1) { font(c, sz, true); lines = wrapText(c, it.name, nameW); if (lines.length * sz * 1.2 * D * u <= h - 2 * pad && lines.every(t => c.measureText(t).width <= nameW)) break; }
     const lh = mm(sz * 1.2), ty = y + (h - lines.length * lh) / 2 + mm(sz * 0.1);
-    font(c, sz, false); lines.forEach((t, k) => c.fillText(t, x + pad, ty + k * lh));
+    font(c, sz, true); lines.forEach((t, k) => c.fillText(t, x + pad, ty + k * lh));
     const qs = Math.min(5, Math.max(3, h / D / u * 0.32)); font(c, qs, true); const q = String(it.l.qty); c.fillText(q, xQty - c.measureText(q).width / 2, y + (h - mm(qs)) / 2);
     const ps = Math.min(3.6, qs * 0.75); font(c, ps, true); const a = tl2(it.l.unit || it.l.amount); c.fillText(a, PW - m - pad - c.measureText(a).width, y + (h - mm(ps)) / 2);
   };
@@ -1443,13 +1443,18 @@ function drawLabelPages(p, W, H, sid){
       rule(c, y + mm(0.4), 0.4); y += mm(1.6);
     }
     y = tableHead(c, y); boxes(c, y, list);
-    const fy = PH - m - mm(2.6);
+    const fy = PH - m - mm(6.5);
     if (chunks.length > 1) { font(c, 2.4, true); c.fillText(i === 0 ? `Sayfa 1/${chunks.length} · devamı ek sayfada` : `Ek sayfa ${i + 1}/${chunks.length}`, m, fy); }
-    if (i === chunks.length - 1) { font(c, 2.4, true); const t = 'TOPLAM TUTAR: ' + tl2(total); c.fillText(t, PW - m - c.measureText(t).width, fy); }
+    if (i === chunks.length - 1) { font(c, 3, true); const t = 'TOPLAM TUTAR: ' + tl2(total); c.fillText(t, PW - m - c.measureText(t).width, fy); }
+    lblMono(pg.cv);
     return pg.cv;
   });
   return pages;
 }
+// Termal yazıcı gri basamaz: kenar yumuşatmasından kalan gri pikseller tam siyah ya da beyaz yapılır (yazılar soluk/bulanık çıkmasın)
+function lblMono(cv){ const c = cv.getContext('2d'), d = c.getImageData(0, 0, cv.width, cv.height), a = d.data;
+  for (let i = 0; i < a.length; i += 4) { const v = (a[i] * 0.3 + a[i+1] * 0.59 + a[i+2] * 0.11) < 175 ? 0 : 255; a[i] = a[i+1] = a[i+2] = v; a[i+3] = 255; }
+  c.putImageData(d, 0, 0); }
 // PDF'in sonunda toplam ürün özeti: seçilen etiketlerdeki her üründen toplam kaç adet var (çoktan aza)
 function drawSummaryPages(list, W, H){
   const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
@@ -1472,6 +1477,7 @@ function drawSummaryPages(list, W, H){
     font(c, 4.2, true); const q = String(r.qty); c.fillText(q, PW - m - c.measureText(q).width, y);
     y += h; c.lineWidth = mm(0.12); c.setLineDash([mm(0.6), mm(0.6)]); c.beginPath(); c.moveTo(m, y - mm(1)); c.lineTo(PW - m, y - mm(1)); c.stroke(); c.setLineDash([]);
   }
+  pages.forEach(lblMono);
   return pages;
 }
 async function makeLabelsPdf(){
