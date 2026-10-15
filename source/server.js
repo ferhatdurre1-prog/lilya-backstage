@@ -2022,6 +2022,29 @@ async function api(req, env, path, ctx) {
     try { await env.DB.batch(st); } catch (e) { return bad(tyApproved ? 'Trendyol\'da onaylandı ama stok güncellenemedi; sayfayı yenileyip "Depoya ulaştı" ile stoğu ekle.' : 'Bu iade az önce başka bir yerden işlendi.', 409); }
     return json({ ok: true, tyApproved });
   }
+  if (path === '/api/orders/ty-diag') {
+    // Teşhis: bir siparişin Trendyol'daki iade/talep kayıtları ve cari hesap hareketleri (para nasıl kesildi/iade edildi). Müşteri bilgisi çıkarılır.
+    if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
+    const no = String(body.orderNo || '').trim(); if (!/^\d{5,20}$/.test(no)) return bad('Sipariş no geçersiz.');
+    const sid = env.TRENDYOL_SELLER_ID, now = Date.now(), out = { orderNo: no, claims: [], fin: [], other: [], app: {}, errors: [] };
+    const PII = /customer|address|firstName|lastName|phone|email|fullName|otp|identity|taxNumber|name$/i;
+    const flat = (o, pre = '', acc = {}, d = 0) => { if (d > 4 || !o || typeof o !== 'object') return acc; for (const [k, v] of Object.entries(o)) { const key = pre ? pre + '.' + k : k; if (PII.test(k) && !/reason|status|product/i.test(key)) continue; if (v && typeof v === 'object') { if (Array.isArray(v)) v.slice(0, 6).forEach((x, i) => flat(x, key + '[' + i + ']', acc, d + 1)); else flat(v, key, acc, d + 1); } else if (v !== null && v !== '' && !/image|url$/i.test(k)) acc[key] = typeof v === 'number' && v > 1e12 ? iso(v - TY_TZ).slice(0, 16).replace('T', ' ') : String(v).slice(0, 120); } return acc; };
+    try { const r = await ty(env, `order/sellers/${sid}/claims`, { orderNumber: no, startDate: now - 60 * 86400000, endDate: now, size: 20, page: 0 }); out.claims = (r.content || []).map(c => flat(c)); } catch (e) { out.errors.push('Talepler: ' + String(e.message || e).slice(0, 120)); }
+    for (const type of FIN_TYPES.split(',')) {
+      try { for (let page = 0; page < 5; page++) { const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionType: type, startDate: now - 15 * 86400000 + 60000, endDate: now, page, size: 1000, supplierId: sid });
+        for (const x of (r.content || [])) if (String(x.orderNumber) === no) out.fin.push({ type, at: x.transactionDate ? iso(Number(x.transactionDate) - TY_TZ).slice(0, 16).replace('T', ' ') : '', desc: x.description || x.transactionType || '', credit: Number(x.credit) || 0, debt: Number(x.debt) || 0, commission: Number(x.commissionAmount) || 0, sellerRevenue: Number(x.sellerRevenue) || 0, rate: x.commissionRate ?? null });
+        if (page + 1 >= (r.totalPages || 0)) break; } }
+      catch (e) { out.errors.push(type + ': ' + String(e.message || e).slice(0, 100)); }
+    }
+    try { for (let page = 0; page < 5; page++) { const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'DeductionInvoices', startDate: now - 15 * 86400000 + 60000, endDate: now, page, size: 500, supplierId: sid });
+      for (const x of (r.content || [])) if (String(x.orderNumber || '') === no || JSON.stringify(x).includes(no)) out.other.push({ at: x.transactionDate ? iso(Number(x.transactionDate) - TY_TZ).slice(0, 16).replace('T', ' ') : '', type: x.transactionType || '', desc: x.description || '', credit: Number(x.credit) || 0, debt: Number(x.debt) || 0 });
+      if (page + 1 >= (r.totalPages || 0)) break; } }
+    catch (e) { out.errors.push('Kesinti faturaları: ' + String(e.message || e).slice(0, 100)); }
+    const oid = orderId('trendyol', no);
+    const [rr, ff, mm] = await env.DB.batch([env.DB.prepare('SELECT sku, qty, status, ext_status, note, created_at, decided_at FROM returns WHERE order_id=?1').bind(oid), env.DB.prepare('SELECT * FROM order_fin WHERE order_no=?1').bind(no), env.DB.prepare('SELECT type, amount, date FROM fin_misc WHERE order_no=?1').bind(no)]);
+    out.app = { returns: rr.results, fin: ff.results[0] || null, misc: mm.results };
+    return json(out);
+  }
   if (path === '/api/returns/shape') {
     // Teşhis: açık bir Trendyol iadesinin kaydında ve geçmişinde gelen alan adları (müşteri bilgisi çıkarılır)
     if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');

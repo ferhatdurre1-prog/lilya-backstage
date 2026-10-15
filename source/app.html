@@ -1221,6 +1221,7 @@ function sheetOrder(){
   const body = `<div class="card"><dl class="kv"><dt>Kanal</dt><dd>${chBadge(o.channel)}</dd><dt>Sipariş tarihi</dt><dd>${esc(fmtDate(o.date))}</dd><dt>Durum</dt><dd><span class="pill ${st[1]}">${st[0]}</span></dd><dt>Kaynak</dt><dd>${o.source==='manual'?'Elle girildi':o.source==='trendyol'?'Trendyol (otomatik)':'Dosyadan aktarıldı'}</dd>${o.baseline?'<dt>Not</dt><dd>Başlangıç tarihinden önce; stoğu etkilemedi</dd>':''}</dl></div>
   ${customerCard(o)}
   ${orderProfitCard(o)}
+  ${o.channel === 'trendyol' ? tyDiagCard(o) : ''}
   <div class="card"><h3>Kalemler</h3><div class="lines">${rows}</div></div>
   ${anyActive ? `<div class="card"><h3>İptal</h3><p class="muted small" style="margin:0">Siparişi iptal edersen, stoktan düşülmüş bütün adetler ortak stoğa geri eklenir.</p><div class="row"><button class="btn danger" data-act="cancel-order">Siparişi iptal et</button></div></div>` : ''}`;
   return {title:`#${esc(o.orderNo)}`, sub: chBadge(o.channel), body};
@@ -2117,6 +2118,22 @@ function customerCard(o){
     <dl class="kv">${kv('Alıcı', c.name)}${kv('Fatura adı', i.company || i.fullName)}${kv('Vergi dairesi', i.taxOffice)}${kv('Vergi no', i.taxNumber)}${kv('Fatura adresi', [i.address, i.district, i.city, i.postalCode].filter(Boolean).join(', '))}${kv('Teslimat', [sh.fullName !== i.fullName ? sh.fullName : '', sh.address, sh.district, sh.city].filter(Boolean).join(', '))}</dl>
     <p class="muted small" style="margin:0">Yalnızca teslimat ve fatura kesimi için. Trendyol sözleşmesi gereği bu bilgiler reklam / kampanya / iletişim için kullanılamaz.</p></div>`;
 }
+// Teşhis: Trendyol bu siparişte parayı nasıl kesti / iade etti (talep kayıtları + cari hesap hareketleri)
+function tyDiagCard(o){
+  const D = S.tyDiag && S.tyDiag.no === o.orderNo ? S.tyDiag : null;
+  const btn = `<button class="btn sm" data-act="ty-diag" data-id="${esc(o.orderNo)}">${D && D.loading ? 'Getiriliyor…' : D ? 'Yenile' : 'Trendyol kayıtlarını getir'}</button>`;
+  if (!D || !D.data) return `<div class="card"><div class="spread"><h3 style="margin:0">Trendyol kayıtları</h3>${btn}</div><p class="muted small" style="margin:0">İade/kusurlu ürün talebi, ücret iadesi ve kesintilerin Trendyol'da nasıl işlendiğini gösterir.${D && D.err ? `<br><span style="color:var(--bad)">${esc(D.err)}</span>` : ''}</p></div>`;
+  const d = D.data, fmtR = (x) => `${x.credit ? '+' + fmtTL(x.credit) : ''}${x.debt ? ' −' + fmtTL(x.debt) : ''}`;
+  const fin = d.fin.length ? d.fin.map(x => `<dt>${esc(x.type)}<div class="muted" style="font-size:11.5px">${esc(x.at)}${x.desc ? ' · ' + esc(x.desc) : ''}</div></dt><dd>${fmtR(x)}${x.commission ? `<div class="muted" style="font-size:11.5px">komisyon ${fmtTL(x.commission)}</div>` : ''}</dd>`).join('') : '<dt>Henüz hareket yok</dt><dd>—</dd>';
+  const oth = d.other.map(x => `<dt>${esc(x.type || 'Kesinti')}<div class="muted" style="font-size:11.5px">${esc(x.at)} · ${esc(x.desc)}</div></dt><dd>${fmtR(x)}</dd>`).join('');
+  const cl = d.claims.map((c, i) => `<details style="margin-top:6px"><summary class="small"><b>Talep ${i + 1}</b></summary><div class="mono" style="font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere">${esc(Object.entries(c).map(([k, v]) => k + ': ' + v).join('\n'))}</div></details>`).join('');
+  const ap = d.app || {};
+  return `<div class="card"><div class="spread"><h3 style="margin:0">Trendyol kayıtları</h3>${btn}</div>
+    <div class="small muted">Cari hesap hareketleri (son 15 gün)</div><dl class="kv">${fin}${oth}</dl>
+    <div class="small muted">İade / kusurlu ürün talepleri: ${d.claims.length ? d.claims.length + ' adet' : 'yok'}</div>${cl}
+    <div class="small muted">Uygulamadaki kayıt: ${(ap.returns || []).length ? ap.returns.map(r => `${esc(r.sku)} · ${r.qty} adet · ${esc(r.status)}${r.ext_status ? ' (' + esc(r.ext_status) + ')' : ''}${r.note ? ' · ' + esc(r.note) : ''}`).join('<br>') : 'iade kaydı yok'}</div>
+    ${d.errors.length ? `<div class="small" style="color:var(--bad)">${d.errors.map(esc).join('<br>')}</div>` : ''}</div>`;
+}
 function orderProfitCard(o){
   const D = S.prof && S.prof.data; const x = D && D.orders.find(y => y.id === o.id);
   if (!x) return '';
@@ -2534,6 +2551,8 @@ document.addEventListener('click', async e => {
     case 'new-order': openSheet('new-order'); break;
     case 'order-addline': { const wrap = $('#no-lines'); wrap.insertAdjacentHTML('beforeend', `<div class="grid2" style="grid-template-columns:1fr 70px 100px"><label class="f">Stok kodu<input class="input mono" name="no-sku" list="sku-list" autocomplete="off"></label><label class="f">Adet<input class="input num" name="no-qty" inputmode="numeric" value="1"></label><label class="f">Birim fiyat<input class="input num" name="no-price" inputmode="decimal" placeholder="TL"></label></div>`); wrap.lastElementChild.querySelector('input').focus(); break; }
     case 'cancel-order': await cancelOrder(); break;
+    case 'ty-diag': { const D = S.tyDiag = {no: id, loading: true, data: S.tyDiag && S.tyDiag.no === id ? S.tyDiag.data : null}; renderSheet(true);
+      try { D.data = await api('/api/orders/ty-diag', {orderNo: id}); } catch(e) { D.err = errText(e); } D.loading = false; if (S.tyDiag === D) renderSheet(true); break; }
     case 'line-return': await lineReturn(b.dataset.key); break;
     case 'new-return': openSheet('new-return'); break;
     case 'ret-accept': await returnDecision(id, true); break;
