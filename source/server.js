@@ -613,7 +613,8 @@ const skuFold = (x) => String(x || '').trim().replace(/İ/g, 'I').replace(/ı/g,
 async function skuFoldMap(env) { const { results } = await env.DB.prepare('SELECT key, sku FROM products').all(); const m = new Map(); for (const r of results) { const f = skuFold(r.sku); if (f && !m.has(f)) m.set(f, r); } return m; }
 async function syncShopifyOrders(env, opts = {}) {
   const c = await shCreds(env); if (!shConfigured(c)) return null;
-  const s = await getSettings(env, ['sh_hwm', 'sh_start']);
+  const s = await getSettings(env, ['sh_hwm', 'sh_start', 'sh_paused']);
+  if (s.sh_paused === '1' && !opts.force) return { paused: true, orders: 0 }; // duraklatıldı: kaldığı yer saklanır, açılınca aradaki siparişler de işlenir
   const start = s.sh_start || iso();
   const since = s.sh_hwm || start;
   const q = `updated_at:>='${new Date(Date.parse(since) - 5 * 60000).toISOString()}'`;
@@ -633,8 +634,9 @@ async function syncShopifyOrders(env, opts = {}) {
 }
 // Shopify ürünleri (her varyant ayrı ürün): stok koduyla mevcut ürünlerle eşleşir; uygulamada olmayanlar eklenir ve
 // ilk eklenişte Shopify'daki stok adedi başlangıç stoğu olur (Trendyol'daki gibi). Var olan ürünün stoğuna dokunulmaz.
-async function syncShopifyProducts(env) {
+async function syncShopifyProducts(env, force) {
   const c = await shCreds(env); if (!shConfigured(c)) return null;
+  if (!force && (await getSetting(env, 'sh_paused')) === '1') return { paused: true };
   const Q = (inv) => `query($after:String){productVariants(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id sku barcode title ${inv ? 'inventoryQuantity' : ''} image{url} product{title status featuredMedia{preview{image{url}}}}}}}`;
   let inv = true, after = null; const vs = [];
   for (let page = 0; page < 30; page++) {
@@ -2192,6 +2194,12 @@ async function api(req, env, path, ctx) {
     try { await ensureShopifyHooks(env, true); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); }
     return json({ ok: true, name: c.name, first });
   }
+  if (path === '/api/shopify/pause') {
+    // Duraklat / devam: bilgiler silinmez; devam edince duraklatılan süredeki siparişler de sırayla işlenir
+    const on = !!body.paused; await setSetting(env, 'sh_paused', on ? '1' : '');
+    let r = null; if (!on) { try { r = await syncShopifyOrders(env, { pages: 5 }); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } }
+    return json({ ok: true, r });
+  }
   if (path === '/api/shopify/disconnect') {
     await env.DB.batch(['sh_cid', 'sh_secret', 'sh_token', 'sh_token_exp', 'sh_hook_ok'].map(k => setStmt(env, k, '')));
     return json({ ok: true });
@@ -2201,14 +2209,14 @@ async function api(req, env, path, ctx) {
     catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
   }
   if (path === '/api/shopify/products') {
-    try { return json({ ok: true, r: await syncShopifyProducts(env) }); } catch (e) { return bad(String(e.message || e)); }
+    try { return json({ ok: true, r: await syncShopifyProducts(env, true) }); } catch (e) { return bad(String(e.message || e)); }
   }
   if (path === '/api/shopify/status') {
-    const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err', 'sh_prod']);
+    const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err', 'sh_prod', 'sh_paused']);
     // Shopify'dan gelip başka kanalda (Trendyol) karşılığı olmayan stok kodları: büyük ihtimalle farklı yazılmış
     const { results } = await env.DB.prepare(`SELECT key, sku, name, qty FROM products WHERE EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify') AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='trendyol') ORDER BY sku LIMIT 100`).all();
     const n = await env.DB.prepare(`SELECT COUNT(*) n FROM orders WHERE channel='shopify'`).first();
-    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
+    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', paused: s.sh_paused === '1', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
   }
   if (path === '/api/returns/kept') {
     // Ürün müşteride kaldı (ücret iadesi yapıldı, ürün geri gelmeyecek): stoğa eklenmez/eklendiyse geri alınır; kârda ürün maliyeti zarar sayılır, dönüş kargosu yok
