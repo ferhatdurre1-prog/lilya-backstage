@@ -1326,6 +1326,7 @@ function retCard(g){
       ${r.reason ? `<div class="meta"><span>İade sebebi: <b class="ink">${esc(r.reason)}</b></span></div>` : ''}
       ${r.cnote ? `<div class="meta"><span>Müşteri notu: ${esc(r.cnote)}</span></div>` : ''}
       ${note ? `<div class="meta">${esc(note)}</div>` : ''}
+      ${r.kept ? '<div class="meta"><span class="pill p-warn">Ürün müşteride kaldı · stoğa eklenmedi</span></div>' : ''}
       ${r.cargo || r.retDesi || r.outDesi ? `<div class="meta"><span>İade kargosu: ${r.cargo ? (r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)) : ''}</span>${r.retDesi ? `<span class="pill p-mute">${esc(String(r.retDesi).replace('.', ','))} desi</span>` : r.outDesi ? `<span class="pill p-mute" title="Trendyol iade desisini kargo faturasıyla bildirir; o zamana kadar gönderim desisi gösterilir">~${esc(String(r.outDesi).replace('.', ','))} desi (gönderim)</span>` : ''}${r.retCargo ? `<span class="pill p-mute">Kargo ${fmtTL(r.retCargo)}</span>` : ''}</div>` : ''}</div>
       <div class="end"><div class="qty" style="font-size:18px">${fmtN(g.qty)}<small>adet</small></div><span class="pill ${st[1]}">${esc(st[0])}</span>${btns ? `<div class="row" style="justify-content:flex-end">${btns}</div>` : ''}</div></div>
   </div>`;
@@ -2131,7 +2132,8 @@ function tyDiagCard(o){
   return `<div class="card"><div class="spread"><h3 style="margin:0">Trendyol kayıtları</h3>${btn}</div>
     <div class="small muted">Cari hesap hareketleri (son 15 gün)</div><dl class="kv">${fin}${oth}</dl>
     <div class="small muted">İade / kusurlu ürün talepleri: ${d.claims.length ? d.claims.length + ' adet' : 'yok'}</div>${cl}
-    <div class="small muted">Uygulamadaki kayıt: ${(ap.returns || []).length ? ap.returns.map(r => `${esc(r.sku)} · ${r.qty} adet · ${esc(r.status)}${r.ext_status ? ' (' + esc(r.ext_status) + ')' : ''}${r.note ? ' · ' + esc(r.note) : ''}`).join('<br>') : 'iade kaydı yok'}</div>
+    <div class="small muted">Uygulamadaki kayıt: ${(ap.returns || []).length ? ap.returns.map(r => `${esc(r.sku)} · ${r.qty} adet · ${esc(r.status)}${r.ext_status ? ' (' + esc(r.ext_status) + ')' : ''}${r.note ? ' · ' + esc(r.note) : ''}${r.kept ? ' · <b class="ink">ürün müşteride kaldı</b>' : ''}`).join('<br>') : 'iade kaydı yok'}</div>
+    ${(ap.returns || []).map(r => `<div class="row"><button class="btn sm${r.kept ? '' : ' primary'}" data-act="ret-kept" data-id="${esc(r.id)}" data-kept="${r.kept ? 0 : 1}">${r.kept ? 'Ürün geri geldi (iade stoğa)' : 'Ürün müşteride kaldı (geri gelmeyecek)'}</button></div>`).join('')}
     ${d.errors.length ? `<div class="small" style="color:var(--bad)">${d.errors.map(esc).join('<br>')}</div>` : ''}</div>`;
 }
 function orderProfitCard(o){
@@ -2551,6 +2553,9 @@ document.addEventListener('click', async e => {
     case 'new-order': openSheet('new-order'); break;
     case 'order-addline': { const wrap = $('#no-lines'); wrap.insertAdjacentHTML('beforeend', `<div class="grid2" style="grid-template-columns:1fr 70px 100px"><label class="f">Stok kodu<input class="input mono" name="no-sku" list="sku-list" autocomplete="off"></label><label class="f">Adet<input class="input num" name="no-qty" inputmode="numeric" value="1"></label><label class="f">Birim fiyat<input class="input num" name="no-price" inputmode="decimal" placeholder="TL"></label></div>`); wrap.lastElementChild.querySelector('input').focus(); break; }
     case 'cancel-order': await cancelOrder(); break;
+    case 'ret-kept': { const kept = b.dataset.kept === '1';
+      if (!(await confirmBox(kept ? 'Ürün müşteride kaldı olarak işaretlenecek: iade stoğa eklenmez (eklendiyse geri alınır), kârda ürün maliyeti zarar sayılır, dönüş kargosu düşülmez.' : 'Ürün geri geldi olarak işaretlenecek: iade adedi stoğa eklenir.', 'Onayla'))) break;
+      await run(async () => { await api('/api/returns/kept', {id, kept}); await refresh(true); const no = S.tyDiag && S.tyDiag.no; if (no) { try { S.tyDiag.data = await api('/api/orders/ty-diag', {orderNo: no}); } catch(e) {} } if (S.prof) { S.prof.data = null; S.prof.key = ''; } renderSheet(true); toast('Kaydedildi.'); }); break; }
     case 'ty-diag': { const D = S.tyDiag = {no: id, loading: true, data: S.tyDiag && S.tyDiag.no === id ? S.tyDiag.data : null}; renderSheet(true);
       try { D.data = await api('/api/orders/ty-diag', {orderNo: id}); } catch(e) { D.err = errText(e); } D.loading = false; if (S.tyDiag === D) renderSheet(true); break; }
     case 'line-return': await lineReturn(b.dataset.key); break;
