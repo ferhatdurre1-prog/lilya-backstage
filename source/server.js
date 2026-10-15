@@ -106,6 +106,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, name TEXT, amount REAL, created_at TEXT)').run();
   try { await env.DB.prepare("ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'gider'").run(); } catch (e) {}
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS label_printed(pkg_id TEXT PRIMARY KEY, order_no TEXT, printed_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS recurring(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL, kind TEXT, start_day TEXT, end_day TEXT, created_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
@@ -1990,7 +1991,19 @@ async function api(req, env, path, ctx) {
       }
     }
     out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    // PDF'e dönüştürülmüş (kayıtlı) paketler
+    const pr = new Map((await selectIn(env, 'SELECT pkg_id, printed_at FROM label_printed', 'pkg_id', out.map(x => x.pkgId))).map(r => [String(r.pkg_id), r.printed_at]));
+    for (const x of out) x.printedAt = pr.get(x.pkgId) || null;
     return json({ ok: true, sellerId: String(env.TRENDYOL_SELLER_ID || ''), packages: out });
+  }
+  if (path === '/api/labels/mark') {
+    const ids = (Array.isArray(body.items) ? body.items : []).slice(0, 500).filter(x => x && x.pkgId);
+    if (!ids.length) return bad('Paket seçilmedi.');
+    const now = iso(), st = ids.map(x => body.printed === false ? env.DB.prepare('DELETE FROM label_printed WHERE pkg_id=?1').bind(String(x.pkgId))
+      : env.DB.prepare('INSERT INTO label_printed(pkg_id, order_no, printed_at) VALUES(?1,?2,?3) ON CONFLICT(pkg_id) DO UPDATE SET printed_at=excluded.printed_at').bind(String(x.pkgId), String(x.orderNo || ''), now));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true });
   }
   if (path === '/api/returns/reasons') {
     if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
@@ -2084,7 +2097,7 @@ async function api(req, env, path, ctx) {
     const size = 100, page = Math.max(1, intOr(body.page, 1));
     const where = [], args = [];
     const f = String(body.filter || 'all');
-    if (f === 'delivered') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')`); else if (f === 'new') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status IN ('Created','Picking') AND day >= '${trDay(Date.now() - 30 * 86400000)}')`); else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`o.status='returned'`);
+    if (f === 'delivered') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')`); else if (f === 'new' || f === 'printed') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}' AND ${f === 'printed' ? '' : 'NOT '}EXISTS(SELECT 1 FROM label_printed lp WHERE lp.pkg_id=a.pkg_id))`); else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`o.status='returned'`);
     if (body.channel) { args.push(String(body.channel)); where.push(`o.channel=?${args.length}`); }
     const q = String(body.q || '').trim();
     if (q) {
