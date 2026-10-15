@@ -1784,12 +1784,14 @@ async function computeHome(env) {
   const f30 = addDay(today, -29), fromD = [m0d, w0d, f30].sort()[0], yday = addDay(today, -1);
   const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
   // Ay toplamı Kâr ekranıyla birebir aynı olsun diye kayıtlı günlerden toplanmaz, aynı hesapla canlı alınır
-  const [T, YS, statsR, pdR, M] = await Promise.all([
+  const [T, YS, statsR, pdR, M, YD, M30] = await Promise.all([
     computeProfit(env, iso(t0), iso(t0 + 86400000)),
     computeProfit(env, iso(t0 - 86400000), iso(ySame)),
     env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all(),
     env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all(),
-    computeProfit(env, iso(dayStartTR(m0d)), iso(t0 + 86400000))]);
+    computeProfit(env, iso(dayStartTR(m0d)), iso(t0 + 86400000)),
+    computeProfit(env, iso(t0 - 86400000), iso(t0)),
+    computeProfit(env, iso(dayStartTR(f30)), iso(t0 + 86400000))]);
   const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
   // Kaydı olmayan geçmiş gün varsa canlı hesaplanıp kaydedilir
   let snaps = 0;
@@ -1801,7 +1803,9 @@ async function computeHome(env) {
   const R2 = (n) => Math.round(n * 100) / 100;
   const out = { day: today, at: Date.now(), ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
     month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
-    last30: (() => { let rev = Number(T.summary.revenue) || 0, prof = Number(T.summary.profit) || 0; for (let d = f30; d < today; d = addDay(d, 1)) { const x = byDay.get(d) || {}; rev += Number(x.revenue) || 0; prof += Number(x.profit) || 0; } return { from: f30, to: today, revenue: R2(rev), profit: R2(prof) }; })(), losers: [...pp.values()].filter(v => v < 0).length };
+    // Kâr ekranındaki "Dün" ve "Son 30 gün" ile birebir aynı hesap
+    yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null },
+    last30: { revenue: R2(M30.summary.revenue), profit: R2(M30.summary.profit), margin: M30.summary.revenue ? R2(M30.summary.profit / M30.summary.revenue * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
   await setSetting(env, 'home_cache', JSON.stringify(out)); await setSetting(env, 'home_err', '');
   return out;
 }
