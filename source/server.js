@@ -103,7 +103,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS match_skip(a TEXT, b TEXT, PRIMARY KEY(a, b))').run();
   // Shopify siparişlerinde henüz kargolanmamış adetler (varyant → adet); sayımda raftaki ama satılmış ürünü ayırmak için
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sh_unf(order_no TEXT PRIMARY KEY, data TEXT, updated_at TEXT)').run();
-  for (const c of ['code TEXT', 'merged_into TEXT']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_listing1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_listing1','1')`),
@@ -261,6 +261,8 @@ async function ingestOrders(env, channel, input, opts = {}) {
   try { return await ingestOrdersRaw(env, channel, input, opts); }
   finally { try { await env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_ingest'`).run(); } catch (e) {} }
 }
+// Ürün adı tek ilanı varsa o ilanın adını izler (kanalda ad değişince burada da değişir); adı elle değiştirilmiş ya da birden çok ilanı olan ürüne dokunulmaz
+const followNameStmt = (env, channel) => env.DB.prepare(`UPDATE products SET name=(SELECT l.name FROM listings l WHERE l.pkey=products.key), updated_at=?2 WHERE COALESCE(name_manual,0)=0 AND merged_into IS NULL AND (SELECT COUNT(*) FROM listings l WHERE l.pkey=products.key)=1 AND EXISTS(SELECT 1 FROM listings l WHERE l.pkey=products.key AND l.channel=?1 AND l.name<>'' AND l.name<>products.name)`).bind(channel, iso());
 // Birleştirilmiş (gizli) ürüne bağlanan ilan, birleştirildiği ürüne taşınır
 const followMergedStmt = (env) => env.DB.prepare(`UPDATE listings SET pkey=(SELECT merged_into FROM products WHERE key=listings.pkey) WHERE pkey IN (SELECT key FROM products WHERE merged_into IS NOT NULL AND merged_into<>'')`);
 // Kanal ilanı → Lilya ürünü (ve kaç adet düşeceği: 2'li paket ilanı = 2)
@@ -720,7 +722,7 @@ async function syncShopifyProducts(env, force) {
   for (const [k, q] of newKeys) if (q > 0) st.push(...setQty(env, k, q, { type: 'count', channel: 'shopify', note: 'Shopify başlangıç stoğu' }));
   for (const v of list.filter(v => lm.has(shId(v.id)))) { linked++; st.push(env.DB.prepare(`UPDATE listings SET sku=?2, barcode=?3, name=?4, image=?5, ext_qty=COALESCE(?6, ext_qty), passive=?7, updated_at=?8, inv_item=COALESCE(?9, inv_item) WHERE channel='shopify' AND ext=?1`).bind(shId(v.id), String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv && Number.isFinite(Number(v.inventoryQuantity)) ? Number(v.inventoryQuantity) : null, 0, iso(), (v.inventoryItem && v.inventoryItem.id) || null)); }
   if (st.length) { for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
-  await env.DB.batch([followMergedStmt(env), followMergedStmt(env), REV(env)]);
+  await env.DB.batch([followMergedStmt(env), followMergedStmt(env), followNameStmt(env, 'shopify'), REV(env)]);
   const noCode = list.filter(v => !String(v.sku || '').trim() && !String(v.barcode || '').trim());
   const res = { at: iso(), variants: list.length, added, matched, linked, noCode: noCode.length, inv };
   await setSetting(env, 'sh_prod', JSON.stringify(res));
@@ -1184,7 +1186,7 @@ async function syncTyListings(env, items, useStock) {
   for (let j = 0; j < keys.length; j += 80) { const part = keys.slice(j, j + 80);
     st.push(env.DB.prepare(`UPDATE products SET ty_passive = CASE WHEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=products.key AND l.channel='trendyol' AND COALESCE(l.passive,0)=0) THEN 0 ELSE 1 END WHERE key IN (${part.map((_, i) => '?' + (i + 1)).join(',')}) AND EXISTS(SELECT 1 FROM listings l WHERE l.pkey=products.key AND l.channel='trendyol')`).bind(...part)); }
   for (let j = 0; j < st.length; j += 90) await env.DB.batch(st.slice(j, j + 90));
-  await env.DB.batch([followMergedStmt(env), REV(env)]);
+  await env.DB.batch([followMergedStmt(env), followNameStmt(env, 'trendyol'), REV(env)]);
   return { created, updated };
 }
 async function syncTrendyolProducts(env, maxPages = 4) {
@@ -2224,7 +2226,8 @@ async function api(req, env, path, ctx) {
   }
   if (path === '/api/products/info') {
     const key = String(body.key || ''); const sets = [], vals = [];
-    if (body.name !== undefined) { const n = String(body.name).trim(); if (!n) return bad('Ürün adı boş olamaz.'); sets.push('name'); vals.push(n); }
+    if (body.name !== undefined) { const n = String(body.name).trim(); if (!n) return bad('Ürün adı boş olamaz.'); sets.push('name'); vals.push(n);
+      const cur = await env.DB.prepare('SELECT name FROM products WHERE key=?1').bind(key).first(); if (cur && cur.name !== n) { sets.push('name_manual'); vals.push(1); } } // elle verilen ad kanaldan ezilmez
     if (body.barcode !== undefined) { sets.push('barcode'); vals.push(String(body.barcode).trim()); }
     if (body.cost !== undefined) { const c = numOrNull(body.cost); if (c !== null && c < 0) return bad('Alış fiyatı eksi olamaz.'); sets.push('cost'); vals.push(c); }
     if (body.min !== undefined) { const m = intOr(body.min, NaN); if (!(m >= 0)) return bad('Düşük stok sınırı geçersiz.'); sets.push('min'); vals.push(m); }
