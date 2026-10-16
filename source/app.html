@@ -1097,6 +1097,7 @@ function sheetProduct(first){
     <form id="f-move" class="grid2">
       <label class="f">${mode==='count'?'Sayılan gerçek adet':'Adet'}<input class="input num" id="mv-qty" inputmode="numeric" autocomplete="off" required placeholder="${mode==='count'?'Örn. 240':'Örn. 12'}"></label>
       <label class="f">Not / belge no<input class="input" id="mv-note" placeholder="${mode==='in'?'Örn. Tedarikçi faturası':'İsteğe bağlı'}" autocomplete="off"></label>
+      ${mode === 'count' ? `<div style="grid-column:1/-1" id="p-pend">${pendLine(p)}</div>` : ''}
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">${mode==='in'?'Stoğa ekle':mode==='out'?'Stoktan düş':'Sayımı kaydet'}</button><span class="muted small">${mode==='count'?'Fark kadar düzeltme hareketi oluşur.':'Hareket kaydı otomatik tutulur.'}</span></div>
     </form>
   </div>
@@ -1119,6 +1120,15 @@ function sheetProduct(first){
   <div class="card"><h3>Son hareketler</h3><div id="p-moves">${pm.length ? pm.map(moveRow).join('') : '<p class="muted small" style="margin:0">Son günlerde bu ürünle ilgili hareket yok.</p>'}</div></div>
   <div class="row"><button class="btn danger sm" data-act="del-product" data-id="${esc(p.id)}">Ürünü sil</button></div>`;
   return {title: esc(p.name), sub:`<span class="mono" style="font-weight:700">${esc(p.code || '')}</span> <span class="mono muted">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-listings': listingsCard(p), '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
+}
+// Sayımda: satılmış ama henüz kargolanmamış adet (rafta duruyor ama artık bizim değil) — sayılan adetten düşülür
+function pendLine(p){
+  const sh = S.sheet;
+  if (!sh.pend || sh.pendFor !== p.id) { if (sh.pendLoading !== p.id) { sh.pendLoading = p.id; api('/api/products/pending', {key: p.id}).then(d => { if (S.sheet === sh) { sh.pend = d; sh.pendFor = p.id; sh.pendLoading = null; const el = $('#p-pend'); if (el) el.innerHTML = pendLine(p); } }).catch(() => { sh.pendLoading = null; }); }
+    return '<span class="muted small">Bekleyen siparişler kontrol ediliyor…</span>'; }
+  const d = sh.pend;
+  if (!d.total) return '<span class="small" style="color:var(--good)">✓ Bu ürünün kargolanmamış siparişi yok; raftaki sayıyı olduğu gibi gir.</span>';
+  return `<label class="chk small" style="align-items:flex-start"><input type="checkbox" id="mv-pend" checked><span><b>${fmtN(d.total)} adet satılmış ama henüz kargolanmamış</b> (${[d.ty ? 'Trendyol ' + fmtN(d.ty) : '', d.sh ? 'Shopify ' + fmtN(d.sh) : ''].filter(Boolean).join(', ')}; ${esc(d.orders.slice(0, 6).join(', '))}${d.orders.length > 6 ? '…' : ''}). Bunlar rafta duruyorsa işaretli bırak: saydığın sayıdan düşülür.</span></label>`;
 }
 // Ürüne bağlı kanal ilanları: hangi ilan satılınca kaç adet düşer, Trendyol'a giden stok, ayırma; başka ürünle birleştirme
 function listingsCard(p){
@@ -1208,6 +1218,10 @@ async function submitMove(){
   const mode = S.sheet.mode || 'in';
   const n = intOr($('#mv-qty').value, NaN), note = $('#mv-note').value.trim();
   if (!isFinite(n) || n < 0 || (mode !== 'count' && n === 0)) return toast(mode==='count' ? 'Sayılan adedi 0 veya pozitif tam sayı olarak yaz.' : 'Adedi pozitif tam sayı olarak yaz.', true);
+  // Sayım: rafta duran ama satılmış (kargolanmamış) adet düşülür
+  const pend = mode === 'count' && $('#mv-pend') && $('#mv-pend').checked && S.sheet.pend ? (S.sheet.pend.total || 0) : 0;
+  if (pend) { const net = n - pend; if (net < 0 && !(await confirmBox(`Saydığın ${fmtN(n)} adetten bekleyen ${fmtN(pend)} adet düşülünce stok eksiye iner (${fmtN(net)}). Bekleyen siparişlerin ürünleri raftan ayrıldıysa işareti kaldır. Yine de kaydedilsin mi?`, 'Kaydet'))) return;
+    await run(async () => { const r = await api('/api/stock', {key:p.id, mode, n: net, allowNeg: net < 0, note: (note ? note + ' · ' : '') + `Rafta ${n}, kargolanmamış ${pend} düşüldü`}); $('#mv-qty').value = ''; $('#mv-note').value = ''; S.sheet.pend = null; await refresh(true); toast(`Kaydedildi. Rafta ${fmtN(n)} − bekleyen ${fmtN(pend)} = stok ${fmtN(r.qty)} adet.`); }); return; }
   if (mode === 'out' && p.qty - n < 0 && !(await confirmBox(`Depoda ${fmtN(p.qty)} adet görünüyor. ${fmtN(n)} adet düşersen stok eksiye iner. Yine de kaydedilsin mi?`, 'Kaydet'))) return;
   await run(async () => {
     const r = await api('/api/stock', {key:p.id, mode, n, note});
