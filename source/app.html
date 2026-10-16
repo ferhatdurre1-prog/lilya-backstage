@@ -1046,7 +1046,7 @@ function viewStock(){
   const total = ps.reduce((n,p) => n + Math.max(0,p.qty), 0);
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
-    <div class="row"><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
+    <div class="row"><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1100,6 +1100,9 @@ function sheetProduct(first){
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">${mode==='in'?'Stoğa ekle':mode==='out'?'Stoktan düş':'Sayımı kaydet'}</button><span class="muted small">${mode==='count'?'Fark kadar düzeltme hareketi oluşur.':'Hareket kaydı otomatik tutulur.'}</span></div>
     </form>
   </div>
+  <div class="card"><div class="spread"><h3 style="margin:0">Koli etiketi</h3><span class="mono" style="font-weight:700">${esc(p.code || '')}</span></div>
+    <div class="row"><label class="small" style="display:inline-flex;gap:6px;align-items:center">Adet <input class="input num" id="pl-copies" inputmode="numeric" value="1" style="width:70px"></label><button class="btn primary" data-act="plabel" data-id="${esc(p.id)}">Koli etiketi bas (100×100)</button></div>
+    <p class="muted small" style="margin:0">Ürün kodu, barkodu, adı ve resmi. El okuyucuyla okutunca ${esc(p.code || 'ürün kodu')} yazar.</p></div>
   <div class="card"><h3>Ürün bilgileri</h3>
     <form id="f-info" class="grid2">
       <label class="f" style="grid-column:1/-1">Ürün adı<input class="input" id="pi-name" value="${esc(p.name)}" required></label>
@@ -1645,6 +1648,61 @@ function drawSummaryPages(list, W, H, mk){
   }
   if (!mk) pages.forEach(lblMono);
   return pages;
+}
+// Ürün (koli) etiketi: Lilya ürün kodu büyük yazı + Code128 barkod + ürün adı ve resmi; kolinin üzerine yapıştırılır
+function drawProductLabel(p, W, H, mk){
+  const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
+  const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
+  const c = mk().c; let y = m;
+  // üst: logo solda, "ÜRÜN KODU" sağda
+  const lgW = mm(30), lgH = lgW * 352 / 900;
+  if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, y, lgW, lgH);
+  font(c, 2.6, false); const t1 = 'ÜRÜN KODU'; c.fillText(t1, PW - m - c.measureText(t1).width, y + lgH / 2 - mm(1.3));
+  y += lgH + mm(2);
+  // kod: genişliğe sığan en büyük boy
+  const code = String(p.code || p.sku || ''); let cs = 16; font(c, cs, true); while (c.measureText(code).width > cw && cs > 6) { cs -= 0.5; font(c, cs, true); }
+  c.fillText(code, (PW - c.measureText(code).width) / 2, y); y += mm(cs * 0.95) + mm(2.5);
+  // barkod (kodun kendisi; el okuyucuyla okutulunca LH-0001 yazar)
+  const tall = H > W * 1.3, bh = mm(tall ? 26 : 20), bw = Math.min(cw - mm(12), mm(66)); // kenarlarda okuyucu için boşluk
+  if (window.JsBarcode && code) { try { lblBarcode(c, code, (PW - bw) / 2, y, bw, bh); } catch(e) {} }
+  y += bh + mm(3);
+  c.lineWidth = mm(0.3); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(2.5);
+  // alt: resim solda, ad sağda (kalan alana sığacak en büyük boy)
+  const rest = PH - m - y, img = p.image ? LBL_IMGS.get(p.image) : null;
+  const fit = (w, h, max) => { let sz = max, lines = []; for (; sz >= 2.4; sz -= 0.1) { font(c, sz, false); lines = wrapText(c, p.name || '', w); if (lines.length * sz * 1.2 * D * u <= h && lines.every(t => c.measureText(t).width <= w)) break; } return {sz, lines}; };
+  if (tall) { // 100×150: büyük resim ortada, ad altında ortalı
+    const nameH = mm(16), isz = Math.min(rest - nameH - mm(2), cw);
+    if (img && c.drawPhoto) c.drawPhoto(img, (PW - isz) / 2, y, isz, isz);
+    const f = fit(cw, nameH, 4.6), ny = img ? y + isz + mm(2) : y; font(c, f.sz, false);
+    f.lines.forEach((t, k) => c.fillText(t, (PW - c.measureText(t).width) / 2, ny + k * mm(f.sz * 1.2)));
+  } else { // 100×100: resim solda, ad sağda dikey ortalı
+    const isz = rest; if (img && c.drawPhoto) c.drawPhoto(img, m, y, isz, isz);
+    const nx = m + (img ? isz + mm(3) : 0), nW = PW - m - nx, f = fit(nW, rest, 5); font(c, f.sz, false);
+    const ty = y + (rest - f.lines.length * mm(f.sz * 1.2)) / 2; f.lines.forEach((t, k) => c.fillText(t, nx, ty + k * mm(f.sz * 1.2)));
+  }
+}
+// PDF'i teslim et: telefonda paylaş menüsü, bilgisayarda yeni sekme (Ctrl+P), olmazsa indir
+async function deliverPdf(bytes, name, count){
+  const blob = new Blob([bytes], {type:'application/pdf'}), file = new File([blob], name, {type:'application/pdf'});
+  const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+  if (mobile && navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
+  if (!mobile) { const u2 = URL.createObjectURL(blob), w2 = window.open(u2, '_blank'); if (w2) { setTimeout(() => URL.revokeObjectURL(u2), 600000); toast(`${fmtN(count)} etiket yeni sekmede açıldı · Ctrl+P ile yazdır.`); return; } }
+  const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+  toast(`${fmtN(count)} etiket PDF olarak hazırlandı.`);
+}
+// Koli etiketi (100×100): seçilen ürünlerden her biri için istenen sayıda
+async function printProductLabels(ps, copies){
+  copies = Math.max(1, Math.min(500, Number(copies) || 1)); if (!ps.length) return toast('Ürün seç.', true);
+  await run(async () => {
+    toast('Koli etiketleri hazırlanıyor…');
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
+    if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
+    const urls = [...new Set(ps.map(p => p.image).filter(u => u && /^https:\/\//.test(u) && !LBL_IMGS.has(u)))];
+    await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
+    const doc = new MiniPdf(100, 100), mk = () => ({cv: null, c: doc.addPage()});
+    for (const p of ps) for (let i = 0; i < copies; i++) drawProductLabel(p, 100, 100, mk);
+    await deliverPdf(doc.output(), `koli-etiketi-${ps.length === 1 ? (ps[0].code || 'urun') : ps.length + '-urun'}-${todayTR()}.pdf`, ps.length * copies);
+  });
 }
 async function makeLabelsPdf(){
   const L = S.sheet; if (!L || !L.data) return;
@@ -2663,6 +2721,8 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'match-open': openSheet('match', {}); break;
+    case 'plabel': { const p = S.products.get(id); if (p) await printProductLabels([p], ($('#pl-copies') || {}).value); break; }
+    case 'plabel-all': { const ps = filteredProducts(); if (!ps.length) { toast('Listede ürün yok.', true); break; } if (!(await confirmBox(`Listede görünen ${fmtN(ps.length)} ürünün her biri için 1 koli etiketi (100×100) hazırlansın mı? Arama ve süzgeçle listeyi daraltabilirsin.`, 'Hazırla'))) break; await printProductLabels(ps, 1); break; }
     case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;
     case 'merge-pick': S.sheet.into = id; renderSheet(true); break;
     case 'merge-back': S.sheet.into = null; renderSheet(true); break;
