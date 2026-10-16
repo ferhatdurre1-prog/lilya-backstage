@@ -662,10 +662,13 @@ const skuFold = (x) => String(x || '').trim().replace(/İ/g, 'I').replace(/ı/g,
 async function skuFoldMap(env) { const { results } = await env.DB.prepare('SELECT key, sku FROM products').all(); const m = new Map(); for (const r of results) { const f = skuFold(r.sku); if (f && !m.has(f)) m.set(f, r); } return m; }
 async function syncShopifyOrders(env, opts = {}) {
   const c = await shCreds(env); if (!shConfigured(c)) return null;
-  const s = await getSettings(env, ['sh_hwm', 'sh_start', 'sh_paused']);
+  const s = await getSettings(env, ['sh_hwm', 'sh_start', 'sh_paused', 'sh_unf_init']);
   if (s.sh_paused === '1' && !opts.force) return { paused: true, orders: 0 }; // duraklatıldı: kaldığı yer saklanır, açılınca aradaki siparişler de işlenir
   const start = s.sh_start || iso();
-  const since = s.sh_hwm || start;
+  // İlk kez: son 14 günün siparişleri bir kez okunur (kargolanmamış adetler için); eski siparişler stoktan düşmez (başlangıç öncesi)
+  const unfInit = !s.sh_unf_init;
+  const since = unfInit ? iso(Date.now() - 14 * 86400000) : (s.sh_hwm || start);
+  if (unfInit) opts = { ...opts, pages: Math.max(opts.pages || 3, 8) };
   const q = `updated_at:>='${new Date(Date.parse(since) - 5 * 60000).toISOString()}'`;
   let after = null, maxUp = since, nodes = [];
   for (let page = 0; page < (opts.pages || 3); page++) {
@@ -682,7 +685,7 @@ async function syncShopifyOrders(env, opts = {}) {
   for (let i = 0; i < us.length; i += 90) await env.DB.batch(us.slice(i, i + 90));
   if (input.length) { const fm = await skuFoldMap(env); for (const o of input) for (const l of o.lines) { const e = l.sku && fm.get(skuFold(l.sku)); if (e) l.sku = e.sku; } }
   const stats = input.length ? await ingestOrders(env, 'shopify', input, { source: 'shopify', start }) : null;
-  await env.DB.batch([setStmt(env, 'sh_hwm', maxUp), setStmt(env, 'sh_ok', iso()), setStmt(env, 'sh_err', '')]);
+  await env.DB.batch([setStmt(env, 'sh_hwm', unfInit && s.sh_hwm && s.sh_hwm > maxUp ? s.sh_hwm : maxUp), setStmt(env, 'sh_ok', iso()), setStmt(env, 'sh_err', ''), ...(unfInit && !after ? [setStmt(env, 'sh_unf_init', '1')] : [])]);
   return { orders: input.length, more: !!after, stats };
 }
 // Shopify ürünleri (her varyant ayrı ürün): stok koduyla mevcut ürünlerle eşleşir; uygulamada olmayanlar eklenir ve
