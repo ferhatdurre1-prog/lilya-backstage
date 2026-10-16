@@ -152,11 +152,12 @@ async function init0(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_follow1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_follow1','1')`), followMergedStmt(env), followMergedStmt(env), REV(env)]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpass0'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shpass0','1')`), env.DB.prepare(`UPDATE listings SET passive=0 WHERE channel='shopify'`), REV(env)]); } catch (e) {} }
   // Lilya kodları yeniden: listede görünen ürünler A→Z sırasıyla LH-0001'den boşluksuz; gizliler (birleştirilmiş / pasif) sonra
-  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_code2'`).first())) {
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_code3'`).first())) {
     try {
+      await env.DB.prepare(`INSERT OR IGNORE INTO settings(k,v) VALUES('mig_code2','1')`).run();
       const { results } = await env.DB.prepare(`SELECT key, name, CASE WHEN merged_into IS NULL AND (CASE WHEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key) THEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key AND COALESCE(l.passive,0)=0) ELSE NOT (p.ty_passive=1 AND p.channels='["trendyol"]') END) THEN 1 ELSE 0 END vis FROM products p`).all();
       results.sort((a, b) => (b.vis - a.vis) || String(a.name || '').localeCompare(String(b.name || ''), 'tr') || String(a.key).localeCompare(String(b.key)));
-      const st = [env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_code2','1')`), env.DB.prepare(`UPDATE products SET code=NULL`)];
+      const st = [env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_code3','1')`), env.DB.prepare(`UPDATE products SET code=NULL`)];
       results.forEach((r, i) => st.push(env.DB.prepare('UPDATE products SET code=?2 WHERE key=?1').bind(r.key, 'LH-' + String(i + 1).padStart(4, '0'))));
       st.push(REV(env));
       for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
