@@ -617,7 +617,7 @@ async function shGql(env, c, query, variables) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const token = await shToken(env, c, false);
     const r = await fetch(`https://${c.shop}.myshopify.com/admin/api/${SH_API}/graphql.json`, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Shopify-Access-Token': token }, body: JSON.stringify({ query, variables }) });
-    if (r.status === 401 && attempt === 0) continue;
+    if (r.status === 401 && attempt === 0) { c.token = ''; c.exp = 0; continue; } // anahtar geçersiz: yenisi alınır
     if (r.status === 429) { await sleep(1500 * (attempt + 1)); continue; }
     const j = await r.json().catch(() => null);
     if (!r.ok || !j) throw new Error(`Shopify ${r.status}`);
