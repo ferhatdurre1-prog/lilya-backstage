@@ -2847,7 +2847,9 @@ document.addEventListener('click', async e => {
     case 'sh-products': await run(async () => { const r = (await api('/api/shopify/products', {})).r; S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify: ${r.variants} çeşit tarandı · ${r.added} yeni ürün eklendi · ${r.matched} Trendyol'la eşleşti${r.noCode ? ' · ' + r.noCode + ' kodsuz' : ''}`); }); break;
     case 'sh-pause': { const p = id === '1'; await run(async () => { const r = await api('/api/shopify/pause', {paused: p}); S.shop = null; await refresh(true); renderSheet(false); toast(p ? 'Shopify duraklatıldı; bilgiler saklı.' : `Shopify yeniden açıldı${r.r && r.r.orders ? ' · ' + r.r.orders + ' sipariş işlendi' : ''}.`); }); break; }
     case 'sh-disconnect': if (!(await confirmBox('Shopify bağlantısı kaldırılsın mı? Kayıtlı siparişler silinmez; yeni siparişler gelmez.', 'Kaldır', true))) break; await run(async () => { await api('/api/shopify/disconnect', {}); S.shop = null; renderSheet(false); toast('Shopify bağlantısı kaldırıldı.'); }); break;
-    case 'resync-products': await saveSetting({resyncProducts:true}, 'Ürün listesi bir sonraki eşitlemede yeniden taranacak.'); break;
+    case 'resync-products': await run(async () => { let created = 0;
+      for (let i = 0; i < 40; i++) { toast(`Trendyol ürün listesi taranıyor… (sayfa ${i * 2 + 1})`); const r = await api('/api/trendyol/products-now', {first: i === 0}); created += r.created || 0; if (r.finished) break; }
+      await refresh(true); toast(created ? `Tarama bitti · ${fmtN(created)} yeni ürün eklendi.` : 'Tarama bitti · yeni ürün yok (ürün Trendyol\'da onaylı mı, stok kodu başka bir ürünle aynı mı?).'); }); break;
     case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
     case 'close': closeSheet(); break;
   }

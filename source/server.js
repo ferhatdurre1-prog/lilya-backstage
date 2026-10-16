@@ -2353,6 +2353,13 @@ async function api(req, env, path, ctx) {
     return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', counts: { listings: (lc && lc.listings) || 0, products: (lc && lc.products) || 0, withTy: (lc && lc.withTy) || 0, shared: (shared && shared.n) || 0 }, groups, paused: s.sh_paused === '1', push: { on: s.sh_push !== '0', at: s.sh_push_at || '', count: Number(s.sh_push_count) || 0, err: s.sh_push_err || '' }, prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
   }
   /* ---------- Lilya ürünleri: ilanlar, birleştirme, eşleştirme önerileri ---------- */
+  if (path === '/api/trendyol/products-now') {
+    // Ürün listesini hemen tara (sayfa sayfa; ekran tamamlanana kadar tekrar çağırır)
+    if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
+    if (body.first) await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]);
+    try { const r = await syncTrendyolProducts(env, 2); return json({ ok: true, finished: !r || !!r.finished, created: (r && r.created) || 0, page: Number(await getSetting(env, 'ty_prod_page')) || 0 }); }
+    catch (e) { return bad('Trendyol ürün listesi okunamadı: ' + String(e.message || e).slice(0, 200)); }
+  }
   if (path === '/api/products/pending') {
     // Satılmış ama henüz kargolanmamış adet: Trendyol'da Yeni / İşleme alındı / Faturalandı paketler, Shopify'da gönderilmemiş satırlar
     const key = String(body.key || ''); const out = { ty: 0, sh: 0, orders: [] };
