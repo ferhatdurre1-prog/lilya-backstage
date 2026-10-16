@@ -148,6 +148,17 @@ async function init0(env) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_barem2','1')`), env.DB.prepare(`UPDATE settings SET v='46.49' WHERE k IN ('fee_cargo_t1','fee_cargo_ty') AND v IN ('46.48','46.5')`), env.DB.prepare(`UPDATE settings SET v='84.49' WHERE k='fee_cargo_t2' AND v IN ('84.50','84.5')`), REV(env)]); } catch (e) {}
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
+  // Lilya kodları yeniden: listede görünen ürünler A→Z sırasıyla LH-0001'den boşluksuz; gizliler (birleştirilmiş / pasif) sonra
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_code2'`).first())) {
+    try {
+      const { results } = await env.DB.prepare(`SELECT key, name, CASE WHEN merged_into IS NULL AND (CASE WHEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key) THEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key AND COALESCE(l.passive,0)=0) ELSE NOT (p.ty_passive=1 AND p.channels='["trendyol"]') END) THEN 1 ELSE 0 END vis FROM products p`).all();
+      results.sort((a, b) => (b.vis - a.vis) || String(a.name || '').localeCompare(String(b.name || ''), 'tr') || String(a.key).localeCompare(String(b.key)));
+      const st = [env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_code2','1')`), env.DB.prepare(`UPDATE products SET code=NULL`)];
+      results.forEach((r, i) => st.push(env.DB.prepare('UPDATE products SET code=?2 WHERE key=?1').bind(r.key, 'LH-' + String(i + 1).padStart(4, '0'))));
+      st.push(REV(env));
+      for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    } catch (e) {}
+  }
   READY = true;
 }
 async function getSetting(env, k) { const r = await env.DB.prepare('SELECT v FROM settings WHERE k=?1').bind(k).first(); return r ? r.v : null; }
