@@ -1112,10 +1112,10 @@ function sheetProduct(first){
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Bilgileri kaydet</button></div>
     </form>
   </div>
-  ${listingsCard(p)}
+  <div id="p-listings">${listingsCard(p)}</div>
   <div class="card"><h3>Son hareketler</h3><div id="p-moves">${pm.length ? pm.map(moveRow).join('') : '<p class="muted small" style="margin:0">Son günlerde bu ürünle ilgili hareket yok.</p>'}</div></div>
   <div class="row"><button class="btn danger sm" data-act="del-product" data-id="${esc(p.id)}">Ürünü sil</button></div>`;
-  return {title: esc(p.name), sub:`<span class="mono" style="font-weight:700">${esc(p.code || '')}</span> <span class="mono muted">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
+  return {title: esc(p.name), sub:`<span class="mono" style="font-weight:700">${esc(p.code || '')}</span> <span class="mono muted">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-listings': listingsCard(p), '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
 }
 // Ürüne bağlı kanal ilanları: hangi ilan satılınca kaç adet düşer, Trendyol'a giden stok, ayırma; başka ürünle birleştirme
 function listingsCard(p){
