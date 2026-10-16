@@ -681,6 +681,7 @@ async function syncShopifyProducts(env, force) {
   const exist = new Set((await selectIn(env, 'SELECT key FROM products', 'key', [...new Set(cand.values())])).map(r => r.key));
   for (const v of fresh) {
     const pkey = cand.get(v.id), q = inv && Number.isFinite(Number(v.inventoryQuantity)) ? Math.max(0, Number(v.inventoryQuantity)) : 0;
+    if (v.product.status !== 'ACTIVE' && !exist.has(pkey)) continue; // taslak ürün entegre edilmez (yeni ürün açılmaz)
     if (exist.has(pkey)) { matched++; st.push(env.DB.prepare(`UPDATE products SET channels=json_insert(channels,'$[#]','shopify'), image=CASE WHEN image='' THEN ?2 ELSE image END WHERE key=?1 AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify')`).bind(pkey, vimg(v))); }
     else if (!newKeys.has(pkey)) { added++; newKeys.set(pkey, q); st.push(...ensureProduct(env, pkey, { sku: String(v.sku || '').trim(), name: vname(v), barcode: String(v.barcode || '').trim(), image: vimg(v) }, 'shopify')); }
     else newKeys.set(pkey, newKeys.get(pkey) + q);
@@ -1104,7 +1105,8 @@ async function draftPendingQna(env, max = 4) {
 async function syncTyListings(env, items, useStock) {
   const withBc = items.filter(x => x.barcode);
   const lm = await listingMap(env, 'trendyol', withBc.map(x => x.barcode));
-  const known = withBc.filter(x => lm.has(String(x.barcode))), fresh = items.filter(x => !x.barcode || !lm.has(String(x.barcode)));
+  // Pasif (arşivlenmiş / kara listedeki) ilanlar entegre edilmez: yeni ürün açılmaz; satışa dönünce eklenir
+  const known = withBc.filter(x => lm.has(String(x.barcode))), fresh = items.filter(x => (!x.barcode || !lm.has(String(x.barcode))) && !x.passive);
   let created = 0, updated = 0;
   if (fresh.length) {
     const fm = await skuFoldMap(env);
@@ -1157,7 +1159,7 @@ async function syncTrendyolProducts(env, maxPages = 4) {
 }
 /* Ortak stok → Trendyol. Yalnızca değişen ürünler gönderilir (aynı istek 15 dk tekrarlanamaz). */
 // Her Trendyol ilanına bağlı ürünün stoğu gider; paket ilanında stok / paket adedi (ör. 7 adet stok, 2'li ilan → 3)
-const TY_PUSH_SQL = `SELECT l.ext barcode, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(p.qty / MAX(COALESCE(l2.factor,1),1), 0), 20000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='trendyol') t ON t.e=l.ext WHERE l.channel='trendyol' AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 1000`;
+const TY_PUSH_SQL = `SELECT l.ext barcode, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(p.qty / MAX(COALESCE(l2.factor,1),1), 0), 20000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='trendyol') t ON t.e=l.ext WHERE l.channel='trendyol' AND COALESCE(l.passive,0)=0 AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 1000`;
 async function pushTrendyolStock(env) {
   if ((await getSetting(env, 'ty_push')) === '0') return null;
   const { results } = await env.DB.prepare(TY_PUSH_SQL).all();
@@ -1871,7 +1873,7 @@ async function computePricing(env) {
 /* ---------- API ---------- */
 function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { kept: !!r.kept, outDesi: Number(r.o_desi) > 0 ? Number(r.o_desi) : null, autoAt: r.auto_at || null, retDesi: r.desi || r.f_ret_desi || null, retCargo: r.f_ret_cargo ?? null, claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
-function mapProduct(r) { return { code: r.code || '', merged: r.merged_into || null, passive: r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
+function mapProduct(r) { return { code: r.code || '', merged: r.merged_into || null, passive: r.all_passive !== undefined && r.all_passive !== null ? !!r.all_passive : r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
   const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg', 'hook_id', 'hook_at', 'hook_err']);
@@ -2050,7 +2052,7 @@ async function api(req, env, path, ctx) {
     const info = await syncInfo(env);
     if (new URL(req.url).searchParams.get('rev') === info.rev) return json({ ...info, same: true });
     const [p, o, r, m] = await env.DB.batch([
-      env.DB.prepare('SELECT * FROM products ORDER BY name'),
+      env.DB.prepare(`SELECT p.*, CASE WHEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key) THEN NOT EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key AND COALESCE(l.passive,0)=0) ELSE (p.ty_passive=1 AND p.channels='["trendyol"]') END AS all_passive FROM products p ORDER BY p.name`),
       env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ORDER BY o.date DESC LIMIT 300`),
       env.DB.prepare(`SELECT r.*, f.ret_desi f_ret_desi, f.ret_cargo f_ret_cargo, (SELECT json_extract(j.value,'$.fin.desi') FROM orders o, json_each(o.lines) j WHERE o.order_no=r.order_no AND o.channel='trendyol' AND json_extract(j.value,'$.fin.desi') > 0 LIMIT 1) o_desi FROM returns r LEFT JOIN order_fin f ON f.order_no=r.order_no AND r.channel='trendyol' ORDER BY r.created_at DESC LIMIT 400`),
       env.DB.prepare('SELECT * FROM moves ORDER BY id DESC LIMIT 600')]);
@@ -2319,7 +2321,7 @@ async function api(req, env, path, ctx) {
   }
   if (path === '/api/products/suggest') {
     // Aynı ürün olabilecek çiftler: adlar kelime kelime karşılaştırılır (adet/ölçü/renk dışı kelimeler); farklı kanallardan ya da paket (1'li/2'li) ilanları
-    const { results } = await env.DB.prepare(`SELECT key, code, sku, name, image, channels, qty, ty_passive FROM products WHERE merged_into IS NULL`).all();
+    const { results } = await env.DB.prepare(`SELECT key, code, sku, name, image, channels, qty, ty_passive FROM products p WHERE merged_into IS NULL AND (NOT EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key) OR EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key AND COALESCE(l.passive,0)=0)) AND NOT (p.ty_passive=1 AND p.channels='["trendyol"]')`).all();
     const skip = new Set((await env.DB.prepare('SELECT a, b FROM match_skip').all()).results.flatMap(r => [r.a + '|' + r.b, r.b + '|' + r.a]));
     const STOP = new Set(['adet', 'li', 'lı', 'lu', 'lü', 've', 'ile', 'için', 'set', 'seti', 'takım', 'takımı', 'cm', 'mm', 'ml', 'lt', 'gr', 'kg', 'adetli', 'adet', 'lilya', 'home', 'one', 'size', 'tek', 'ebat', 'beyaz', 'siyah', 'gri']);
     const norm = (t) => String(t || '').toLocaleLowerCase('tr-TR').replace(/[^a-zçğıöşü0-9 ]+/g, ' ').split(/\s+/).filter(w => w.length > 1 && !STOP.has(w) && !/^\d+$/.test(w) && !/^\d+(x|\*)\d+/.test(w));
