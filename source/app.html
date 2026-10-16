@@ -1615,7 +1615,10 @@ async function makeLabelsPdf(){
     for (const p of list) drawLabelPages(p, w, h, L.sid, mk);
     try { await api('/api/labels/mark', {printed: true, items: list.map(p => ({pkgId: p.pkgId, orderNo: p.orderNo}))}); const now = new Date().toISOString(); list.forEach(p => p.printedAt = p.printedAt || now); if (L.view !== 'printed') { lblView(L); renderSheet(false); } } catch(e) { toast('Etiketler kayıtlıya alınamadı: ' + errText(e), true); }
     const name = `kargo-etiketleri-${L.car || ''}-${todayTR()}-${list.length}.pdf`, blob = new Blob([doc.output()], {type:'application/pdf'}), file = new File([blob], name, {type:'application/pdf'});
-    if (navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
+    // Telefonda paylaş menüsü (yazıcı uygulamasına gönderilir); bilgisayarda PDF yeni sekmede açılır, oradan Ctrl+P ile yazdırılır
+    const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+    if (mobile && navigator.canShare && navigator.canShare({files:[file]})) { try { await navigator.share({files:[file], title:name}); return; } catch(e) { if (e && e.name === 'AbortError') return; } }
+    if (!mobile) { const u2 = URL.createObjectURL(blob), w2 = window.open(u2, '_blank'); if (w2) { setTimeout(() => URL.revokeObjectURL(u2), 600000); toast(`${fmtN(list.length)} etiket yeni sekmede açıldı · Ctrl+P ile yazdır.`); return; } }
     const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
     toast(`${fmtN(list.length)} etiket PDF olarak hazırlandı.`);
   });
