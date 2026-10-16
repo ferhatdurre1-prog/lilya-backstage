@@ -2462,7 +2462,6 @@ function shopifyCard(){
     ${d.prod ? `<div class="small muted">Aynı ürünün Trendyol ve Shopify ilanlarını tek ürüne bağlamak için <button class="btn sm" data-act="match-open">Ürün eşleştir</button></div>` : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Shopify:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}
     ${d.hookErr && !d.hook ? `<div class="small" style="color:var(--bad)">Anlık bildirim kurulamadı: ${esc(d.hookErr.slice(27))}</div>` : ''}
-    ${um.length ? `<details class="small"><summary><b style="color:var(--orange)">${fmtN(um.length)} stok kodu Trendyol ürünleriyle eşleşmedi</b></summary><p class="muted" style="margin:6px 0">Bu kodlar Shopify'da Trendyol'dakinden farklı yazılmış olabilir; ayrı ürün olarak stok tutulur. Shopify'da stok kodunu Trendyol'dakiyle aynı yaparsan sonraki siparişler aynı ürüne düşer.</p><div class="mono" style="font-size:12px;display:grid;gap:2px">${um.map(x => `<span>${esc(x.sku)} · ${esc(x.name || '')}</span>`).join('')}</div></details>` : d.orders ? '<div class="small muted">Bütün stok kodları Trendyol ürünleriyle eşleşti.</div>' : ''}
     <div class="row"><button class="btn sm ghost" data-act="sh-disconnect">Bağlantıyı kaldır</button></div></div>`;
 }
 function sheetImport(){

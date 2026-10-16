@@ -149,6 +149,7 @@ async function init0(env) {
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   // Shopify ilanları pasif sayılmaz (kısa süre taslaklar pasif işaretlenmişti)
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_follow1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_follow1','1')`), followMergedStmt(env), followMergedStmt(env), REV(env)]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpass0'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shpass0','1')`), env.DB.prepare(`UPDATE listings SET passive=0 WHERE channel='shopify'`), REV(env)]); } catch (e) {} }
   // Lilya kodları yeniden: listede görünen ürünler A→Z sırasıyla LH-0001'den boşluksuz; gizliler (birleştirilmiş / pasif) sonra
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_code2'`).first())) {
@@ -255,6 +256,8 @@ async function ingestOrders(env, channel, input, opts = {}) {
   try { return await ingestOrdersRaw(env, channel, input, opts); }
   finally { try { await env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_ingest'`).run(); } catch (e) {} }
 }
+// Birleştirilmiş (gizli) ürüne bağlanan ilan, birleştirildiği ürüne taşınır
+const followMergedStmt = (env) => env.DB.prepare(`UPDATE listings SET pkey=(SELECT merged_into FROM products WHERE key=listings.pkey) WHERE pkey IN (SELECT key FROM products WHERE merged_into IS NOT NULL AND merged_into<>'')`);
 // Kanal ilanı → Lilya ürünü (ve kaç adet düşeceği: 2'li paket ilanı = 2)
 async function listingMap(env, channel, exts) {
   const ids = [...new Set(exts.map(String).filter(Boolean))]; if (!ids.length) return new Map();
@@ -701,7 +704,8 @@ async function syncShopifyProducts(env, force) {
   }
   for (const [k, q] of newKeys) if (q > 0) st.push(...setQty(env, k, q, { type: 'count', channel: 'shopify', note: 'Shopify başlangıç stoğu' }));
   for (const v of list.filter(v => lm.has(shId(v.id)))) { linked++; st.push(env.DB.prepare(`UPDATE listings SET sku=?2, barcode=?3, name=?4, image=?5, ext_qty=COALESCE(?6, ext_qty), passive=?7, updated_at=?8 WHERE channel='shopify' AND ext=?1`).bind(shId(v.id), String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv && Number.isFinite(Number(v.inventoryQuantity)) ? Number(v.inventoryQuantity) : null, 0, iso())); }
-  if (st.length) { for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); await env.DB.batch([REV(env)]); }
+  if (st.length) { for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
+  await env.DB.batch([followMergedStmt(env), followMergedStmt(env), REV(env)]);
   const noCode = list.filter(v => !String(v.sku || '').trim() && !String(v.barcode || '').trim());
   const res = { at: iso(), variants: list.length, added, matched, linked, noCode: noCode.length, inv };
   await setSetting(env, 'sh_prod', JSON.stringify(res));
@@ -1138,7 +1142,7 @@ async function syncTyListings(env, items, useStock) {
   for (let j = 0; j < keys.length; j += 80) { const part = keys.slice(j, j + 80);
     st.push(env.DB.prepare(`UPDATE products SET ty_passive = CASE WHEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=products.key AND l.channel='trendyol' AND COALESCE(l.passive,0)=0) THEN 0 ELSE 1 END WHERE key IN (${part.map((_, i) => '?' + (i + 1)).join(',')}) AND EXISTS(SELECT 1 FROM listings l WHERE l.pkey=products.key AND l.channel='trendyol')`).bind(...part)); }
   for (let j = 0; j < st.length; j += 90) await env.DB.batch(st.slice(j, j + 90));
-  await env.DB.batch([REV(env)]);
+  await env.DB.batch([followMergedStmt(env), REV(env)]);
   return { created, updated };
 }
 async function syncTrendyolProducts(env, maxPages = 4) {
