@@ -669,7 +669,7 @@ async function syncShopifyProducts(env, force) {
     vs.push(...d.productVariants.nodes);
     if (!d.productVariants.pageInfo.hasNextPage) break; after = d.productVariants.pageInfo.endCursor;
   }
-  const list = vs.filter(v => v.product && v.product.status !== 'ARCHIVED');
+  const list = vs.filter(v => v.product); // Shopify: aktif, taslak ve arşivdeki bütün ürünler entegre
   const vname = (v) => String(v.product.title || '') + (v.title && !/^default title$/i.test(String(v.title)) ? ' · ' + v.title : '');
   const vimg = (v) => (v.image && v.image.url) || (((v.product.featuredMedia || {}).preview || {}).image || {}).url || '';
   const lm = await listingMap(env, 'shopify', list.map(v => shId(v.id)));
@@ -681,14 +681,13 @@ async function syncShopifyProducts(env, force) {
   const exist = new Set((await selectIn(env, 'SELECT key FROM products', 'key', [...new Set(cand.values())])).map(r => r.key));
   for (const v of fresh) {
     const pkey = cand.get(v.id), q = inv && Number.isFinite(Number(v.inventoryQuantity)) ? Math.max(0, Number(v.inventoryQuantity)) : 0;
-    if (v.product.status !== 'ACTIVE' && !exist.has(pkey)) continue; // taslak ürün entegre edilmez (yeni ürün açılmaz)
     if (exist.has(pkey)) { matched++; st.push(env.DB.prepare(`UPDATE products SET channels=json_insert(channels,'$[#]','shopify'), image=CASE WHEN image='' THEN ?2 ELSE image END WHERE key=?1 AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify')`).bind(pkey, vimg(v))); }
     else if (!newKeys.has(pkey)) { added++; newKeys.set(pkey, q); st.push(...ensureProduct(env, pkey, { sku: String(v.sku || '').trim(), name: vname(v), barcode: String(v.barcode || '').trim(), image: vimg(v) }, 'shopify')); }
     else newKeys.set(pkey, newKeys.get(pkey) + q);
-    st.push(env.DB.prepare(`INSERT OR IGNORE INTO listings(channel,ext,pkey,orig_pkey,factor,sku,barcode,name,image,ext_qty,passive,updated_at) VALUES('shopify',?1,?2,?2,1,?3,?4,?5,?6,?7,?8,?9)`).bind(shId(v.id), pkey, String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv ? q : null, v.product.status === 'ACTIVE' ? 0 : 1, iso()));
+    st.push(env.DB.prepare(`INSERT OR IGNORE INTO listings(channel,ext,pkey,orig_pkey,factor,sku,barcode,name,image,ext_qty,passive,updated_at) VALUES('shopify',?1,?2,?2,1,?3,?4,?5,?6,?7,?8,?9)`).bind(shId(v.id), pkey, String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv ? q : null, 0, iso()));
   }
   for (const [k, q] of newKeys) if (q > 0) st.push(...setQty(env, k, q, { type: 'count', channel: 'shopify', note: 'Shopify başlangıç stoğu' }));
-  for (const v of list.filter(v => lm.has(shId(v.id)))) { linked++; st.push(env.DB.prepare(`UPDATE listings SET sku=?2, barcode=?3, name=?4, image=?5, ext_qty=COALESCE(?6, ext_qty), passive=?7, updated_at=?8 WHERE channel='shopify' AND ext=?1`).bind(shId(v.id), String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv && Number.isFinite(Number(v.inventoryQuantity)) ? Number(v.inventoryQuantity) : null, v.product.status === 'ACTIVE' ? 0 : 1, iso())); }
+  for (const v of list.filter(v => lm.has(shId(v.id)))) { linked++; st.push(env.DB.prepare(`UPDATE listings SET sku=?2, barcode=?3, name=?4, image=?5, ext_qty=COALESCE(?6, ext_qty), passive=?7, updated_at=?8 WHERE channel='shopify' AND ext=?1`).bind(shId(v.id), String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv && Number.isFinite(Number(v.inventoryQuantity)) ? Number(v.inventoryQuantity) : null, 0, iso())); }
   if (st.length) { for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); await env.DB.batch([REV(env)]); }
   const noCode = list.filter(v => !String(v.sku || '').trim() && !String(v.barcode || '').trim());
   const res = { at: iso(), variants: list.length, added, matched, linked, noCode: noCode.length, inv };
