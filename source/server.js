@@ -2188,6 +2188,13 @@ async function api(req, env, path, ctx) {
     if (body.min !== undefined) { const m = intOr(body.min, NaN); if (!(m >= 0)) return bad('Düşük stok sınırı geçersiz.'); sets.push('min'); vals.push(m); }
     if (Array.isArray(body.channels)) { sets.push('channels'); vals.push(JSON.stringify(body.channels.map(String))); }
     if (body.sameDay !== undefined) { sets.push('same_day'); vals.push(body.sameDay ? 1 : 0); }
+    if (body.code !== undefined) { // ürün kodunu kullanıcı belirleyebilir: büyük harf, benzersiz
+      const cd = String(body.code).trim().toLocaleUpperCase('tr-TR').replace(/\s+/g, '-');
+      if (!/^[A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9._\-\/]{0,29}$/.test(cd)) return bad('Ürün kodu 1-30 karakter olmalı; harf, rakam, tire, nokta kullanılabilir.');
+      const dup = await env.DB.prepare('SELECT name FROM products WHERE code=?1 AND key<>?2').bind(cd, key).first();
+      if (dup) return bad(`${cd} kodu zaten kullanılıyor: ${dup.name}`);
+      sets.push('code'); vals.push(cd);
+    }
     if (!sets.length) return json({ ok: true });
     const sql = `UPDATE products SET ${sets.map((c, i) => `${c}=?${i + 1}`).join(', ')}, updated_at=?${sets.length + 1} WHERE key=?${sets.length + 2}`;
     const r = await env.DB.batch([env.DB.prepare(sql).bind(...vals, iso(), key), REV(env)]);
