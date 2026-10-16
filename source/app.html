@@ -65,6 +65,15 @@ button,input,select,textarea{font:inherit;color:inherit}
 .hero{background:var(--hero);color:#fff;border-radius:0 0 26px 26px;padding-bottom:12px;margin-bottom:18px}
 body[data-tab="home"] .hero{padding-bottom:52px;margin-bottom:0}
 body[data-tab="home"] main{margin-top:-40px;position:relative}
+/* Bilgisayar: üst sekmeler (Stoklar / Siparişler / Kâr) kutuların altında kalmasın; geniş ekranda her şey tek ekrana sığsın */
+@media (min-width:721px){
+body[data-tab="home"] .hero{padding-bottom:12px;margin-bottom:18px}
+body[data-tab="home"] main{margin-top:0}
+main{padding-bottom:32px}
+}
+@media (min-width:900px){
+body[data-tab="home"] .home-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
 /* Ana ekran sıkı düzen: telefonda her şey kaydırmadan tek ekrana sığsın */
 @media (max-width:640px){
 body[data-tab="home"] .top{padding-block:6px 6px}
