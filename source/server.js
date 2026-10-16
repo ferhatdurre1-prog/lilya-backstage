@@ -2384,7 +2384,7 @@ async function api(req, env, path, ctx) {
   if (path === '/api/stock/pendfix') {
     // Sayım düzeltmesi: sayım anında kargolanmamış olan ama "bekleyen" kutusunda görünmeyen Trendyol adetleri (birleştirilmiş eski ürün kayıtlı siparişler).
     // phase 'scan': sayımlardan bu yana değişen Trendyol paketlerinin kargoya veriliş anı okunur; 'preview': liste; 'apply': seçilenler stoktan düşülür.
-    const PEND_FEATURE = '2026-10-16T13:16:30.000Z', SINCE = iso(Date.now() - 4 * 86400000), phase = String(body.phase || 'preview');
+    const PEND_FEATURE = '2026-10-01T00:00:00.000Z' /* kullanıcı: bekleyen kutusundan önce sayım yapılmadı */, SINCE = iso(Date.now() - 4 * 86400000), phase = String(body.phase || 'preview');
     await env.DB.prepare('CREATE TABLE IF NOT EXISTS pkg_ship(pkg_id TEXT PRIMARY KEY, shipped_at TEXT)').run();
     const counts = (await env.DB.prepare(`SELECT m.pkey, m.t, m.note, m.after FROM moves m JOIN (SELECT pkey, MAX(id) id FROM moves WHERE type='count' AND channel='manuel' AND t >= ?1 GROUP BY pkey) x ON x.id=m.id`).bind(SINCE).all()).results;
     if (phase === 'scan') {
@@ -2397,7 +2397,7 @@ async function api(req, env, path, ctx) {
         total = r.totalPages || 0;
         for (const k of (r.content || [])) { n++; const h = k.packageHistories || k.packageHistory || []; if (h.length) hist++;
           const sh = h.filter(x => /Shipped|Delivered|AtCollectionPoint|UnDelivered|Returned/.test(String(x.status || ''))).map(x => Number(x.createdDate)).filter(Boolean);
-          if (sh.length) st.push(env.DB.prepare('INSERT OR REPLACE INTO pkg_ship(pkg_id, shipped_at) VALUES(?1,?2)').bind(String(k.shipmentPackageId || k.id), iso(Math.min(...sh) - TY_TZ))); }
+          st.push(env.DB.prepare('INSERT OR REPLACE INTO pkg_ship(pkg_id, shipped_at) VALUES(?1,?2)').bind(String(k.shipmentPackageId || k.id), sh.length ? iso(Math.min(...sh) - TY_TZ) : '')); }
         if (p + 1 >= total) { p++; break; }
       }
       for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
@@ -2422,7 +2422,8 @@ async function api(req, env, path, ctx) {
       let miss = 0, oldPend = 0, unk = 0; const nos = new Set();
       for (const u of use) { if (u.ow !== String(c.pkey) || !u.date || u.date >= c.t) continue;
         const s0 = pst.get(u.pid) || ''; if (TY_CANCELLED.has(s0)) continue;
-        let pendAt; if (PEND.has(s0)) pendAt = true; else { const sa = shp.get(u.pid); if (sa) pendAt = sa > c.t; else { unk += u.q; continue; } }
+        // Taramada görünmeyen paket ilk sayımdan beri değişmemiş demek: o anki durumu bugünkü durumuyla aynı (kargolanmış)
+        let pendAt; if (PEND.has(s0)) pendAt = true; else { const sa = shp.get(u.pid); if (sa === undefined) pendAt = false; else if (sa) pendAt = sa > c.t; else { unk += u.q; continue; } }
         if (!pendAt) continue;
         if (on && !u.old) { oldPend += u.q; continue; }
         miss += u.q; nos.add('#' + u.no); }
