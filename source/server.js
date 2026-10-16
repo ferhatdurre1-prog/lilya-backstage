@@ -102,6 +102,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS listings_pkey ON listings(pkey)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS match_skip(a TEXT, b TEXT, PRIMARY KEY(a, b))').run();
   for (const c of ['code TEXT', 'merged_into TEXT']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
+  try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_listing1'`).first())) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_listing1','1')`),
       env.DB.prepare(`INSERT OR IGNORE INTO listings(channel,ext,pkey,orig_pkey,factor,sku,barcode,name,image,ext_qty,passive,updated_at) SELECT 'trendyol', barcode, key, key, 1, sku, barcode, name, image, ty_qty, ty_passive, ?1 FROM products WHERE barcode<>'' AND EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='trendyol') ORDER BY created_at`).bind(iso()),
@@ -679,7 +680,7 @@ async function syncShopifyOrders(env, opts = {}) {
 async function syncShopifyProducts(env, force) {
   const c = await shCreds(env); if (!shConfigured(c)) return null;
   if (!force && (await getSetting(env, 'sh_paused')) === '1') return { paused: true };
-  const Q = (inv) => `query($after:String){productVariants(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id sku barcode title ${inv ? 'inventoryQuantity' : ''} image{url} product{title status featuredMedia{preview{image{url}}}}}}}`;
+  const Q = (inv) => `query($after:String){productVariants(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id sku barcode title ${inv ? 'inventoryQuantity inventoryItem{id}' : ''} image{url} product{title status featuredMedia{preview{image{url}}}}}}}`;
   let inv = true, after = null; const vs = [];
   for (let page = 0; page < 30; page++) {
     let d; try { d = await shGql(env, c, Q(inv), { after }); } catch (e) { if (inv && /inventory|access|scope/i.test(String(e.message))) { inv = false; page--; continue; } throw e; }
@@ -701,16 +702,38 @@ async function syncShopifyProducts(env, force) {
     if (exist.has(pkey)) { matched++; st.push(env.DB.prepare(`UPDATE products SET channels=json_insert(channels,'$[#]','shopify'), image=CASE WHEN image='' THEN ?2 ELSE image END WHERE key=?1 AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify')`).bind(pkey, vimg(v))); }
     else if (!newKeys.has(pkey)) { added++; newKeys.set(pkey, q); st.push(...ensureProduct(env, pkey, { sku: String(v.sku || '').trim(), name: vname(v), barcode: String(v.barcode || '').trim(), image: vimg(v) }, 'shopify')); }
     else newKeys.set(pkey, newKeys.get(pkey) + q);
-    st.push(env.DB.prepare(`INSERT OR IGNORE INTO listings(channel,ext,pkey,orig_pkey,factor,sku,barcode,name,image,ext_qty,passive,updated_at) VALUES('shopify',?1,?2,?2,1,?3,?4,?5,?6,?7,?8,?9)`).bind(shId(v.id), pkey, String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv ? q : null, 0, iso()));
+    st.push(env.DB.prepare(`INSERT OR IGNORE INTO listings(channel,ext,pkey,orig_pkey,factor,sku,barcode,name,image,ext_qty,passive,updated_at,inv_item) VALUES('shopify',?1,?2,?2,1,?3,?4,?5,?6,?7,?8,?9,?10)`).bind(shId(v.id), pkey, String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv ? q : null, 0, iso(), (v.inventoryItem && v.inventoryItem.id) || null));
   }
   for (const [k, q] of newKeys) if (q > 0) st.push(...setQty(env, k, q, { type: 'count', channel: 'shopify', note: 'Shopify başlangıç stoğu' }));
-  for (const v of list.filter(v => lm.has(shId(v.id)))) { linked++; st.push(env.DB.prepare(`UPDATE listings SET sku=?2, barcode=?3, name=?4, image=?5, ext_qty=COALESCE(?6, ext_qty), passive=?7, updated_at=?8 WHERE channel='shopify' AND ext=?1`).bind(shId(v.id), String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv && Number.isFinite(Number(v.inventoryQuantity)) ? Number(v.inventoryQuantity) : null, 0, iso())); }
+  for (const v of list.filter(v => lm.has(shId(v.id)))) { linked++; st.push(env.DB.prepare(`UPDATE listings SET sku=?2, barcode=?3, name=?4, image=?5, ext_qty=COALESCE(?6, ext_qty), passive=?7, updated_at=?8, inv_item=COALESCE(?9, inv_item) WHERE channel='shopify' AND ext=?1`).bind(shId(v.id), String(v.sku || ''), String(v.barcode || ''), vname(v), vimg(v), inv && Number.isFinite(Number(v.inventoryQuantity)) ? Number(v.inventoryQuantity) : null, 0, iso(), (v.inventoryItem && v.inventoryItem.id) || null)); }
   if (st.length) { for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
   await env.DB.batch([followMergedStmt(env), followMergedStmt(env), REV(env)]);
   const noCode = list.filter(v => !String(v.sku || '').trim() && !String(v.barcode || '').trim());
   const res = { at: iso(), variants: list.length, added, matched, linked, noCode: noCode.length, inv };
   await setSetting(env, 'sh_prod', JSON.stringify(res));
   return res;
+}
+/* Ortak stok → Shopify: her Shopify ilanına bağlı ürünün stoğu (paket ilanında stok / paket adedi) mağazanın ana konumuna yazılır.
+   Gerekli yetkiler: read_inventory, write_inventory, read_locations. Shopify'ın kendi satışı zaten kendi stoğunu düşürür; burada eşitlenir. */
+const SH_PUSH_SQL = `SELECT l.ext, l.inv_item, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(p.qty / MAX(COALESCE(l2.factor,1),1), 0), 1000000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='shopify') t ON t.e=l.ext WHERE l.channel='shopify' AND l.inv_item IS NOT NULL AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 250`;
+async function pushShopifyStock(env) {
+  const s = await getSettings(env, ['sh_push', 'sh_paused', 'sh_loc']);
+  if (s.sh_push === '0' || s.sh_paused === '1') return null;
+  const c = await shCreds(env); if (!shConfigured(c)) return null;
+  const { results } = await env.DB.prepare(SH_PUSH_SQL).all(); if (!results.length) return { sent: 0 };
+  let loc = s.sh_loc;
+  if (!loc) { const d = await shGql(env, c, `{locations(first:10){nodes{id isActive fulfillsOnlineOrders}}}`); const ls = d.locations.nodes.filter(x => x.isActive); const l0 = ls.find(x => x.fulfillsOnlineOrders) || ls[0]; if (!l0) throw new Error('Shopify konumu bulunamadı.'); loc = l0.id; await setSetting(env, 'sh_loc', loc); }
+  const qs = results.map(r => ({ inventoryItemId: r.inv_item, locationId: loc, quantity: Number(r.q) || 0 }));
+  const M1 = `mutation($q:[InventoryQuantityInput!]!){inventorySetQuantities(input:{name:"available",reason:"correction",ignoreCompareQuantity:true,quantities:$q}){userErrors{message field}}}`;
+  const M2 = `mutation($q:[InventoryQuantityInput!]!){inventorySetQuantities(input:{name:"available",reason:"correction",quantities:$q}) @idempotent(key:"${crypto.randomUUID()}"){userErrors{message field}}}`;
+  let d; try { d = await shGql(env, c, M1, { q: qs }); }
+  catch (e) { d = await shGql(env, c, M2, { q: qs.map(x => ({ ...x, changeFromQuantity: null })) }); }
+  const ue = (d.inventorySetQuantities && d.inventorySetQuantities.userErrors) || [];
+  if (ue.length) { await setSetting(env, 'sh_push_err', iso() + ' · ' + ue.slice(0, 3).map(x => x.message).join(' · ').slice(0, 200)); if (ue.length >= qs.length) return { sent: 0, error: true }; }
+  const st = results.map(r => env.DB.prepare(`UPDATE listings SET ext_qty=?2 WHERE channel='shopify' AND ext=?1`).bind(r.ext, Number(r.q) || 0));
+  st.push(setStmt(env, 'sh_push_at', iso()), setStmt(env, 'sh_push_count', String(results.length)), ...(ue.length ? [] : [setStmt(env, 'sh_push_err', '')]), REV(env));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  return { sent: results.length };
 }
 // Anlık bildirim: yeni sipariş, iptal ve iade olunca Shopify haber verir (imza Client secret ile doğrulanır)
 async function ensureShopifyHooks(env, force) {
@@ -1409,6 +1432,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     if (left() > 20000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
     if (left() > 15000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
     if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));
+    if (left() > 8000 && ok(40)) await step('shPush', async () => { try { return await pushShopifyStock(env); } catch (e) { await setSetting(env, 'sh_push_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } });
     // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
     if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) > 6 * 3600000 && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
@@ -2279,6 +2303,7 @@ async function api(req, env, path, ctx) {
     try { await ensureShopifyHooks(env, true); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); }
     return json({ ok: true, name: c.name, first });
   }
+  if (path === '/api/shopify/push') { await env.DB.batch([setStmt(env, 'sh_push', body.on ? '1' : '0'), setStmt(env, 'sh_push_err', '')]); return json({ ok: true }); }
   if (path === '/api/shopify/pause') {
     // Duraklat / devam: bilgiler silinmez; devam edince duraklatılan süredeki siparişler de sırayla işlenir
     const on = !!body.paused; await setSetting(env, 'sh_paused', on ? '1' : '');
@@ -2297,7 +2322,7 @@ async function api(req, env, path, ctx) {
     try { return json({ ok: true, r: await syncShopifyProducts(env, true) }); } catch (e) { return bad(String(e.message || e)); }
   }
   if (path === '/api/shopify/status') {
-    const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err', 'sh_prod', 'sh_paused']);
+    const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err', 'sh_prod', 'sh_paused', 'sh_push', 'sh_push_at', 'sh_push_count', 'sh_push_err']);
     // Shopify'dan gelip başka kanalda (Trendyol) karşılığı olmayan stok kodları: büyük ihtimalle farklı yazılmış
     const { results } = await env.DB.prepare(`SELECT key, sku, name, qty FROM products WHERE EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify') AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='trendyol') ORDER BY sku LIMIT 100`).all();
     const n = await env.DB.prepare(`SELECT COUNT(*) n FROM orders WHERE channel='shopify'`).first();
@@ -2307,7 +2332,7 @@ async function api(req, env, path, ctx) {
     // Aynı ürüne bağlanmış birden çok Shopify ilanı (çoğunlukla aynı stok kodu): kullanıcı "ayrı ürün yap" diyebilsin
     const grp = (await env.DB.prepare(`SELECT l.pkey, p.code, p.name pname, l.ext, l.name, l.sku, l.image FROM listings l JOIN products p ON p.key=l.pkey WHERE l.channel='shopify' AND l.pkey IN (SELECT pkey FROM listings WHERE channel='shopify' GROUP BY pkey HAVING COUNT(*) > 1) ORDER BY p.code, l.name LIMIT 400`).all()).results;
     const groups = []; for (const r of grp) { let g = groups[groups.length - 1]; if (!g || g.pkey !== r.pkey) { g = { pkey: r.pkey, code: r.code, name: r.pname, listings: [] }; groups.push(g); } g.listings.push({ ext: r.ext, name: r.name, sku: r.sku, image: r.image }); }
-    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', counts: { listings: (lc && lc.listings) || 0, products: (lc && lc.products) || 0, withTy: (lc && lc.withTy) || 0, shared: (shared && shared.n) || 0 }, groups, paused: s.sh_paused === '1', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
+    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', counts: { listings: (lc && lc.listings) || 0, products: (lc && lc.products) || 0, withTy: (lc && lc.withTy) || 0, shared: (shared && shared.n) || 0 }, groups, paused: s.sh_paused === '1', push: { on: s.sh_push !== '0', at: s.sh_push_at || '', count: Number(s.sh_push_count) || 0, err: s.sh_push_err || '' }, prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
   }
   /* ---------- Lilya ürünleri: ilanlar, birleştirme, eşleştirme önerileri ---------- */
   if (path === '/api/products/listings') {

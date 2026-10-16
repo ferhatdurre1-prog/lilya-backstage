@@ -2516,6 +2516,7 @@ function shopifyCard(){
   return `<div class="card"><div class="spread"><h3 style="margin:0">${chBadge('shopify')} Otomatik eşitleme</h3><div class="row"><button class="btn sm" data-act="sh-sync">Şimdi eşitle</button><button class="btn sm" data-act="sh-pause" data-id="1">Duraklat</button></div></div>
     <dl class="kv"><dt>Mağaza</dt><dd>${esc(d.name || d.shop)}</dd><dt>Siparişler</dt><dd>${d.hook ? 'Anlık (Shopify bildirimi)' : '2 dakikada bir'}${d.hookAt ? ' · son ' + esc(ago(d.hookAt.slice(0, 24))) : ''}${d.ok ? '<div class="muted" style="font-size:12px">Son kontrol ' + esc(ago(d.ok)) + ' · ' + fmtN(d.orders) + ' sipariş kayıtlı</div>' : ''}</dd>
     <dt>Stoktan düşme başlangıcı</dt><dd>${d.start ? esc(fmtDate(d.start)) : '—'}</dd>
+    <dt>Stok → Shopify</dt><dd>${!d.push || !d.push.on ? 'Kapalı' : d.push.at ? 'Son gönderim ' + esc(ago(d.push.at)) + ' · ' + fmtN(d.push.count) + ' ilan' : 'Değişiklik olunca gönderilir'}${d.push && d.push.err ? `<div style="color:var(--bad);font-size:12px">${esc(d.push.err.slice(27))}${/access|scope|izin|denied/i.test(d.push.err) ? ' — Shopify uygulamasına read_inventory, write_inventory, read_locations yetkilerini ekleyip yeni sürüm yayınla.' : ''}</div>` : ''}</dd>
     <dt>Ürünler</dt><dd>${d.prod ? `${fmtN(d.prod.variants)} çeşit · ${fmtN(d.prod.added)} yeni ürün açıldı · ${fmtN(d.prod.matched + d.prod.linked)} mevcut ürüne bağlı<div class="muted" style="font-size:12px">Son tarama ${esc(ago(d.prod.at))}${d.prod.inv ? '' : ' · Shopify stok adedi okunamadı'}</div>` : 'Henüz taranmadı'}<div><button class="btn sm ghost" data-act="sh-products">Ürünleri şimdi tara</button></div></dd></dl>
     ${d.counts && d.counts.listings ? `<div class="small"><b>${fmtN(d.counts.listings)}</b> Shopify ilanı → <b>${fmtN(d.counts.products)}</b> Lilya ürününe bağlı${d.counts.listings > d.counts.products ? ` (${fmtN(d.counts.listings - d.counts.products)} ilan, aynı ürüne bağlı başka bir Shopify ilanıyla birlikte sayılıyor)` : ''} · ${fmtN(d.counts.withTy)} ilanın ürünü Trendyol'da da satılıyor</div>` : ''}
     ${(d.groups || []).length ? `<details class="small"><summary><b style="color:var(--orange)">${fmtN(d.groups.length)} üründe birden çok Shopify ilanı birleşmiş görünüyor</b></summary><p class="muted" style="margin:6px 0">Çoğunlukla Shopify'da aynı stok kodu verilmiş farklı ürünler. Farklı bir ürünse "Ayrı ürün yap"a bas: kendi Lilya kodunu alır (stoğu 0'dan başlar).</p>
@@ -2523,6 +2524,7 @@ function shopifyCard(){
     ${d.prod ? `<div class="small muted">Aynı ürünün Trendyol ve Shopify ilanlarını tek ürüne bağlamak için <button class="btn sm" data-act="match-open">Ürün eşleştir</button></div>` : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Shopify:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}
     ${d.hookErr && !d.hook ? `<div class="small" style="color:var(--bad)">Anlık bildirim kurulamadı: ${esc(d.hookErr.slice(27))}</div>` : ''}
+    <label class="chk small"><input type="checkbox" id="sh-push" ${!d.push || d.push.on ? 'checked' : ''}><span>Ortak stok değişince Shopify'daki stoğu da güncelle (Trendyol'dan satılan ürün Shopify'da da düşer)</span></label>
     <div class="row"><button class="btn sm ghost" data-act="sh-disconnect">Bağlantıyı kaldır</button></div></div>`;
 }
 function sheetImport(){
@@ -2892,6 +2894,7 @@ document.addEventListener('change', e => {
   if (t.id === 'cost-file') onCostFile(t.files[0]);
   if (t.id === 'cost-setstock') { S.costImp.setStock = t.checked; recomputeCosts(); }
   if (t.id === 'fe-desimode') { const w = $('#fe-desi-wrap'); if (w) w.hidden = !t.checked; }
+  if (t.id === 'sh-push') api('/api/shopify/push', {on: t.checked}).then(() => { S.shop = null; toast(t.checked ? 'Stok değişiklikleri Shopify\'a gönderilecek.' : 'Shopify\'a stok gönderimi durduruldu.'); }).catch(e => toast(errText(e), true));
   if (t.id === 'set-push') saveSetting({pushStock:t.checked}, t.checked ? 'Stok değişiklikleri Trendyol\'a gönderilecek.' : 'Trendyol\'a stok gönderimi durduruldu.');
   if (t.id === 'imp-kind') { S.imp.kind = t.value; computePreview(); }
   if (t.id === 'imp-ch') { S.imp.channel = t.value; computePreview(); }
