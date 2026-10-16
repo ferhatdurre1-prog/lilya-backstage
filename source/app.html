@@ -1039,14 +1039,14 @@ async function retry(fn, tries=5){
 
 /* ============ Stoklar ============ */
 // Trendyol'da pasif (arşivlenmiş) ve başka kanalda satılmayan ürünler listelerde gizlenir; "Pasif" süzgecinde görünür
-function productsArr(){ return [...S.products.values()].filter(p => !p.passive); }
-function passiveArr(){ return [...S.products.values()].filter(p => p.passive); }
+function productsArr(){ return [...S.products.values()].filter(p => !p.passive && !p.merged); }
+function passiveArr(){ return [...S.products.values()].filter(p => p.passive && !p.merged); }
 function viewStock(){
   const ps = productsArr();
   const total = ps.reduce((n,p) => n + Math.max(0,p.qty), 0);
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
-  const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Aynı stok koduna sahip ürünler bütün kanallarda tek stoğu paylaşır.</p></div>
-    <button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div>
+  const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
+    <div class="row"><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1056,7 +1056,7 @@ function viewStock(){
   if (!S.loaded.products) return head + loading();
   if (!ps.length) return head + `<div class="panel empty"><h4>Depo henüz boş</h4><p>Trendyol bağlantısı kurulunca ürünler stok kodları ve görselleriyle kendiliğinden gelir. Eski uygulamanın yedeğini yükleyebilir ya da ürünleri tek tek ekleyebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar &amp; yedek</button><button class="btn" data-act="new-product">Elle ürün ekle</button></div></div>`;
   const usedCh = [...new Set(ps.flatMap(p => p.channels))].filter(c => CHANNELS[c]);
-  const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="q" type="search" placeholder="Ürün adı, stok kodu veya barkod" value="${esc(S.q)}" aria-label="Ürün ara" autocomplete="off"></div></div>
+  const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="q" type="search" placeholder="Ürün adı, Lilya kodu, stok kodu veya barkod" value="${esc(S.q)}" aria-label="Ürün ara" autocomplete="off"></div></div>
     <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}${passiveArr().length ? `<button class="chip" data-act="filter" data-id="passive" aria-pressed="${S.filter==='passive'}">Pasif · ${fmtN(passiveArr().length)}</button>` : ''}</div>
     <label class="sortsel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 8l4-4 4 4"/><path d="M17 20V4M13 16l4 4 4-4"/></svg><select id="psort" aria-label="Sırala">${[['name_asc','İsim: A → Z'],['name_desc','İsim: Z → A'],['qty_desc','Stok: çoktan aza'],['qty_asc','Stok: azdan çoğa'],['value_desc','Stok değeri: yüksekten düşüğe'],['new','En yeni eklenen'],['updated','Son güncellenen']].map(([v,l]) => `<option value="${v}"${S.psort===v?' selected':''}>${l}</option>`).join('')}</select></label>
     ${usedCh.length > 1 ? `<div class="chips"><button class="chip" data-act="chf" data-id="" aria-pressed="${!S.ch}">Tüm kanallar</button>${usedCh.map(c => `<button class="chip" data-act="chf" data-id="${c}" aria-pressed="${S.ch===c}">${esc(CHANNELS[c].name)}</button>`).join('')}</div>` : ''}</div>`;
@@ -1064,7 +1064,7 @@ function viewStock(){
 }
 function filteredProducts(){
   const q = searchNorm(S.q.trim());
-  let ps = (S.filter === 'passive' ? passiveArr() : productsArr()).filter(p => (!q || searchNorm(`${p.name} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || S.filter==='passive' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0)) && (!S.ch || p.channels.includes(S.ch)));
+  let ps = (S.filter === 'passive' ? passiveArr() : productsArr()).filter(p => (!q || searchNorm(`${p.name} ${p.code} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || S.filter==='passive' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0)) && (!S.ch || p.channels.includes(S.ch)));
   const byName = (a,b) => a.name.localeCompare(b.name, 'tr');
   const val = p => Math.max(0, p.qty) * (p.cost || 0);
   const SORTS = {
@@ -1081,7 +1081,7 @@ function productList(){
   const ps = filteredProducts();
   if (!ps.length) return `<div class="panel empty"><h4>Eşleşen ürün yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
   const shown = ps.slice(0, 300);
-  return `<div class="list">${shown.map(p => `<button class="item" data-act="product" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div></button>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
+  return `<div class="list">${shown.map(p => `<button class="item" data-act="product" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div></button>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
 }
 
 /* ============ Ürün sayfası ============ */
@@ -1103,6 +1103,7 @@ function sheetProduct(first){
   <div class="card"><h3>Ürün bilgileri</h3>
     <form id="f-info" class="grid2">
       <label class="f" style="grid-column:1/-1">Ürün adı<input class="input" id="pi-name" value="${esc(p.name)}" required></label>
+      <label class="f">Lilya ürün kodu<input class="input mono" value="${esc(p.code || '—')}" disabled></label>
       <label class="f">Stok kodu (SKU)<input class="input mono" value="${esc(p.sku)}" disabled></label>
       <label class="f">Barkod<input class="input mono" id="pi-barcode" value="${esc(p.barcode)}"></label>
       <label class="f">Birim alış fiyatı (TL)<input class="input num" id="pi-cost" inputmode="decimal" value="${p.cost!=null?esc(String(p.cost).replace('.',',')):''}" placeholder="Örn. 75,00"></label>
@@ -1111,11 +1112,59 @@ function sheetProduct(first){
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Bilgileri kaydet</button></div>
     </form>
   </div>
+  ${listingsCard(p)}
   <div class="card"><h3>Son hareketler</h3><div id="p-moves">${pm.length ? pm.map(moveRow).join('') : '<p class="muted small" style="margin:0">Son günlerde bu ürünle ilgili hareket yok.</p>'}</div></div>
   <div class="row"><button class="btn danger sm" data-act="del-product" data-id="${esc(p.id)}">Ürünü sil</button></div>`;
-  return {title: esc(p.name), sub:`<span class="mono">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
+  return {title: esc(p.name), sub:`<span class="mono" style="font-weight:700">${esc(p.code || '')}</span> <span class="mono muted">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
+}
+// Ürüne bağlı kanal ilanları: hangi ilan satılınca kaç adet düşer, Trendyol'a giden stok, ayırma; başka ürünle birleştirme
+function listingsCard(p){
+  const sh = S.sheet;
+  if (!sh.listings || sh.listingsFor !== p.id) { if (sh.listingsLoading !== p.id) { sh.listingsLoading = p.id; api('/api/products/listings', {key: p.id}).then(d => { if (S.sheet === sh) { sh.listings = d.listings; sh.listingsFor = p.id; sh.listingsLoading = null; renderSheet(false); } }).catch(() => { sh.listingsLoading = null; }); }
+    return `<div class="card"><h3>Bağlı ilanlar</h3>${loading()}</div>`; }
+  const ls = sh.listings;
+  const rows = ls.map(l => { const per = Math.max(1, Number(l.factor) || 1), target = Math.min(Math.max(Math.floor(p.qty / per), 0), 20000);
+    const tyInfo = l.channel === 'trendyol' ? (S.settings.pushStock === false ? '<span class="muted">Trendyol\'a stok gönderimi kapalı</span>' : Number(l.ext_qty) === target ? `<span style="color:var(--good)">✓ Trendyol stoğu ${fmtN(target)}</span>` : Number(l.ext_qty) < 0 ? '<span style="color:var(--bad)">Trendyol stok güncellemesini kabul etmedi</span>' : `<span style="color:var(--warn)">Trendyol'a gidecek: ${fmtN(target)}</span>`) : '';
+    return `<div class="ln" style="align-items:flex-start"><div style="min-width:0;display:grid;gap:3px"><div>${chBadge(l.channel)} ${l.passive ? '<span class="pill p-mute">Pasif</span>' : ''} <span style="font-weight:600;overflow-wrap:anywhere">${esc(l.name || l.sku)}</span></div>
+      <div class="muted small"><span class="mono">${esc(l.channel === 'trendyol' ? 'Barkod ' + l.ext : 'Varyant ' + l.ext)}</span>${l.sku ? ' · <span class="mono">' + esc(l.sku) + '</span>' : ''}</div>
+      <div class="small">Satılınca stoktan <select class="input" data-lfactor="${esc(l.channel)}|${esc(l.ext)}" style="display:inline-block;width:auto;padding:2px 6px">${[1,2,3,4,5,6,8,10,12,20].concat(per > 20 || ![1,2,3,4,5,6,8,10,12,20].includes(per) ? [per] : []).map(n => `<option value="${n}" ${n === per ? 'selected' : ''}>${n}</option>`).join('')}</select> adet düşer ${tyInfo ? '· ' + tyInfo : ''}</div></div>
+      <div>${l.orig_pkey && l.orig_pkey !== l.pkey ? `<button class="btn sm" data-act="l-unlink" data-id="${esc(l.channel)}|${esc(l.ext)}">Ayır</button>` : ''}</div></div>`; }).join('');
+  return `<div class="card"><div class="spread"><h3 style="margin:0">Bağlı ilanlar</h3><button class="btn sm" data-act="merge-open" data-id="${esc(p.id)}">Başka ürünle birleştir</button></div>
+    ${ls.length ? `<div class="lines">${rows}</div>` : '<p class="muted small" style="margin:0">Bu ürüne bağlı kanal ilanı yok (elle eklenmiş ürün).</p>'}
+    <p class="muted small" style="margin:0">Aynı ürünün farklı ilanları (ör. Trendyol'daki 1'li ve 2'li paket, Shopify'daki ilan) tek ürüne bağlanınca hepsi bu stoktan düşer.</p></div>`;
+}
+// Birleştirme: bu ürünün ilanları seçilen ürüne bağlanır
+function sheetMerge(){
+  const sh = S.sheet, from = S.products.get(sh.from); if (!from) return {title:'Birleştir', body:'<div class="card"><p class="muted">Ürün bulunamadı.</p></div>'};
+  if (sh.into) { const to = S.products.get(sh.into);
+    return {title:'Birleştir', body:`<div class="card" style="gap:12px">
+      <div class="item" style="cursor:default;border-top:0">${thumb(from)}<div class="main"><div class="ttl">${esc(from.name)}</div><div class="meta"><span class="mono">${esc(from.code)}</span>${from.channels.map(chBadge).join('')}</div></div></div>
+      <div class="small muted" style="text-align:center">↓ bu ürünün ilanları şuna bağlanacak ↓</div>
+      <div class="item" style="cursor:default;border-top:0">${thumb(to)}<div class="main"><div class="ttl">${esc(to.name)}</div><div class="meta"><span class="mono">${esc(to.code)}</span>${to.channels.map(chBadge).join('')}</div></div><div class="end"><div class="qty">${fmtN(to.qty)}<small>adet</small></div></div></div>
+      <label class="f">Üstteki ürünün ilanı 1 kez satılınca stoktan kaç adet düşsün?<select class="input" id="mg-factor">${[1,2,3,4,5,6,8,10,12,20].map(n => `<option value="${n}" ${n === (sh.factor || 1) ? 'selected' : ''}>${n}${n > 1 ? ' (' + n + "'li paket)" : ''}</option>`).join('')}</select></label>
+      <p class="muted small" style="margin:0">Stok olarak alttaki ürünün stoğu geçerli kalır. Üstteki ürün listeden kalkar; geçmiş siparişleri ve hareketleri silinmez. Yanlışlıkla birleştirirsen ilanı "Ayır" ile geri alabilirsin.</p>
+      <div class="row"><button class="btn" data-act="merge-back">Geri</button><button class="btn primary" data-act="merge-do">Birleştir</button></div></div>`}; }
+  const q = searchNorm(sh.q || '');
+  const ps = productsArr().concat(passiveArr()).filter(p => p.id !== from.id && (!q || searchNorm(`${p.name} ${p.code} ${p.sku} ${p.barcode}`).includes(q))).slice(0, 60);
+  return {title:'Hangi ürünle birleşsin?', sub:`<span class="mono">${esc(from.code)}</span> <span>${esc(from.name)}</span>`, body:`<div class="card" style="gap:10px"><input class="input" id="mq" type="search" placeholder="Ürün adı, Lilya kodu, stok kodu" value="${esc(sh.q || '')}" autocomplete="off">
+    <div class="list" id="mlist">${ps.map(p => `<button class="item" data-act="merge-pick" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.code)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end"><div class="qty">${fmtN(p.qty)}<small>adet</small></div></div></button>`).join('') || '<p class="muted small">Eşleşen ürün yok.</p>'}</div></div>`};
+}
+// Eşleştirme önerileri: aynı ürün olabilecek çiftler (farklı kanal ya da paket ilanı)
+function sheetMatch(){
+  const sh = S.sheet;
+  if (!sh.data) { if (!sh.loading) { sh.loading = true; api('/api/products/suggest', {}).then(d => { if (S.sheet === sh) { sh.data = d; sh.loading = false; renderSheet(false); } }).catch(e => { sh.loading = false; toast(errText(e), true); }); }
+    return {title:'Ürün eşleştir', body: loading()}; }
+  const L = sh.data.list.filter(x => !x.done);
+  const side = (x) => `<div style="display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:center;min-width:0">${thumb(x)}<div style="min-width:0"><div style="font-weight:600;overflow-wrap:anywhere;font-size:14px">${esc(x.name)}</div><div class="muted small"><span class="mono">${esc(x.code || '')}</span> ${x.ch.map(chBadge).join(' ')} ${x.passive ? '<span class="pill p-mute">Pasif</span>' : ''} · ${fmtN(x.qty)} adet</div></div></div>`;
+  const cards = L.map(x => { const i = sh.data.list.indexOf(x); return `<div class="card" style="gap:10px">
+    <div class="spread"><span class="small muted">Benzerlik %${x.score}</span></div>
+    ${side(x.from)}<div class="small muted" style="text-align:center">aynı ürün mü? ↓</div>${side(x.into)}
+    <label class="small">Üstteki ilan 1 kez satılınca stoktan <select class="input" data-mf="${i}" style="display:inline-block;width:auto;padding:2px 6px">${[1,2,3,4,5,6,8,10,12,20].map(n => `<option value="${n}" ${n === x.factor ? 'selected' : ''}>${n}</option>`).join('')}</select> adet düşsün</label>
+    <div class="row"><button class="btn primary sm" data-act="match-do" data-id="${i}">Aynı ürün · birleştir</button><button class="btn sm" data-act="match-skip" data-id="${i}">Farklı ürün</button><button class="btn sm ghost" data-act="match-other" data-id="${i}">Başka ürünle birleştir</button></div></div>`; }).join('');
+  return {title:'Ürün eşleştir', sub:`<span>${fmtN(L.length)} öneri · ${fmtN(sh.data.total)} ürün</span>`, body: `<p class="muted small" style="margin:0 0 10px">Adları benzeyen ürünler. Aynıysa birleştir: ilanları tek ürüne bağlanır, siparişler aynı stoktan düşer. Önerilerde olmayan bir ürünü birleştirmek için ürün sayfasındaki "Başka ürünle birleştir"i kullan.</p>` + (cards || '<div class="card"><p class="muted" style="margin:0">Şu an öneri yok.</p></div>')};
 }
 function tyLine(p){
+  return ''; // Trendyol stok durumu artık "Bağlı ilanlar" kartında, ilan ilan
   if (!p.channels.includes('trendyol') || !p.barcode) return '';
   const target = Math.min(Math.max(p.qty, 0), 20000);
   if (S.settings.pushStock === false) return `<p class="muted small" style="margin:0">Trendyol'a stok gönderimi kapalı.</p>`;
@@ -2405,8 +2454,8 @@ function shopifyCard(){
   return `<div class="card"><div class="spread"><h3 style="margin:0">${chBadge('shopify')} Otomatik eşitleme</h3><div class="row"><button class="btn sm" data-act="sh-sync">Şimdi eşitle</button><button class="btn sm" data-act="sh-pause" data-id="1">Duraklat</button></div></div>
     <dl class="kv"><dt>Mağaza</dt><dd>${esc(d.name || d.shop)}</dd><dt>Siparişler</dt><dd>${d.hook ? 'Anlık (Shopify bildirimi)' : '2 dakikada bir'}${d.hookAt ? ' · son ' + esc(ago(d.hookAt.slice(0, 24))) : ''}${d.ok ? '<div class="muted" style="font-size:12px">Son kontrol ' + esc(ago(d.ok)) + ' · ' + fmtN(d.orders) + ' sipariş kayıtlı</div>' : ''}</dd>
     <dt>Stoktan düşme başlangıcı</dt><dd>${d.start ? esc(fmtDate(d.start)) : '—'}</dd>
-    <dt>Ürünler</dt><dd>${d.prod ? `${fmtN(d.prod.variants)} çeşit · ${fmtN(d.prod.matched)} Trendyol'la eşleşti · ${fmtN(d.prod.added)} yeni eklendi<div class="muted" style="font-size:12px">Son tarama ${esc(ago(d.prod.at))}${d.prod.inv ? '' : ' · Shopify stok adedi okunamadı'}</div>` : 'Henüz taranmadı'}<div><button class="btn sm ghost" data-act="sh-products">Ürünleri şimdi tara</button></div></dd></dl>
-    ${d.prod && d.prod.noCode ? `<details class="small"><summary><b style="color:var(--orange)">${fmtN(d.prod.noCode)} Shopify ürününde stok kodu (SKU) ve barkod yok</b></summary><p class="muted" style="margin:6px 0">Kodsuz ürünler eşleştirilemez ve siparişte stoktan düşülemez. Shopify'da bu ürünlere stok kodu girersen sonraki taramada eklenir.</p><div style="display:grid;gap:2px">${d.prod.noCodeNames.map(n => `<span>${esc(n)}</span>`).join('')}</div></details>` : ''}
+    <dt>Ürünler</dt><dd>${d.prod ? `${fmtN(d.prod.variants)} çeşit · ${fmtN(d.prod.added)} yeni ürün açıldı · ${fmtN(d.prod.matched + d.prod.linked)} mevcut ürüne bağlı<div class="muted" style="font-size:12px">Son tarama ${esc(ago(d.prod.at))}${d.prod.inv ? '' : ' · Shopify stok adedi okunamadı'}</div>` : 'Henüz taranmadı'}<div><button class="btn sm ghost" data-act="sh-products">Ürünleri şimdi tara</button></div></dd></dl>
+    ${d.prod ? `<div class="small muted">Aynı ürünün Trendyol ve Shopify ilanlarını tek ürüne bağlamak için <button class="btn sm" data-act="match-open">Ürün eşleştir</button></div>` : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Shopify:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}
     ${d.hookErr && !d.hook ? `<div class="small" style="color:var(--bad)">Anlık bildirim kurulamadı: ${esc(d.hookErr.slice(27))}</div>` : ''}
     ${um.length ? `<details class="small"><summary><b style="color:var(--orange)">${fmtN(um.length)} stok kodu Trendyol ürünleriyle eşleşmedi</b></summary><p class="muted" style="margin:6px 0">Bu kodlar Shopify'da Trendyol'dakinden farklı yazılmış olabilir; ayrı ürün olarak stok tutulur. Shopify'da stok kodunu Trendyol'dakiyle aynı yaparsan sonraki siparişler aynı ürüne düşer.</p><div class="mono" style="font-size:12px;display:grid;gap:2px">${um.map(x => `<span>${esc(x.sku)} · ${esc(x.name || '')}</span>`).join('')}</div></details>` : d.orders ? '<div class="small muted">Bütün stok kodları Trendyol ürünleriyle eşleşti.</div>' : ''}
@@ -2554,7 +2603,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -2579,7 +2628,8 @@ async function run(fn){
 }
 
 /* ============ Olaylar ============ */
-document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.qid) qS().drafts[t.dataset.qid] = t.value; });
+document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.qid) qS().drafts[t.dataset.qid] = t.value;
+  if (t && t.id === 'mq' && S.sheet && S.sheet.type === 'merge') { S.sheet.q = t.value; const box = $('#mlist'); if (box) { const tmp = document.createElement('div'); tmp.innerHTML = sheetMerge().body; const nl = tmp.querySelector('#mlist'); if (nl) box.innerHTML = nl.innerHTML; } } });
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const act = b.dataset.act, id = b.dataset.id;
@@ -2609,6 +2659,15 @@ document.addEventListener('click', async e => {
     case 'vsort': S.vsort = id; render(); break;
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
+    case 'match-open': openSheet('match', {}); break;
+    case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;
+    case 'merge-pick': S.sheet.into = id; renderSheet(true); break;
+    case 'merge-back': S.sheet.into = null; renderSheet(true); break;
+    case 'merge-do': { const sh = S.sheet, factor = Number(($('#mg-factor') || {}).value) || 1; await run(async () => { await api('/api/products/merge', {from: sh.from, into: sh.into, factor}); await refresh(true); toast('Birleştirildi.'); if (sh.match) { sh.match.done = true; S.sheet = sh.matchSheet; renderSheet(true); } else openSheet('product', {id: sh.into, mode: 'in'}); }); break; }
+    case 'match-do': { const sh = S.sheet, x = sh.data.list[Number(id)], f = Number((document.querySelector(`[data-mf="${id}"]`) || {}).value) || x.factor; await run(async () => { await api('/api/products/merge', {from: x.from.key, into: x.into.key, factor: f}); x.done = true; await refresh(true); renderSheet(false); toast('Birleştirildi.'); }); break; }
+    case 'match-skip': { const sh = S.sheet, x = sh.data.list[Number(id)]; x.done = true; renderSheet(false); api('/api/products/skip', {a: x.from.key, b: x.into.key}).catch(() => {}); break; }
+    case 'match-other': { const sh = S.sheet, x = sh.data.list[Number(id)]; S.sheet = {type: 'merge', from: x.from.key, q: '', match: x, matchSheet: sh}; renderSheet(true); break; }
+    case 'l-unlink': { const [ch, ext] = id.split('|'); if (!(await confirmBox('Bu ilan birleştirildiği üründen ayrılsın mı? İlk bağlı olduğu ürüne geri döner.', 'Ayır'))) break; await run(async () => { await api('/api/products/unlink', {channel: ch, ext}); await refresh(true); if (S.sheet) { S.sheet.listings = null; renderSheet(false); } toast('İlan ayrıldı.'); }); break; }
     case 'new-product': openSheet('new-product'); break;
     case 'pmode': S.sheet.mode = id; renderSheet(true); break;
     case 'del-product': { const p = S.products.get(id); if (p && await confirmBox(`<b>${esc(p.name)}</b> silinecek. Geçmiş hareket kayıtları kalır. Emin misin?`, 'Sil', true)) await run(async () => { await api('/api/products/delete', {key:id}); closeSheetForce(); await refresh(true); toast('Ürün silindi.'); }); break; }
@@ -2749,6 +2808,7 @@ document.addEventListener('submit', async e => {
 let qTimer;
 document.addEventListener('input', e => {
   const t = e.target;
+  if (t.dataset && t.dataset.lfactor) { const [ch, ext] = t.dataset.lfactor.split('|'); api('/api/products/factor', {channel: ch, ext, factor: Number(t.value)}).then(() => { toast('Kaydedildi.'); if (S.sheet) { S.sheet.listings = null; renderSheet(false); } }).catch(e => toast(errText(e), true)); }
   if (t.id === 'lbl-w' || t.id === 'lbl-h') { const w = Number(($('#lbl-w')||{}).value), h = Number(($('#lbl-h')||{}).value); if (w >= 30 && w <= 300 && h >= 30 && h <= 300) lblSize({w, h}); }
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
   if (t.id === 'oq') { S.oq = t.value; S.opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 300); }
