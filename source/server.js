@@ -2425,7 +2425,7 @@ async function api(req, env, path, ctx) {
             to: { name: t(sa.fullName) || t([p.customerFirstName, p.customerLastName].filter(Boolean).join(' ')), address: t(sa.fullAddress || [sa.address1, sa.address2].filter(Boolean).join(' ')), district: t(sa.district), city: t(sa.city), phone: t(sa.phone) },
             total: Number(p.totalPrice ?? p.packageTotalPrice) || null,
             lines: (p.lines || []).filter(l => !/cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))).map(l => { const q = Number(l.quantity) || 1, unit = Number(l.price) || 0;
-              return { sku: t(l.merchantSku || l.stockCode || l.barcode), name: t(l.productName), size: t(l.productSize), color: t(l.productColor), qty: q, unit, amount: Number(l.amount) > 0 ? Number(l.amount) : Math.round(unit * q * 100) / 100 }; }) });
+              return { sku: t(l.merchantSku || l.stockCode || l.barcode), barcode: t(l.barcode), name: t(l.productName), size: t(l.productSize), color: t(l.productColor), qty: q, unit, amount: Number(l.amount) > 0 ? Number(l.amount) : Math.round(unit * q * 100) / 100 }; }) });
         }
         if (page + 1 >= (r.totalPages || 0)) break;
       }
@@ -2437,6 +2437,11 @@ async function api(req, env, path, ctx) {
     // Ürün resimleri (100×150 etikette ürünün yanında); stok kodundan, Türkçe İ/I farkı gözetmeden
     try { const fm = await skuFoldMap(env); const imgs = new Map((await env.DB.prepare(`SELECT key, image FROM products WHERE image<>''`).all()).results.map(r => [r.key, r.image]));
       for (const x of out) for (const l of x.lines) { const e = fm.get(skuFold(l.sku)); l.image = (e && imgs.get(e.key)) || imgs.get(skuKey(l.sku)) || ''; } } catch (e) {}
+    // Lilya ürün kodu (ilanın bağlı olduğu ürün) ve paket adedi: kağıtlarda stok kodu yerine ürün kodu yazılır
+    try { const lm = await listingMap(env, 'trendyol', out.flatMap(x => x.lines.map(l => l.barcode)));
+      const keys = [...new Set([...lm.values()].map(v => v.pkey))];
+      const pr = new Map((await selectIn(env, 'SELECT key, code, image FROM products', 'key', keys)).map(r => [r.key, r]));
+      for (const x of out) for (const l of x.lines) { const e = lm.get(l.barcode); const p = e && pr.get(e.pkey); if (p) { l.code = p.code || ''; l.factor = e.factor; if (p.image) l.image = p.image; } } } catch (e) {}
     return json({ ok: true, sellerId: String(env.TRENDYOL_SELLER_ID || ''), packages: out });
   }
   if (path === '/api/labels/mark') {

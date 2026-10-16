@@ -1429,7 +1429,7 @@ function lblSize(v){ if (v) { try { localStorage.setItem('lb_label', JSON.string
 // Etiket sırası ürüne göre: tek ürünlü siparişler aynı ürün arka arkaya (en çok sipariş edilen ürün önce, adet sırasıyla),
 // birden çok ürünlü siparişler en sonda, ürün birleşimine göre gruplu
 function lblSort(list){
-  const key = p => { const ks = [...new Set(p.lines.map(l => l.sku || l.name))].sort(); return {multi: ks.length > 1, k: ks.join(' + '), q: p.lines.reduce((t, l) => t + l.qty, 0)}; };
+  const key = p => { const ks = [...new Set(p.lines.map(l => l.code || l.sku || l.name))].sort(); return {multi: ks.length > 1, k: ks.join(' + '), q: p.lines.reduce((t, l) => t + l.qty, 0)}; };
   const ks = new Map(list.map(p => [p, key(p)])), cnt = new Map();
   for (const v of ks.values()) cnt.set(v.k, (cnt.get(v.k) || 0) + 1);
   return [...list].sort((a, b) => { const x = ks.get(a), y = ks.get(b);
@@ -1446,8 +1446,8 @@ function sheetLabels(){
   }
   const z = lblSize(), presets = LBL_SIZES;
   const st = {Created:'Yeni', Picking:'İşleme alındı', Invoiced:'Faturalandı'};
-  let lastK = null; const gk = p => { const ks = [...new Set(p.lines.map(l => l.sku || l.name))].sort(); return ks.length > 1 ? 'Birden çok ürünlü siparişler' : ks[0]; };
-  const rows = L.data.map(p => { const k = gk(p), hd = k !== lastK ? `<div class="small" style="padding:8px 14px 4px;font-weight:700;color:var(--ink-2);background:var(--surface-2)">${esc(k)} · ${fmtN(L.data.filter(x => gk(x) === k).length)} sipariş</div>` : ''; lastK = k; return hd + `<button class="item" type="button" data-act="lbl-sel" data-id="${esc(p.pkgId)}" style="grid-template-columns:auto 1fr auto"><span class="rsel" aria-pressed="${L.sel.has(p.pkgId)}"></span><div class="main"><div class="ttl"><span class="mono">#${esc(p.orderNo)}</span> ${esc(p.to.name)}</div><div class="meta"><span>${esc(p.provider || 'Kargo firması yok')}</span><span>${esc(p.to.district)}${p.to.city ? ' / ' + esc(p.to.city) : ''}</span>${p.tracking ? '' : '<span class="pill p-bad">Takip no yok</span>'}${p.printedAt ? `<span class="pill p-mute">PDF: ${esc(fmtDate(p.printedAt))}</span>` : ''}</div><div class="meta">${esc(p.lines.map(l => l.qty + '× ' + (l.sku || l.name)).join(', ').slice(0, 120))}</div></div><div class="end"><span class="pill p-warn">${esc(st[p.status] || p.status)}</span></div></button>`; }).join('');
+  let lastK = null; const gk = p => { const ks = [...new Set(p.lines.map(l => l.code || l.sku || l.name))].sort(); return ks.length > 1 ? 'Birden çok ürünlü siparişler' : ks[0]; };
+  const rows = L.data.map(p => { const k = gk(p), hd = k !== lastK ? `<div class="small" style="padding:8px 14px 4px;font-weight:700;color:var(--ink-2);background:var(--surface-2)">${esc(k)} · ${fmtN(L.data.filter(x => gk(x) === k).length)} sipariş</div>` : ''; lastK = k; return hd + `<button class="item" type="button" data-act="lbl-sel" data-id="${esc(p.pkgId)}" style="grid-template-columns:auto 1fr auto"><span class="rsel" aria-pressed="${L.sel.has(p.pkgId)}"></span><div class="main"><div class="ttl"><span class="mono">#${esc(p.orderNo)}</span> ${esc(p.to.name)}</div><div class="meta"><span>${esc(p.provider || 'Kargo firması yok')}</span><span>${esc(p.to.district)}${p.to.city ? ' / ' + esc(p.to.city) : ''}</span>${p.tracking ? '' : '<span class="pill p-bad">Takip no yok</span>'}${p.printedAt ? `<span class="pill p-mute">PDF: ${esc(fmtDate(p.printedAt))}</span>` : ''}</div><div class="meta">${esc(p.lines.map(l => l.qty + '× ' + (l.code || l.sku || l.name)).join(', ').slice(0, 120))}</div></div><div class="end"><span class="pill p-warn">${esc(st[p.status] || p.status)}</span></div></button>`; }).join('');
   const cars = ['tex','ptt','other'].filter(k => (L.all || []).some(p => lblCar(p) === k));
   const carTabs = cars.length ? `<div class="chips" style="margin-bottom:12px">${cars.map(k => `<button class="chip" type="button" data-act="lbl-car" data-id="${k}" aria-pressed="${L.car === k}" style="font-size:15px;padding:9px 16px">${LBL_CAR[k]} · ${fmtN(L.all.filter(p => lblCar(p) === k && !p.printedAt).length)}</button>`).join('')}</div>
     <div class="chips" style="margin:-4px 0 12px">${[['pending','Bekleyen'],['printed','Kayıtlı (PDF yapıldı)']].map(([v, t]) => `<button class="chip" type="button" data-act="lbl-view" data-id="${v}" aria-pressed="${(L.view || 'pending') === v}">${t} · ${fmtN(L.all.filter(p => lblCar(p) === L.car && (v === 'printed' ? !!p.printedAt : !p.printedAt)).length)}</button>`).join('')}</div>` : '';
@@ -1624,7 +1624,8 @@ function drawSummaryPages(list, W, H, mk){
   const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
   const agg = new Map();
-  for (const p of list) for (const l of p.lines) { const k = l.sku || l.name; const a = agg.get(k) || {sku: l.sku, name: l.name, image: l.image || '', qty: 0, orders: new Set()}; a.qty += l.qty; a.orders.add(p.orderNo); agg.set(k, a); }
+  // Ürün koduna göre toplanır; paket ilanı (2'li vb.) paket adedi kadar ürün sayılır
+  for (const p of list) for (const l of p.lines) { const k = l.code || l.sku || l.name; const a = agg.get(k) || {sku: l.code || l.sku, name: l.name, image: l.image || '', qty: 0, orders: new Set()}; a.qty += l.qty * (l.factor || 1); a.orders.add(p.orderNo); agg.set(k, a); }
   const rows = [...agg.values()].sort((a, b) => b.qty - a.qty || String(a.sku).localeCompare(String(b.sku), 'tr'));
   const totalQty = rows.reduce((t, r) => t + r.qty, 0);
   const colQ = mm(14), isz = tall ? mm(11) : 0, nameW = cw - colQ - mm(2) - (tall ? isz + mm(2) : 0), pages = []; let c, y, cv;
