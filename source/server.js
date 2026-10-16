@@ -1987,6 +1987,13 @@ async function api(req, env, path, ctx) {
   const method = req.method;
   const multipart = (req.headers.get('content-type') || '').includes('multipart/form-data');
   const body = method === 'POST' && !multipart ? await req.json().catch(() => ({})) : {};
+  if (path === '/api/img') {
+    // Ürün resmi aynı adresten verilir (etiket PDF'inde resim piksellerini okuyabilmek için); yalnızca ürün resmi sunucuları
+    const u = new URL(req.url).searchParams.get('u') || ''; let h = ''; try { const x = new URL(u); h = x.protocol === 'https:' ? x.hostname : ''; } catch (e) {}
+    if (!/(^|\.)(dsmcdn\.com|trendyol\.com|shopify\.com|shopifycdn\.com|myshopify\.com)$/.test(h)) return bad('Bu resim adresine izin yok.', 400);
+    const r = await fetch(u, { cf: { cacheTtl: 86400, cacheEverything: true } }); if (!r.ok) return bad('Resim alınamadı.', 502);
+    return new Response(r.body, { headers: { 'content-type': r.headers.get('content-type') || 'image/jpeg', 'cache-control': 'private, max-age=86400' } });
+  }
   if (path === '/api/state') {
     const info = await syncInfo(env);
     if (new URL(req.url).searchParams.get('rev') === info.rev) return json({ ...info, same: true });
@@ -2298,6 +2305,9 @@ async function api(req, env, path, ctx) {
     // PDF'e dönüştürülmüş (kayıtlı) paketler
     const pr = new Map((await selectIn(env, 'SELECT pkg_id, printed_at FROM label_printed', 'pkg_id', out.map(x => x.pkgId))).map(r => [String(r.pkg_id), r.printed_at]));
     for (const x of out) x.printedAt = pr.get(x.pkgId) || null;
+    // Ürün resimleri (100×150 etikette ürünün yanında); stok kodundan, Türkçe İ/I farkı gözetmeden
+    try { const fm = await skuFoldMap(env); const imgs = new Map((await env.DB.prepare(`SELECT key, image FROM products WHERE image<>''`).all()).results.map(r => [r.key, r.image]));
+      for (const x of out) for (const l of x.lines) { const e = fm.get(skuFold(l.sku)); l.image = (e && imgs.get(e.key)) || imgs.get(skuKey(l.sku)) || ''; } } catch (e) {}
     return json({ ok: true, sellerId: String(env.TRENDYOL_SELLER_ID || ''), packages: out });
   }
   if (path === '/api/labels/mark') {
