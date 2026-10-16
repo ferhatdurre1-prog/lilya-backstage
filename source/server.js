@@ -150,6 +150,7 @@ async function init0(env) {
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
   // Shopify ilanları pasif sayılmaz (kısa süre taslaklar pasif işaretlenmişti)
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shtok2'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shtok2','1')`), setStmt(env, 'sh_token', ''), setStmt(env, 'sh_token_exp', '0'), setStmt(env, 'run_shp_at', '0')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_follow1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_follow1','1')`), followMergedStmt(env), followMergedStmt(env), REV(env)]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpass0'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shpass0','1')`), env.DB.prepare(`UPDATE listings SET passive=0 WHERE channel='shopify'`), REV(env)]); } catch (e) {} }
   // Lilya kodları yeniden: listede görünen ürünler A→Z sırasıyla LH-0001'den boşluksuz; gizliler (birleştirilmiş / pasif) sonra
@@ -614,13 +615,16 @@ async function shToken(env, c, force) {
 }
 async function shGql(env, c, query, variables) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const token = await shToken(env, c, attempt > 0 && attempt === 1);
+    const token = await shToken(env, c, false);
     const r = await fetch(`https://${c.shop}.myshopify.com/admin/api/${SH_API}/graphql.json`, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Shopify-Access-Token': token }, body: JSON.stringify({ query, variables }) });
     if (r.status === 401 && attempt === 0) continue;
     if (r.status === 429) { await sleep(1500 * (attempt + 1)); continue; }
     const j = await r.json().catch(() => null);
     if (!r.ok || !j) throw new Error(`Shopify ${r.status}`);
-    if (j.errors && j.errors.length) { const m = j.errors.map(e => e.message).join(' · '); if (/throttl/i.test(m) && attempt < 2) { await sleep(2000); continue; } throw new Error('Shopify: ' + m.slice(0, 200)); }
+    if (j.errors && j.errors.length) { const m = j.errors.map(e => e.message).join(' · '); if (/throttl/i.test(m) && attempt < 2) { await sleep(2000); continue; }
+      // Yetki yeni eklendiyse eski anahtar eski izinleri taşır: bir kez yeni anahtar alınıp tekrar denenir
+      if (/access denied|access scope|required access/i.test(m) && attempt === 0 && !c._refreshed) { c._refreshed = true; c.token = ''; c.exp = 0; await shToken(env, c, true); continue; }
+      throw new Error('Shopify: ' + m.slice(0, 200)); }
     return j.data;
   }
   throw new Error('Shopify isteği tamamlanamadı.');
