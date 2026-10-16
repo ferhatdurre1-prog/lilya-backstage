@@ -2287,7 +2287,10 @@ async function api(req, env, path, ctx) {
     // Shopify'dan gelip başka kanalda (Trendyol) karşılığı olmayan stok kodları: büyük ihtimalle farklı yazılmış
     const { results } = await env.DB.prepare(`SELECT key, sku, name, qty FROM products WHERE EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='shopify') AND NOT EXISTS(SELECT 1 FROM json_each(products.channels) WHERE value='trendyol') ORDER BY sku LIMIT 100`).all();
     const n = await env.DB.prepare(`SELECT COUNT(*) n FROM orders WHERE channel='shopify'`).first();
-    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', paused: s.sh_paused === '1', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
+    // Shopify ilanları kaç ürüne bağlı: birden çok ilan aynı ürüne bağlanınca (birleştirme / aynı stok kodu) ürün sayısı ilan sayısından az olur
+    const lc = await env.DB.prepare(`SELECT COUNT(*) listings, COUNT(DISTINCT l.pkey) products, SUM(CASE WHEN EXISTS(SELECT 1 FROM listings t WHERE t.pkey=l.pkey AND t.channel='trendyol') THEN 1 ELSE 0 END) withTy FROM listings l WHERE l.channel='shopify'`).first();
+    const shared = await env.DB.prepare(`SELECT COUNT(*) n FROM (SELECT pkey FROM listings WHERE channel='shopify' GROUP BY pkey HAVING COUNT(*) > 1)`).first();
+    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', counts: { listings: (lc && lc.listings) || 0, products: (lc && lc.products) || 0, withTy: (lc && lc.withTy) || 0, shared: (shared && shared.n) || 0 }, paused: s.sh_paused === '1', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
   }
   /* ---------- Lilya ürünleri: ilanlar, birleştirme, eşleştirme önerileri ---------- */
   if (path === '/api/products/listings') {
