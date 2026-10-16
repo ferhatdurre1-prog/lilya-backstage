@@ -2381,67 +2381,6 @@ async function api(req, env, path, ctx) {
     out.total = out.ty + out.sh;
     return json({ ok: true, ...out });
   }
-  if (path === '/api/stock/pendfix') {
-    // Sayım düzeltmesi: sayım anında kargolanmamış olan ama "bekleyen" kutusunda görünmeyen Trendyol adetleri (birleştirilmiş eski ürün kayıtlı siparişler).
-    // phase 'scan': sayımlardan bu yana değişen Trendyol paketlerinin kargoya veriliş anı okunur; 'preview': liste; 'apply': seçilenler stoktan düşülür.
-    const PEND_FEATURE = '2026-10-01T00:00:00.000Z' /* kullanıcı: bekleyen kutusundan önce sayım yapılmadı */, SINCE = iso(Date.now() - 4 * 86400000), phase = String(body.phase || 'preview');
-    await env.DB.prepare('CREATE TABLE IF NOT EXISTS pkg_ship(pkg_id TEXT PRIMARY KEY, shipped_at TEXT)').run();
-    const counts = (await env.DB.prepare(`SELECT m.pkey, m.t, m.note, m.after FROM moves m JOIN (SELECT pkey, MAX(id) id FROM moves WHERE type='count' AND channel='manuel' AND t >= ?1 GROUP BY pkey) x ON x.id=m.id`).bind(SINCE).all()).results;
-    if (phase === 'scan') {
-      if (!tyConfigured(env)) return bad('Trendyol bağlı değil.');
-      const minT = counts.reduce((a, c) => c.t < a ? c.t : a, iso());
-      const end = Date.now() + TY_TZ + 10 * 60000, start = Math.max(Date.parse(minT) + TY_TZ - 30 * 60000, end - 14 * 86400000 + 120000);
-      const page = Math.max(0, intOr(body.page, 0)), sid = env.TRENDYOL_SELLER_ID, st = []; let hist = 0, n = 0, total = 0, p = page;
-      for (; p < page + 8; p++) {
-        const r = await ty(env, `order/sellers/${sid}/v2/orders`, { startDate: start, endDate: end, orderByField: 'PackageLastModifiedDate', orderByDirection: 'ASC', size: 200, page: p });
-        total = r.totalPages || 0;
-        for (const k of (r.content || [])) { n++; const h = k.packageHistories || k.packageHistory || []; if (h.length) hist++;
-          const sh = h.filter(x => /Shipped|Delivered|AtCollectionPoint|UnDelivered|Returned/.test(String(x.status || ''))).map(x => Number(x.createdDate)).filter(Boolean);
-          st.push(env.DB.prepare('INSERT OR REPLACE INTO pkg_ship(pkg_id, shipped_at) VALUES(?1,?2)').bind(String(k.shipmentPackageId || k.id), sh.length ? iso(Math.min(...sh) - TY_TZ) : '')); }
-        if (p + 1 >= total) { p++; break; }
-      }
-      for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
-      return json({ ok: true, done: p >= total, next: p, total, n, hist, saved: st.length });
-    }
-    const keys = counts.map(c => String(c.pkey)); if (!keys.length) return json({ ok: true, list: [] });
-    const merged = new Map(); for (const r of await selectIn(env, 'SELECT key, merged_into FROM products', 'merged_into', keys)) merged.set(String(r.key), String(r.merged_into));
-    const prods = new Map(); for (const r of await selectIn(env, 'SELECT key, code, name, image, qty FROM products', 'key', keys)) prods.set(String(r.key), r);
-    const fixed = new Set((await env.DB.prepare(`SELECT DISTINCT pkey FROM moves WHERE note LIKE 'Sayım düzeltmesi%' AND t >= ?1`).bind(SINCE).all()).results.map(r => String(r.pkey)));
-    const ownerOf = (pk) => prods.has(pk) ? pk : merged.get(pk) || null;
-    const minT = counts.reduce((a, c) => c.t < a ? c.t : a, iso());
-    const ords = (await env.DB.prepare(`SELECT order_no, date, lines FROM orders WHERE channel='trendyol' AND date >= ?1 AND date <= ?2`).bind(iso(Date.parse(minT) - 30 * 86400000), iso()).all()).results;
-    const pkgIds = new Set(), use = [];
-    for (const o of ords) for (const l of JSON.parse(o.lines || '[]')) { const ow = ownerOf(String(l.pkey || '')); if (!ow || l.status === 'cancelled') continue; const pid = String(l.key || '').split('|')[0]; pkgIds.add(pid); use.push({ ow, old: String(l.pkey) !== ow, pid, q: Number(l.applied ?? l.qty) || 0, date: o.date, no: o.order_no }); }
-    const pst = new Map(); for (const r of await selectIn(env, 'SELECT pkg_id, status FROM audit_pkg', 'pkg_id', [...pkgIds])) pst.set(String(r.pkg_id), r.status);
-    const shp = new Map(); for (const r of await selectIn(env, 'SELECT pkg_id, shipped_at FROM pkg_ship', 'pkg_id', [...pkgIds])) shp.set(String(r.pkg_id), r.shipped_at);
-    const PEND = new Set(['Created', 'Picking', 'Invoiced']);
-    const list = [];
-    for (const c of counts) {
-      const pr = prods.get(String(c.pkey)); if (!pr) continue;
-      const on = c.t >= PEND_FEATURE, noted = /kargolanmamış/.test(c.note || '');
-      let miss = 0, oldPend = 0, unk = 0; const nos = new Set();
-      for (const u of use) { if (u.ow !== String(c.pkey) || !u.date || u.date >= c.t) continue;
-        const s0 = pst.get(u.pid) || ''; if (TY_CANCELLED.has(s0)) continue;
-        // Taramada görünmeyen paket ilk sayımdan beri değişmemiş demek: o anki durumu bugünkü durumuyla aynı (kargolanmış)
-        let pendAt; if (PEND.has(s0)) pendAt = true; else { const sa = shp.get(u.pid); if (sa === undefined) pendAt = false; else if (sa) pendAt = sa > c.t; else { unk += u.q; continue; } }
-        if (!pendAt) continue;
-        if (on && !u.old) { oldPend += u.q; continue; }
-        miss += u.q; nos.add('#' + u.no); }
-      if (!miss && !unk) continue;
-      // Kutucuk o an görünüp kullanıcı işareti kaldırdıysa dokunma
-      const skip = on && oldPend > 0 && !noted;
-      list.push({ key: pr.key, code: pr.code || '', name: pr.name, image: pr.image, qty: pr.qty, t: c.t, counted: c.after, miss, unk, before: !on, skip, done: fixed.has(String(pr.key)), orders: [...nos].slice(0, 8) });
-    }
-    list.sort((a, b) => b.miss - a.miss);
-    if (phase === 'apply') {
-      const want = new Set((body.keys || []).map(String)), st = [];
-      for (const x of list) if (want.has(String(x.key)) && x.miss > 0 && !x.done) st.push(...changeQty(env, x.key, -x.miss, { type: 'count', channel: 'manuel', note: `Sayım düzeltmesi: sayım anında kargolanmamış Trendyol ${x.miss} adet düşüldü` }));
-      for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
-      if (st.length) await env.DB.batch([REV(env)]);
-      return json({ ok: true, applied: st.length / 2 });
-    }
-    return json({ ok: true, list, counts: counts.length });
-  }
   if (path === '/api/products/listings') {
     const key = String(body.key || '');
     const { results } = await env.DB.prepare('SELECT channel, ext, pkey, orig_pkey, factor, sku, barcode, name, image, ext_qty, passive FROM listings WHERE pkey=?1 ORDER BY channel, name').bind(key).all();

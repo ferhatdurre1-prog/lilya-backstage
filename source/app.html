@@ -1055,7 +1055,7 @@ function viewStock(){
   const total = ps.reduce((n,p) => n + Math.max(0,p.qty), 0);
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
-    <div class="row"><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn" data-act="pfix-open">Sayım düzeltmesi</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
+    <div class="row"><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1172,23 +1172,6 @@ function sheetMerge(){
     <div class="list" id="mlist">${ps.map(p => `<button class="item" data-act="merge-pick" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.code)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end"><div class="qty">${fmtN(p.qty)}<small>adet</small></div></div></button>`).join('') || '<p class="muted small">Eşleşen ürün yok.</p>'}</div></div>`};
 }
 // Eşleştirme önerileri: aynı ürün olabilecek çiftler (farklı kanal ya da paket ilanı)
-function sheetPfix(){
-  const sh = S.sheet;
-  if (!sh.data) {
-    if (!sh.loading) { sh.loading = true; (async () => {
-      try {
-        if (sh.step !== 'preview') { let page = 0; for (let i = 0; i < 20; i++) { const r = await api('/api/stock/pendfix', {phase:'scan', page}); sh.prog = `Trendyol paketleri okunuyor… ${fmtN(Math.min(r.next, r.total))}/${fmtN(r.total)} sayfa`; sh.hist = (sh.hist || 0) + r.hist; sh.n = (sh.n || 0) + r.n; if (S.sheet === sh) renderSheet(false); if (r.done) break; page = r.next; } }
-        const d = await api('/api/stock/pendfix', {phase:'preview'}); d.list.forEach(x => { x.sel = x.miss > 0 && !x.done && !x.skip; }); if (S.sheet === sh) { sh.data = d; sh.loading = false; renderSheet(false); }
-      } catch (e) { sh.loading = false; toast(errText(e), true); }
-    })(); }
-    return {title:'Sayım düzeltmesi', body: `<div class="card"><p class="muted small" style="margin:0">${esc(sh.prog || 'Hazırlanıyor…')}</p></div>` + loading()};
-  }
-  const L = sh.data.list, sel = L.filter(x => x.sel && !x.done && x.miss), tot = sel.reduce((a, x) => a + x.miss, 0);
-  const fd = (t) => new Date(t).toLocaleString('tr-TR', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'});
-  const rows = L.map((x, i) => `<label class="item" style="cursor:pointer;align-items:center">${x.done ? '<span class="pill p-good">Düzeltildi</span>' : x.miss ? `<input type="checkbox" data-pfx="${i}" ${x.sel ? 'checked' : ''}>` : ''}${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code)}</span><span>· sayım ${esc(fd(x.t))} · ${fmtN(x.counted)} girildi</span>${x.skip ? '<span>· sayımda işareti kaldırmışsın</span>' : ''}${x.unk ? `<span>· ${fmtN(x.unk)} adet belirsiz</span>` : ''}</div><div class="muted small">${esc(x.orders.join(', '))}</div></div><div class="end" style="text-align:right">${x.miss ? `<b class="num" style="color:var(--bad)">−${fmtN(x.miss)}</b><div class="muted small num">${fmtN(x.qty)} → ${fmtN(x.qty - x.miss)}</div>` : '<span class="muted small">—</span>'}</div></label>`).join('');
-  const info = `<p class="muted small" style="margin:0 0 10px">Son 4 gündeki sayımlarının her biri için, <b>sayım anında kargoya verilmemiş</b> olan ama sayım ekranındaki "bekleyen" kutusunda görünmeyen Trendyol siparişleri bulundu (birleştirdiğin ürünlerin eski kayıtlı siparişleri). Bu ürünler o an raftaydı ve sen onları da saydın; sonra kargoya çıktılar ama stoktan tekrar düşmediler. Seçtiklerin bu adet kadar düşülür. Her ürün bir kez düzeltilir.${sh.n && !sh.hist ? ' <b style="color:var(--bad)">Uyarı: Trendyol paket geçmişi gelmedi; kargoya veriliş anı bilinmeyen adetler "belirsiz" sayıldı ve düşülmedi.</b>' : ''}</p>`;
-  return {title:'Sayım düzeltmesi', sub:`<span>${fmtN(sh.data.counts)} sayım incelendi · ${fmtN(L.filter(x => x.miss && !x.done).length)} üründe fark</span>`, body: info + (L.length ? `<div class="row" style="margin-bottom:8px"><button class="btn sm" data-act="pfix-all" data-id="1">Hepsini seç</button><button class="btn sm" data-act="pfix-all" data-id="0">Hiçbirini seçme</button></div><div class="list">${rows}</div><div class="row" style="margin-top:12px"><button class="btn primary" data-act="pfix-apply" ${sel.length ? '' : 'disabled'}>Seçilen ${fmtN(sel.length)} üründen ${fmtN(tot)} adet düş</button></div>` : '<div class="card"><p class="muted" style="margin:0">Düzeltilecek sayım bulunamadı. Sayımların doğru.</p></div>')};
-}
 function sheetMatch(){
   const sh = S.sheet;
   if (!sh.data) { if (!sh.loading) { sh.loading = true; api('/api/products/suggest', {}).then(d => { if (S.sheet === sh) { sh.data = d; sh.loading = false; renderSheet(false); } }).catch(e => { sh.loading = false; toast(errText(e), true); }); }
@@ -2709,7 +2692,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, pfix:sheetPfix, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -2766,12 +2749,6 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'match-open': openSheet('match', {}); break;
-    case 'pfix-open': openSheet('pfix', {}); break;
-    case 'pfix-all': { const sh = S.sheet; if (!sh || !sh.data) break; const on = b.dataset.id === '1'; sh.data.list.forEach(x => { if (!x.done && x.miss) x.sel = on; }); renderSheet(false); break; }
-    case 'pfix-apply': { const sh = S.sheet; if (!sh || !sh.data) break; const ks = sh.data.list.filter(x => x.sel && !x.done && x.miss).map(x => x.key); if (!ks.length) { toast('Seçili ürün yok.', true); break; }
-      const tot = sh.data.list.filter(x => ks.includes(x.key)).reduce((a, x) => a + x.miss, 0);
-      if (!(await confirmBox(`${fmtN(ks.length)} üründen toplam ${fmtN(tot)} adet stoktan düşülecek. Onaylıyor musun?`, 'Düş'))) break;
-      await run(async () => { const r = await api('/api/stock/pendfix', {phase:'apply', keys: ks}); await refresh(true); toast(`${fmtN(r.applied)} ürün düzeltildi.`); sh.data = null; sh.step = 'preview'; renderSheet(false); }); break; }
     case 'plabel': { const p = S.products.get(id); const sz = ($('#pl-size') || {}).value; if (sz) plSize(sz); if (p) await printProductLabels([p], ($('#pl-copies') || {}).value); break; }
     case 'plabel-all': { const ps = filteredProducts(); if (!ps.length) { toast('Listede ürün yok.', true); break; } if (!(await confirmBox(`Listede görünen ${fmtN(ps.length)} ürünün her biri için 1 koli etiketi (${plSize().replace('x','×')} mm) hazırlansın mı? Ölçüyü ürün sayfasından değiştirebilirsin; arama ve süzgeçle listeyi daraltabilirsin.`, 'Hazırla'))) break; await printProductLabels(ps, 1); break; }
     case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;
@@ -2936,7 +2913,6 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.dataset && t.dataset.cost) saveCost(t);
-  if (t.dataset && t.dataset.pfx !== undefined && S.sheet && S.sheet.type === 'pfix' && S.sheet.data) { const x = S.sheet.data.list[Number(t.dataset.pfx)]; if (x) { x.sel = t.checked; renderSheet(false); } }
   if (t.id === 'imp-file') onImportFile(t.files[0]);
   if (t.id === 'ad-file' && t.files[0]) { importAds(t.files[0]); t.value = ''; }
   if (t.id === 'det-file' && t.files.length) { importDetails([...t.files]); t.value = ''; }
