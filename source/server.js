@@ -148,6 +148,8 @@ async function init0(env) {
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_barem2','1')`), env.DB.prepare(`UPDATE settings SET v='46.49' WHERE k IN ('fee_cargo_t1','fee_cargo_ty') AND v IN ('46.48','46.5')`), env.DB.prepare(`UPDATE settings SET v='84.49' WHERE k='fee_cargo_t2' AND v IN ('84.50','84.5')`), REV(env)]); } catch (e) {}
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_carrier'`).first())) await env.DB.batch([setStmt(env, 'desi_tables', JSON.stringify(DEFAULT_DESI_TABLES)), setStmt(env, 'cargo_desi_mode', '1'), setStmt(env, 'mig_carrier', '1')]);
+  // Shopify ilanları pasif sayılmaz (kısa süre taslaklar pasif işaretlenmişti)
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpass0'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shpass0','1')`), env.DB.prepare(`UPDATE listings SET passive=0 WHERE channel='shopify'`), REV(env)]); } catch (e) {} }
   // Lilya kodları yeniden: listede görünen ürünler A→Z sırasıyla LH-0001'den boşluksuz; gizliler (birleştirilmiş / pasif) sonra
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_code2'`).first())) {
     try {
@@ -2290,7 +2292,10 @@ async function api(req, env, path, ctx) {
     // Shopify ilanları kaç ürüne bağlı: birden çok ilan aynı ürüne bağlanınca (birleştirme / aynı stok kodu) ürün sayısı ilan sayısından az olur
     const lc = await env.DB.prepare(`SELECT COUNT(*) listings, COUNT(DISTINCT l.pkey) products, SUM(CASE WHEN EXISTS(SELECT 1 FROM listings t WHERE t.pkey=l.pkey AND t.channel='trendyol') THEN 1 ELSE 0 END) withTy FROM listings l WHERE l.channel='shopify'`).first();
     const shared = await env.DB.prepare(`SELECT COUNT(*) n FROM (SELECT pkey FROM listings WHERE channel='shopify' GROUP BY pkey HAVING COUNT(*) > 1)`).first();
-    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', counts: { listings: (lc && lc.listings) || 0, products: (lc && lc.products) || 0, withTy: (lc && lc.withTy) || 0, shared: (shared && shared.n) || 0 }, paused: s.sh_paused === '1', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
+    // Aynı ürüne bağlanmış birden çok Shopify ilanı (çoğunlukla aynı stok kodu): kullanıcı "ayrı ürün yap" diyebilsin
+    const grp = (await env.DB.prepare(`SELECT l.pkey, p.code, p.name pname, l.ext, l.name, l.sku, l.image FROM listings l JOIN products p ON p.key=l.pkey WHERE l.channel='shopify' AND l.pkey IN (SELECT pkey FROM listings WHERE channel='shopify' GROUP BY pkey HAVING COUNT(*) > 1) ORDER BY p.code, l.name LIMIT 400`).all()).results;
+    const groups = []; for (const r of grp) { let g = groups[groups.length - 1]; if (!g || g.pkey !== r.pkey) { g = { pkey: r.pkey, code: r.code, name: r.pname, listings: [] }; groups.push(g); } g.listings.push({ ext: r.ext, name: r.name, sku: r.sku, image: r.image }); }
+    return json({ connected: !!(s.sh_cid || env.SHOPIFY_CLIENT_ID), shop: s.sh_shop || env.SHOPIFY_SHOP || '', name: s.sh_name || '', start: s.sh_start || null, ok: s.sh_ok || null, err: s.sh_err || '', hook: !!s.sh_hook_ok, hookAt: s.sh_hook_at || '', hookErr: s.sh_hook_err || '', counts: { listings: (lc && lc.listings) || 0, products: (lc && lc.products) || 0, withTy: (lc && lc.withTy) || 0, shared: (shared && shared.n) || 0 }, groups, paused: s.sh_paused === '1', prod: (() => { try { return JSON.parse(s.sh_prod || 'null'); } catch (e) { return null; } })(), orders: (n && n.n) || 0, unmatched: results });
   }
   /* ---------- Lilya ürünleri: ilanlar, birleştirme, eşleştirme önerileri ---------- */
   if (path === '/api/products/listings') {
@@ -2326,6 +2331,17 @@ async function api(req, env, path, ctx) {
     if (!l.orig_pkey || l.orig_pkey === l.pkey) return bad('Bu ilan zaten kendi ürününe bağlı.');
     await env.DB.batch([env.DB.prepare('UPDATE listings SET pkey=orig_pkey, factor=1 WHERE channel=?1 AND ext=?2').bind(ch, ext), env.DB.prepare('UPDATE products SET merged_into=NULL WHERE key=?1').bind(l.orig_pkey), env.DB.prepare('DELETE FROM match_skip WHERE a=?1').bind(l.orig_pkey), REV(env)]);
     return json({ ok: true });
+  }
+  if (path === '/api/products/split') {
+    // İlanı kendi başına yeni bir ürün yap (aynı stok kodu yüzünden başka ürünle birleşmiş ilan için); stok 0'dan başlar
+    const ch = String(body.channel || ''), ext = String(body.ext || '');
+    const l = await env.DB.prepare('SELECT * FROM listings WHERE channel=?1 AND ext=?2').bind(ch, ext).first(); if (!l) return bad('İlan bulunamadı.', 404);
+    const key = (ch === 'shopify' ? 'shv-' : 'tyb-') + safeSeg(ext);
+    if (key === l.pkey) return bad('Bu ilan zaten kendi ürünü.');
+    await env.DB.batch([...ensureProduct(env, key, { sku: l.sku || '', name: l.name || l.sku || ext, barcode: l.barcode || '', image: l.image || '' }, ch),
+      env.DB.prepare('UPDATE products SET merged_into=NULL WHERE key=?1').bind(key),
+      env.DB.prepare('UPDATE listings SET pkey=?3, orig_pkey=?3, factor=1 WHERE channel=?1 AND ext=?2').bind(ch, ext, key), REV(env)]);
+    return json({ ok: true, key });
   }
   if (path === '/api/products/skip') {
     const a = String(body.a || ''), b = String(body.b || ''); if (!a || !b) return bad('Eksik.');
