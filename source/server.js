@@ -2368,8 +2368,11 @@ async function api(req, env, path, ctx) {
     const key = String(body.key || ''); const out = { ty: 0, sh: 0, orders: [] };
     const pk = (await env.DB.prepare(`SELECT pkg_id, order_no FROM audit_pkg WHERE status IN ('Created','Picking','Invoiced') AND day >= ?1`).bind(trDay(Date.now() - 30 * 86400000)).all()).results;
     const pkgs = new Set(pk.map(r => String(r.pkg_id))), nos = [...new Set(pk.map(r => String(r.order_no)))];
+    // Birleştirilmiş eski ürün anahtarları ve bu ürüne bağlı Trendyol barkodları da sayılır (eski siparişler eski anahtarla kayıtlı olabilir)
+    const keys = new Set([key, ...(await env.DB.prepare('SELECT key FROM products WHERE merged_into=?1').bind(key).all()).results.map(r => r.key)]);
+    const tyF = new Map((await env.DB.prepare(`SELECT ext, factor FROM listings WHERE channel='trendyol' AND pkey=?1`).bind(key).all()).results.map(l => [String(l.ext), Math.max(1, Number(l.factor) || 1)]));
     if (nos.length) for (const o of await selectIn(env, `SELECT order_no, lines FROM orders`, `channel='trendyol' AND order_no`, nos)) {
-      let n = 0; for (const l of JSON.parse(o.lines || '[]')) if (l.pkey === key && l.status !== 'cancelled' && pkgs.has(String(l.key || '').split('|')[0])) n += Number(l.applied ?? l.qty) || 0;
+      let n = 0; for (const l of JSON.parse(o.lines || '[]')) if ((keys.has(l.pkey) || tyF.has(String(l.barcode || l.ext || ''))) && l.status !== 'cancelled' && pkgs.has(String(l.key || '').split('|')[0])) n += Number(l.applied ?? l.qty) || 0;
       if (n) { out.ty += n; out.orders.push('#' + o.order_no); }
     }
     const ls = (await env.DB.prepare(`SELECT ext, factor FROM listings WHERE channel='shopify' AND pkey=?1`).bind(key).all()).results;
