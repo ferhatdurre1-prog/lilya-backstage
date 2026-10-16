@@ -726,7 +726,12 @@ async function pushShopifyStock(env) {
   const c = await shCreds(env); if (!shConfigured(c)) return null;
   const { results } = await env.DB.prepare(SH_PUSH_SQL).all(); if (!results.length) return { sent: 0 };
   let loc = s.sh_loc;
-  if (!loc) { const d = await shGql(env, c, `{locations(first:10){nodes{id isActive fulfillsOnlineOrders}}}`); const ls = d.locations.nodes.filter(x => x.isActive); const l0 = ls.find(x => x.fulfillsOnlineOrders) || ls[0]; if (!l0) throw new Error('Shopify konumu bulunamadı.'); loc = l0.id; await setSetting(env, 'sh_loc', loc); }
+  if (!loc) {
+    try { const d = await shGql(env, c, `{locations(first:10){nodes{id isActive fulfillsOnlineOrders}}}`); const ls = d.locations.nodes.filter(x => x.isActive); const l0 = ls.find(x => x.fulfillsOnlineOrders) || ls[0]; if (l0) loc = l0.id; }
+    catch (e) { // konum izni yoksa: ürünün stok kaydının bulunduğu konum
+      const d = await shGql(env, c, `query($id:ID!){inventoryItem(id:$id){inventoryLevels(first:1){nodes{location{id}}}}}`, { id: results[0].inv_item });
+      const n = d.inventoryItem && d.inventoryItem.inventoryLevels.nodes[0]; if (n && n.location) loc = n.location.id; else throw e; }
+    if (!loc) throw new Error('Shopify konumu bulunamadı.'); await setSetting(env, 'sh_loc', loc); }
   const qs = results.map(r => ({ inventoryItemId: r.inv_item, locationId: loc, quantity: Number(r.q) || 0 }));
   const M1 = `mutation($q:[InventoryQuantityInput!]!){inventorySetQuantities(input:{name:"available",reason:"correction",ignoreCompareQuantity:true,quantities:$q}){userErrors{message field}}}`;
   const M2 = `mutation($q:[InventoryQuantityInput!]!){inventorySetQuantities(input:{name:"available",reason:"correction",quantities:$q}) @idempotent(key:"${crypto.randomUUID()}"){userErrors{message field}}}`;
