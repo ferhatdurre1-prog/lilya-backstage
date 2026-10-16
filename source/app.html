@@ -2701,7 +2701,7 @@ function renderSheet(full){
   if (full && first && sh.type.startsWith('new-')) first.focus();
 }
 async function run(fn){
-  if (S.busy) return;
+  if (S.busy) { toast('Önceki işlem sürüyor, birkaç saniye sonra tekrar dene.', true); return; }
   S.busy = true; document.querySelectorAll('.sheet button[type=submit]').forEach(b => b.disabled = true);
   try { await fn(); } catch(e) { toast(errText(e), true); }
   finally { S.busy = false; document.querySelectorAll('.sheet button[type=submit]').forEach(b => b.disabled = false); }
@@ -2844,7 +2844,7 @@ document.addEventListener('click', async e => {
     case 'cost-run': await runCosts(); break;
     case 'sync-now': await syncNow(); break;
     case 'sh-sync': await run(async () => { const r = await api('/api/shopify/sync', {}); S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify: ${r.r ? r.r.orders : 0} sipariş güncellendi.`); }); break;
-    case 'sh-products': await run(async () => { const r = (await api('/api/shopify/products', {})).r; S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify: ${r.variants} çeşit tarandı · ${r.added} yeni ürün eklendi · ${r.matched} Trendyol'la eşleşti${r.noCode ? ' · ' + r.noCode + ' kodsuz' : ''}`); }); break;
+    case 'sh-products': await run(async () => { toast('Shopify ürünleri taranıyor… (10-20 sn)'); const r = (await api('/api/shopify/products', {})).r; S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify: ${r.variants} çeşit tarandı · ${r.added} yeni ürün eklendi · ${r.matched} Trendyol'la eşleşti${r.noCode ? ' · ' + r.noCode + ' kodsuz' : ''}`); }); break;
     case 'sh-pause': { const p = id === '1'; await run(async () => { const r = await api('/api/shopify/pause', {paused: p}); S.shop = null; await refresh(true); renderSheet(false); toast(p ? 'Shopify duraklatıldı; bilgiler saklı.' : `Shopify yeniden açıldı${r.r && r.r.orders ? ' · ' + r.r.orders + ' sipariş işlendi' : ''}.`); }); break; }
     case 'sh-disconnect': if (!(await confirmBox('Shopify bağlantısı kaldırılsın mı? Kayıtlı siparişler silinmez; yeni siparişler gelmez.', 'Kaldır', true))) break; await run(async () => { await api('/api/shopify/disconnect', {}); S.shop = null; renderSheet(false); toast('Shopify bağlantısı kaldırıldı.'); }); break;
     case 'resync-products': await run(async () => { let created = 0;
