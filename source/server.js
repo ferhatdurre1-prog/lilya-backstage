@@ -2256,6 +2256,26 @@ async function api(req, env, path, ctx) {
     const after = await env.DB.prepare('SELECT qty FROM products WHERE key=?1').bind(key).first();
     return json({ ok: true, qty: after.qty });
   }
+  if (path === '/api/products/lookup') {
+    // Barkod okutma: Lilya kodu, ürün barkodu/stok kodu ya da bir kanal ilanının barkodu/stok kodu → ürün (paket ilanında adet çarpanıyla)
+    const c = String(body.code || '').trim().slice(0, 80); if (!c) return bad('Kod boş.');
+    const cols = 'key, code, name, image, qty, merged_into';
+    let p = await env.DB.prepare(`SELECT ${cols} FROM products WHERE UPPER(code)=UPPER(?1) OR barcode=?1 OR sku=?1 ORDER BY (merged_into IS NULL) DESC LIMIT 1`).bind(c).first(), factor = 1;
+    if (!p) { const l = await env.DB.prepare(`SELECT pkey, factor FROM listings WHERE barcode=?1 OR sku=?1 OR ext=?1 LIMIT 1`).bind(c).first();
+      if (l) { p = await env.DB.prepare(`SELECT ${cols} FROM products WHERE key=?1`).bind(l.pkey).first(); factor = Math.max(1, Number(l.factor) || 1); } }
+    for (let i = 0; p && p.merged_into && i < 5; i++) p = await env.DB.prepare(`SELECT ${cols} FROM products WHERE key=?1`).bind(p.merged_into).first();
+    if (!p) return json({ ok: true, found: false });
+    return json({ ok: true, found: true, product: { key: p.key, code: p.code || '', name: p.name, image: p.image, qty: p.qty }, factor });
+  }
+  if (path === '/api/stock/out-bulk') {
+    const items = (Array.isArray(body.items) ? body.items : []).map(x => ({ key: String(x.key || ''), n: intOr(x.n, 0) })).filter(x => x.key && x.n > 0 && x.n <= 100000).slice(0, 500);
+    if (!items.length) return bad('Çıkış yapılacak ürün yok.');
+    const note = String(body.note || 'Barkodla çıkış').slice(0, 300), st = [];
+    for (const x of items) st.push(...changeQty(env, x.key, -x.n, { type: 'out', channel: 'manuel', note }));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true, n: items.length, units: items.reduce((a, x) => a + x.n, 0) });
+  }
   if (path === '/api/orders/manual') {
     const channel = String(body.channel || 'manuel'), orderNo = String(body.orderNo || '').trim();
     if (!orderNo) return bad('Sipariş numarası gerekli.');

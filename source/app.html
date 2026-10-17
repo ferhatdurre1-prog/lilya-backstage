@@ -528,7 +528,7 @@ function confirmBox(text, ok='Onayla', danger=false){
   });
 }
 function openSheet(type, data={}){ S.sheet = {type, ...data}; renderSheet(true); }
-function closeSheet(){ if (S.busy) return; S.sheet = null; $('#sheet-root').innerHTML = ''; document.body.style.overflow = ''; }
+function closeSheet(){ if (S.busy) return; if (S.sheet && S.sheet.type === 'scanout') { if (S.sheet.items && S.sheet.items.length && !S.sheet.saved && !confirm('Okutulan ürünler kaydedilmedi. Kapatılsın mı?')) return; scanStop(); } S.sheet = null; $('#sheet-root').innerHTML = ''; document.body.style.overflow = ''; }
 function setTab(t){ S.tab = t; try{ sessionStorage.setItem('lb-tab', t); localStorage.removeItem('lb-tab'); }catch(e){} render(); window.scrollTo(0,0); }
 
 function viewLogin(){
@@ -1055,7 +1055,7 @@ function viewStock(){
   const total = ps.reduce((n,p) => n + Math.max(0,p.qty), 0);
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
-    <div class="row"><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
+    <div class="row"><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1172,6 +1172,76 @@ function sheetMerge(){
     <div class="list" id="mlist">${ps.map(p => `<button class="item" data-act="merge-pick" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.code)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end"><div class="qty">${fmtN(p.qty)}<small>adet</small></div></div></button>`).join('') || '<p class="muted small">Eşleşen ürün yok.</p>'}</div></div>`};
 }
 // Eşleştirme önerileri: aynı ürün olabilecek çiftler (farklı kanal ya da paket ilanı)
+// ---- Barkodla çıkış: USB okuyucu (klavye gibi yazar + Enter) ya da telefon kamerası; her okutma 1 adet ----
+const SCAN_CACHE = new Map();
+function scanFocus(){ setTimeout(() => { const i = $('#so-in'); if (i && !(S.sheet && S.sheet.cam && matchMedia('(pointer:coarse)').matches)) i.focus(); }, 30); }
+function scanBeep(ok){ try { const A = window.AudioContext || window.webkitAudioContext; const ac = scanBeep.ac || (scanBeep.ac = new A()); const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = ok ? 1250 : 300; o.type = ok ? 'sine' : 'square'; g.gain.value = 0.12; o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + (ok ? 0.09 : 0.35)); } catch(e) {} try { navigator.vibrate && navigator.vibrate(ok ? 40 : [80, 60, 80]); } catch(e) {} }
+async function scanHandle(raw){
+  const sh = S.sheet; if (!sh || sh.type !== 'scanout') return;
+  const code = String(raw || '').trim(); if (!code) return;
+  let r = SCAN_CACHE.get(code.toUpperCase());
+  if (!r) { try { r = await api('/api/products/lookup', {code}); } catch (e) { scanBeep(false); toast(errText(e), true); return; } if (r.found) SCAN_CACHE.set(code.toUpperCase(), r); }
+  if (S.sheet !== sh) return;
+  if (!r.found) { scanBeep(false); sh.last = {bad: true, code}; soList(); toast(`"${code}" hiçbir ürünle eşleşmedi.`, true); return; }
+  const p = r.product, f = r.factor || 1; let it = sh.items.find(x => x.key === p.key);
+  if (it) { it.n += f; sh.items.splice(sh.items.indexOf(it), 1); sh.items.unshift(it); } else { it = {key: p.key, code: p.code, name: p.name, image: p.image, qty: p.qty, n: f}; sh.items.unshift(it); }
+  sh.last = {code, name: p.name, f}; scanBeep(true); soList();
+}
+function soList(){
+  const sh = S.sheet, el = $('#so-list'); if (!el || !sh) return;
+  const units = sh.items.reduce((a, x) => a + x.n, 0);
+  const last = sh.last ? (sh.last.bad ? `<div class="banner bad small" style="margin:0 0 8px"><div>Bulunamadı: <b class="mono">${esc(sh.last.code)}</b></div></div>` : `<div class="small" style="margin:0 0 8px;color:var(--good)">✓ ${esc(sh.last.name)}${sh.last.f > 1 ? ` (paket: ${fmtN(sh.last.f)} adet)` : ''}</div>`) : '';
+  el.innerHTML = last + (sh.items.length ? `<div class="list">${sh.items.map((x, i) => `<div class="item" style="align-items:center">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code)}</span><span>· stokta ${fmtN(x.qty)}</span>${x.n > x.qty ? '<span class="pill p-bad">Stok yetmiyor</span>' : ''}</div></div><div class="end" style="display:flex;align-items:center;gap:6px"><button class="btn sm" type="button" data-act="scan-dec" data-id="${i}" aria-label="Azalt">−</button><b class="num" style="min-width:28px;text-align:center;font-size:18px">${fmtN(x.n)}</b><button class="btn sm" type="button" data-act="scan-inc" data-id="${i}" aria-label="Arttır">+</button><button class="btn sm ghost" type="button" data-act="scan-del" data-id="${i}" aria-label="Sil">✕</button></div></div>`).join('')}</div>` : '<div class="card"><p class="muted small" style="margin:0">Henüz ürün okutulmadı. Koli etiketini ya da ürünün barkodunu okut.</p></div>');
+  const sv = $('#so-save'); if (sv) { sv.disabled = !sh.items.length; sv.textContent = sh.items.length ? `Çıkışı kaydet · ${fmtN(sh.items.length)} ürün, ${fmtN(units)} adet` : 'Çıkışı kaydet'; }
+}
+async function scanStart(){
+  const sh = S.sheet; if (!sh || sh.type !== 'scanout') return;
+  const v = $('#so-video'), box = $('#so-cam'); if (!v || !box) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('Bu tarayıcı kamerayı açamıyor.', true); return; }
+  sh.cam = true; box.style.display = ''; const btn = $('#so-cambtn'); if (btn) btn.textContent = 'Kamerayı kapat';
+  const hit = (txt) => { const now = Date.now(); if (txt === sh.lastCam && now - sh.lastCamAt < 1800) return; sh.lastCam = txt; sh.lastCamAt = now; scanHandle(txt); };
+  try {
+    let fm = null; if ('BarcodeDetector' in window) { try { const ok = await BarcodeDetector.getSupportedFormats(); fm = ['code_128','ean_13','ean_8','upc_a','upc_e','code_39','qr_code','itf'].filter(x => ok.includes(x)); if (!fm.length) fm = null; } catch(e) { fm = null; } }
+    if (fm) {
+      sh.stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}, width: {ideal: 1280}}, audio: false});
+      v.srcObject = sh.stream; await v.play();
+      const det = new BarcodeDetector({formats: fm});
+      const loop = async () => { if (!sh.cam || S.sheet !== sh) return; try { const r = await det.detect(v); if (r && r[0]) hit(r[0].rawValue); } catch(e) {} sh.raf = setTimeout(loop, 160); }; loop();
+    } else {
+      await loadScript('https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js');
+      if (!sh.cam || S.sheet !== sh) return;
+      sh.zx = new ZXing.BrowserMultiFormatReader();
+      await sh.zx.decodeFromConstraints({video: {facingMode: {ideal: 'environment'}}, audio: false}, v, (res) => { if (res && sh.cam) hit(res.getText()); });
+    }
+  } catch (e) { scanStop(); toast(/Permission|NotAllowed/i.test(String(e && (e.name || e.message))) ? 'Kamera izni verilmedi. Tarayıcı ayarlarından bu siteye kamera izni ver.' : 'Kamera açılamadı: ' + errText(e), true); }
+}
+function scanStop(){
+  const sh = S.sheet; if (!sh || sh.type !== 'scanout') return;
+  sh.cam = false; clearTimeout(sh.raf);
+  try { sh.zx && sh.zx.reset(); } catch(e) {} sh.zx = null;
+  try { sh.stream && sh.stream.getTracks().forEach(t => t.stop()); } catch(e) {} sh.stream = null;
+  const v = $('#so-video'); if (v) { try { v.srcObject = null; } catch(e) {} }
+  const box = $('#so-cam'); if (box) box.style.display = 'none'; const btn = $('#so-cambtn'); if (btn) btn.textContent = '📷 Kamerayla okut';
+}
+function sheetScanOut(){
+  const sh = S.sheet, R = ['Elden satış', 'Hasarlı / fire', 'Numune', 'Diğer'];
+  // Tam yeniden çizimde liste geri yazılır, açık kamera yeni görüntü alanında yeniden başlatılır
+  setTimeout(() => { if (S.sheet !== sh) return; soList(); if (sh.cam && !$('#so-video').srcObject && !sh.zx) { sh.cam = false; try { sh.stream && sh.stream.getTracks().forEach(t => t.stop()); } catch(e) {} scanStart(); } }, 0);
+  return {title: 'Barkodla çıkış', sub: '<span class="muted">Her okutma 1 adet · paket ilanı barkodu içindeki adet kadar</span>', body: `
+    <div class="card" style="gap:8px">
+      <label class="f">Barkod okut ya da kodu yaz<input class="input mono" id="so-in" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="LH-0001 ya da ürün barkodu" style="font-size:18px"></label>
+      <p class="muted small" style="margin:0">USB okuyucuda imleç bu kutudayken okut; okuyucu kodu yazıp kendisi onaylar.</p>
+      <button class="btn" type="button" id="so-cambtn" data-act="scan-cam">📷 Kamerayla okut</button>
+      <div id="so-cam" style="display:none;position:relative;border-radius:14px;overflow:hidden;background:#000"><video id="so-video" playsinline muted style="width:100%;max-height:46vh;object-fit:cover;display:block"></video><div style="position:absolute;left:12%;right:12%;top:50%;height:2px;background:#ff3b30;box-shadow:0 0 8px #ff3b30"></div></div>
+    </div>
+    <div id="so-list"></div>
+    <div class="card" style="gap:8px;margin-top:12px">
+      <div class="small" style="font-weight:600">Çıkış sebebi</div>
+      <div class="chips">${R.map(r => `<button class="chip" type="button" data-act="scan-reason" data-id="${esc(r)}" aria-pressed="${sh.reason === r}">${esc(r)}</button>`).join('')}</div>
+      <input class="input" id="so-note" maxlength="120" placeholder="Not (isteğe bağlı)">
+    </div>
+    <button class="btn primary" type="button" id="so-save" data-act="scan-save" style="width:100%;margin-top:12px" disabled>Çıkışı kaydet</button>`};
+}
 function sheetMatch(){
   const sh = S.sheet;
   if (!sh.data) { if (!sh.loading) { sh.loading = true; api('/api/products/suggest', {}).then(d => { if (S.sheet === sh) { sh.data = d; sh.loading = false; renderSheet(false); } }).catch(e => { sh.loading = false; toast(errText(e), true); }); }
@@ -2695,12 +2765,12 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, scanout:sheetScanOut, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
-    if (sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
+    if (sh.type === 'scanout' || sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
     if (sh.type === 'labels' && document.activeElement && /^lbl-(w|h)$/.test(document.activeElement.id)) return; // formları bozma
     const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; const hadFocus = document.activeElement && document.activeElement.id === 'bdq'; b.innerHTML = r.body; enhanceTables(b); applyBdFilter(); if (hadFocus) { const i = $('#bdq'); if (i) { i.focus(); const L = i.value.length; try { i.setSelectionRange(L, L); } catch(e){} } } existing.scrollTop = st; return;
   }
@@ -2752,6 +2822,15 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'match-open': openSheet('match', {}); break;
+    case 'scan-open': openSheet('scanout', {items: [], reason: 'Elden satış'}); setTimeout(() => { const i = $('#so-in'); if (i) i.focus(); }, 60); break;
+    case 'scan-cam': S.sheet && S.sheet.cam ? scanStop() : scanStart(); break;
+    case 'scan-reason': if (S.sheet) { S.sheet.reason = id; document.querySelectorAll('[data-act="scan-reason"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.id === id))); scanFocus(); } break;
+    case 'scan-inc': case 'scan-dec': case 'scan-del': { const sh = S.sheet; const it = sh && sh.items[Number(id)]; if (!it) break; if (b.dataset.act === 'scan-del') sh.items.splice(Number(id), 1); else it.n = Math.max(1, it.n + (b.dataset.act === 'scan-inc' ? 1 : -1)); soList(); scanFocus(); break; }
+    case 'scan-save': { const sh = S.sheet; if (!sh || !sh.items.length) { toast('Önce ürün okut.', true); break; }
+      const units = sh.items.reduce((a, x) => a + x.n, 0), neg = sh.items.filter(x => x.n > x.qty);
+      if (!(await confirmBox(`${fmtN(sh.items.length)} üründen toplam ${fmtN(units)} adet stoktan düşülecek (${esc(sh.reason)}).${neg.length ? ` ${fmtN(neg.length)} üründe stok eksiye inecek.` : ''}`, 'Çıkışı kaydet'))) { scanFocus(); break; }
+      const note = 'Barkodla çıkış · ' + sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '');
+      await run(async () => { await api('/api/stock/out-bulk', {items: sh.items.map(x => ({key: x.key, n: x.n})), note}); sh.saved = true; scanStop(); await refresh(true); toast(`Çıkış kaydedildi: ${fmtN(units)} adet.`); closeSheetForce(); }); break; }
     case 'plabel': { const p = S.products.get(id); const sz = ($('#pl-size') || {}).value; if (sz) plSize(sz); if (p) await printProductLabels([p], ($('#pl-copies') || {}).value); break; }
     case 'plabel-all': { const ps = filteredProducts(); if (!ps.length) { toast('Listede ürün yok.', true); break; } if (!(await confirmBox(`Listede görünen ${fmtN(ps.length)} ürünün her biri için 1 koli etiketi (${plSize().replace('x','×')} mm) hazırlansın mı? Ölçüyü ürün sayfasından değiştirebilirsin; arama ve süzgeçle listeyi daraltabilirsin.`, 'Hazırla'))) break; await printProductLabels(ps, 1); break; }
     case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;
@@ -2913,6 +2992,7 @@ document.addEventListener('input', e => {
   if (t.id === 'bdq') { if (S.sheet) S.sheet.q = t.value; applyBdFilter(); }
   if (t.id === 'pq') { profS().q = t.value; profS().opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
+document.addEventListener('keydown', e => { const t = e.target; if (t && t.id === 'so-in' && (e.key === 'Enter' || e.key === 'Tab')) { e.preventDefault(); const v = t.value; t.value = ''; scanHandle(v); } });
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.dataset && t.dataset.cost) saveCost(t);
