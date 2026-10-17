@@ -18,6 +18,9 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS returns_created ON returns(created_at)`,
   `CREATE TABLE IF NOT EXISTS moves(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, pkey TEXT, sku TEXT, name TEXT, delta INTEGER, after INTEGER, type TEXT, channel TEXT, ref TEXT, note TEXT)`,
   `CREATE INDEX IF NOT EXISTS moves_pkey ON moves(pkey)`,
+  `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sup_map(supplier TEXT NOT NULL, k TEXT NOT NULL, pkey TEXT NOT NULL, PRIMARY KEY(supplier, k))`,
   `CREATE TABLE IF NOT EXISTS out_lists(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, reason TEXT, note TEXT, markup REAL, disc REAL, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS guard(x INTEGER NOT NULL)`,
@@ -2287,6 +2290,98 @@ async function api(req, env, path, ctx) {
   if (path === '/api/outlists/list') {
     const { results } = await env.DB.prepare('SELECT * FROM out_lists ORDER BY id DESC LIMIT 200').all();
     return json({ ok: true, lists: results.map(r => ({ ...r, items: JSON.parse(r.items || '[]') })) });
+  }
+  if (path === '/api/purchase/read') {
+    // Alış faturası / listesi (fotoğraf ya da PDF) yapay zekâyla okunur; satırlar ürün kataloğuyla eşleştirilir (önce daha önce onaylanan eşleşmeler)
+    if (!env.ANTHROPIC_API_KEY) return bad('Yapay zekâ anahtarı (ANTHROPIC_API_KEY) Cloudflare\'e eklenmemiş.');
+    const files = (Array.isArray(body.files) ? body.files : []).slice(0, 10).filter(f => f && typeof f.data === 'string' && /^(image\/(jpeg|png|webp)|application\/pdf)$/.test(f.type || ''));
+    if (!files.length) return bad('Fotoğraf ya da PDF seç.');
+    const prods = (await env.DB.prepare(`SELECT key, code, name FROM products WHERE merged_into IS NULL AND code IS NOT NULL AND code<>'' ORDER BY code`).all()).results;
+    const catalog = prods.map(p => `${p.code}\t${p.name}`).join('\n');
+    const content = files.map(f => f.type === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.data } } : { type: 'image', source: { type: 'base64', media_type: f.type, data: f.data } });
+    content.push({ type: 'text', text: `Bu bir tedarikçi alış faturası / irsaliyesi / alış listesi (birden fazla sayfa olabilir). Her ürün satırını oku ve aşağıdaki ürün kataloğumuzla eşleştir.
+
+KURALLAR:
+- qty: alınan toplam PARÇA adedi. Satırda koli/paket ve koli içi adet yazıyorsa çarp (ör. 2 koli × 24 = 48) ve "note" alanına yaz.
+- unit: bir parçanın birim fiyatı, satırda yazdığı gibi (KDV EKLEME). Sadece satır tutarı varsa unit = tutar / qty.
+- amount: satır tutarı (yazıyorsa), yoksa qty × unit.
+- match: katalogdaki en uygun ürünün KODU (ör. LH-0012). Emin değilsen en olası olanı yaz ve conf'u "low" yap; hiç benzeyen yoksa boş bırak.
+- conf: "high" (açıkça aynı ürün), "mid" (büyük ihtimalle), "low" (tahmin).
+- Toplam, KDV, iskonto, kargo gibi satırları ürün olarak yazma.
+- Sayılarda Türkçe biçimi çöz (1.250,50 = 1250.5).
+
+ÇIKTI: SADECE şu JSON, başka metin yok:
+{"supplier":"tedarikçi firma adı","doc_no":"belge/fatura no","date":"YYYY-AA-GG","items":[{"name":"faturadaki ürün adı","code":"tedarikçi ürün kodu varsa","qty":0,"unit":0,"amount":0,"match":"","conf":"","note":""}],"total":0}
+
+ÜRÜN KATALOĞUMUZ (kod<TAB>ad):
+${catalog}` });
+    const model = (await getSetting(env, 'pur_model')) || 'claude-sonnet-5-5';
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model, max_tokens: 12000, messages: [{ role: 'user', content }] }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return bad((data.error && data.error.message) || ('Yapay zekâ hatası ' + r.status), 502);
+    const txt = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+    let out; try { out = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1)); } catch (e) { return bad('Belge okunamadı; daha net bir fotoğrafla tekrar dene.', 422); }
+    const byCode = new Map(prods.map(p => [String(p.code).toUpperCase(), p.key]));
+    const supK = String(out.supplier || '').trim().toLocaleLowerCase('tr-TR');
+    const nk = (t) => String(t || '').toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ').trim().slice(0, 200);
+    const mem = new Map((await env.DB.prepare('SELECT k, pkey FROM sup_map WHERE supplier=?1').bind(supK).all()).results.map(x => [x.k, x.pkey]));
+    const live = new Set(prods.map(p => p.key));
+    const items = (Array.isArray(out.items) ? out.items : []).slice(0, 300).map(x => {
+      const qty = Math.max(0, Math.round(Number(x.qty) || 0)), unit = Math.max(0, Number(x.unit) || 0);
+      let pkey = null, how = '';
+      const m1 = mem.get(nk(x.name)) || (x.code ? mem.get('#' + nk(x.code)) : null); if (m1 && live.has(m1)) { pkey = m1; how = 'mem'; }
+      if (!pkey && x.match) { const k = byCode.get(String(x.match).trim().toUpperCase()); if (k) { pkey = k; how = String(x.conf || 'mid'); } }
+      return { name: String(x.name || '').slice(0, 200), code: String(x.code || '').slice(0, 60), qty, unit: Math.round(unit * 10000) / 10000, amount: Number(x.amount) || Math.round(qty * unit * 100) / 100, note: String(x.note || '').slice(0, 120), pkey, how };
+    }).filter(x => x.name || x.qty);
+    const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name);
+    return json({ ok: true, supplier: String(out.supplier || '').trim().slice(0, 120), doc_no: String(out.doc_no || '').slice(0, 60), date: /^\d{4}-\d{2}-\d{2}$/.test(out.date || '') ? out.date : '', total: Number(out.total) || null, items, suppliers: sups });
+  }
+  if (path === '/api/purchase/save') {
+    // Alış kaydı: stok eklenir, maliyet ağırlıklı ortalamayla güncellenir, tedarikçi satır adı → ürün eşleşmesi hatırlanır
+    const supplier = String(body.supplier || '').trim().slice(0, 120); if (!supplier) return bad('Tedarikçi adını yaz.');
+    const raw = (Array.isArray(body.items) ? body.items : []).map(x => ({ pkey: String(x.pkey || ''), name: String(x.name || '').slice(0, 200), code: String(x.code || '').slice(0, 60), qty: intOr(x.qty, 0), unit: Math.max(0, Number(x.unit) || 0) })).filter(x => x.pkey && x.qty > 0 && x.qty <= 1000000).slice(0, 300);
+    if (!raw.length) return bad('Kaydedilecek eşleşmiş satır yok.');
+    await env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(supplier, iso()).run();
+    const sup = await env.DB.prepare('SELECT id, name FROM suppliers WHERE name=?1').bind(supplier).first();
+    // aynı ürün birden çok satırdaysa sırayla ortalamaya katılır
+    const cur = new Map(); for (const r of await selectIn(env, 'SELECT key, code, name, qty, cost, image FROM products', 'key', [...new Set(raw.map(x => x.pkey))])) cur.set(r.key, { ...r });
+    const items = [];
+    for (const x of raw) { const p = cur.get(x.pkey); if (!p) continue;
+      const q0 = Math.max(0, Number(p.qty) || 0), c0 = p.cost === null || p.cost === undefined ? null : Number(p.cost);
+      const c1 = c0 === null || q0 === 0 ? x.unit : (q0 * c0 + x.qty * x.unit) / (q0 + x.qty);
+      items.push({ ...x, pcode: p.code || '', pname: p.name, image: p.image || '', prevCost: c0, newCost: Math.round(c1 * 100) / 100, prevQty: p.qty });
+      p.qty = (Number(p.qty) || 0) + x.qty; p.cost = Math.round(c1 * 100) / 100; }
+    if (!items.length) return bad('Ürünler bulunamadı.');
+    const units = items.reduce((a, x) => a + x.qty, 0), total = Math.round(items.reduce((a, x) => a + x.qty * x.unit, 0) * 100) / 100;
+    const pur = await env.DB.prepare(`INSERT INTO purchases(t, supplier_id, supplier, doc_no, doc_date, items, units, total, note) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) RETURNING id`).bind(iso(), sup.id, sup.name, String(body.doc_no || '').slice(0, 60), /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : null, JSON.stringify(items), units, total, String(body.note || '').slice(0, 200)).first();
+    const supK = sup.name.toLocaleLowerCase('tr-TR'), nk = (t) => String(t || '').toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ').trim().slice(0, 200);
+    const st = [];
+    for (const x of items) { st.push(...changeQty(env, x.pkey, x.qty, { type: 'in', channel: 'manuel', ref: 'pur:' + pur.id, note: `Alış · ${sup.name}${body.doc_no ? ' · ' + String(body.doc_no).slice(0, 40) : ''} · alış #${pur.id}` }));
+      if (x.name) st.push(env.DB.prepare('INSERT OR REPLACE INTO sup_map(supplier, k, pkey) VALUES(?1,?2,?3)').bind(supK, nk(x.name), x.pkey));
+      if (x.code) st.push(env.DB.prepare('INSERT OR REPLACE INTO sup_map(supplier, k, pkey) VALUES(?1,?2,?3)').bind(supK, '#' + nk(x.code), x.pkey)); }
+    for (const [k, p] of cur) st.push(env.DB.prepare('UPDATE products SET cost=?2, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso()));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true, id: pur.id, units, total });
+  }
+  if (path === '/api/purchase/list') {
+    const { results } = await env.DB.prepare('SELECT * FROM purchases ORDER BY id DESC LIMIT 200').all();
+    return json({ ok: true, list: results.map(r => ({ ...r, items: JSON.parse(r.items || '[]') })) });
+  }
+  if (path === '/api/purchase/revert') {
+    // Alışı geri al: stok düşülür; maliyet, o alıştan sonra değişmediyse eski haline döner
+    const id = intOr(body.id, 0), r = await env.DB.prepare('SELECT * FROM purchases WHERE id=?1').bind(id).first();
+    if (!r) return bad('Alış bulunamadı.', 404);
+    const upd = await env.DB.prepare(`UPDATE purchases SET status='reverted', reverted_at=?2 WHERE id=?1 AND status<>'reverted'`).bind(id, iso()).run();
+    if (!upd.meta || !upd.meta.changes) return bad('Bu alış zaten geri alınmış.');
+    const items = JSON.parse(r.items || '[]'), st = [];
+    const last = new Map(); for (const x of items) last.set(x.pkey, x); const first = new Map(); for (const x of items.slice().reverse()) first.set(x.pkey, x);
+    for (const x of items) st.push(...changeQty(env, x.pkey, -x.qty, { type: 'out', channel: 'manuel', ref: 'pur:' + id, note: 'Alış geri alındı · alış #' + id }));
+    for (const [k, x] of last) st.push(env.DB.prepare('UPDATE products SET cost=?2 WHERE key=?1 AND ABS(COALESCE(cost,-1) - ?3) < 0.006').bind(k, first.get(k).prevCost, x.newCost));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true });
   }
   if (path === '/api/outlists/revert') {
     // Çıkışı geri al: listedeki adetler stoğa geri eklenir (bir kez)
