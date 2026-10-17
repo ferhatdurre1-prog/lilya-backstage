@@ -1078,7 +1078,7 @@ function viewStock(){
   const usedCh = [...new Set(ps.flatMap(p => p.channels))].filter(c => CHANNELS[c]);
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="q" type="search" placeholder="Ürün adı, Lilya kodu, stok kodu veya barkod" value="${esc(S.q)}" aria-label="Ürün ara" autocomplete="off"></div></div>
     <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
-    <label class="sortsel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 8l4-4 4 4"/><path d="M17 20V4M13 16l4 4 4-4"/></svg><select id="psort" aria-label="Sırala">${[['name_asc','İsim: A → Z'],['name_desc','İsim: Z → A'],['qty_desc','Stok: çoktan aza'],['qty_asc','Stok: azdan çoğa'],['value_desc','Stok değeri: yüksekten düşüğe'],['new','En yeni eklenen'],['updated','Son güncellenen']].map(([v,l]) => `<option value="${v}"${S.psort===v?' selected':''}>${l}</option>`).join('')}</select></label>
+    <label class="sortsel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 8l4-4 4 4"/><path d="M17 20V4M13 16l4 4 4-4"/></svg><select id="psort" aria-label="Sırala">${[['code_asc','Ürün kodu: LH-0001 → son'],['code_desc','Ürün kodu: son → LH-0001'],['name_asc','İsim: A → Z'],['name_desc','İsim: Z → A'],['qty_desc','Stok: çoktan aza'],['qty_asc','Stok: azdan çoğa'],['value_desc','Stok değeri: yüksekten düşüğe'],['new','En yeni eklenen'],['updated','Son güncellenen']].map(([v,l]) => `<option value="${v}"${S.psort===v?' selected':''}>${l}</option>`).join('')}</select></label>
     ${usedCh.length > 1 ? `<div class="chips"><button class="chip" data-act="chf" data-id="" aria-pressed="${!S.ch}">Tüm kanallar</button>${usedCh.map(c => `<button class="chip" data-act="chf" data-id="${c}" aria-pressed="${S.ch===c}">${esc(CHANNELS[c].name)}</button>`).join('')}</div>` : ''}</div>`;
   return head + tools + `<div id="plist">${productList()}</div>`;
 }
@@ -1088,6 +1088,9 @@ function filteredProducts(){
   const byName = (a,b) => a.name.localeCompare(b.name, 'tr');
   const val = p => Math.max(0, p.qty) * (p.cost || 0);
   const SORTS = {
+    // ürün kodu: sayısal sıra (LH-2 < LH-10); kodsuz ürünler sonda
+    code_asc: (a,b) => (!a.code) - (!b.code) || String(a.code||'').localeCompare(String(b.code||''), 'tr', {numeric:true}) || byName(a,b),
+    code_desc: (a,b) => (!a.code) - (!b.code) || String(b.code||'').localeCompare(String(a.code||''), 'tr', {numeric:true}) || byName(a,b),
     name_asc: byName, name_desc: (a,b) => -byName(a,b),
     qty_desc: (a,b) => b.qty - a.qty || byName(a,b), qty_asc: (a,b) => a.qty - b.qty || byName(a,b),
     value_desc: (a,b) => val(b) - val(a) || byName(a,b),
