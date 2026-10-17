@@ -1974,7 +1974,8 @@ async function returnDecision(id, accept, viaTy){
 
 /* ============ Stok değeri ============ */
 function viewValue(){
-  const ps = [...S.products.values()].filter(p => !p.passive || p.qty > 0);
+  // Stoklar ekranıyla aynı ürünler: birleştirilip gizlenen eski kayıtlar ve pasif ürünler sayılmaz
+  const ps = productsArr(), pas = passiveArr().filter(p => p.qty > 0);
   const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<div class="row"><button class="btn" data-act="export-value">Excel indir</button><button class="btn primary" data-act="open-costs">Excel'den fiyat / stok yükle</button></div>` : ''}</div>`;
   if (!S.loaded.products) return head + loading();
   if (!ps.length) return head + `<div class="panel empty"><h4>Hesaplanacak ürün yok</h4><p>Önce ürünleri ekle ya da aktar, sonra alış fiyatlarını buradan gir.</p></div>`;
@@ -1984,7 +1985,7 @@ function viewValue(){
   let rows = ps.filter(p => S.vfilter === 'all' || (S.vfilter === 'missing' && (p.cost === null || p.cost === undefined)));
   rows.sort(S.vsort === 'name' ? (a,b) => a.name.localeCompare(b.name,'tr') : S.vsort === 'qty' ? (a,b) => b.qty - a.qty : (a,b) => val(b) - val(a) || a.name.localeCompare(b.name,'tr'));
   const maxV = Math.max(1, ...ps.map(val));
-  return head + `<div class="hero-val"><div><div class="muted small">Depodaki toplam maliyet değeri</div><div class="big">${fmtTL(total)}</div><div class="muted small" style="margin-top:8px">${fmtN(ps.length)} ürün · ${fmtN(units)} adet</div></div>
+  return head + `<div class="hero-val"><div><div class="muted small">Depodaki toplam maliyet değeri</div><div class="big">${fmtTL(total)}</div><div class="muted small" style="margin-top:8px">${fmtN(ps.length)} ürün · ${fmtN(units)} adet</div>${pas.length ? `<div class="muted small">Pasif ${fmtN(pas.length)} üründeki ${fmtN(pas.reduce((s,p) => s + p.qty, 0))} adet dahil değil.</div>` : ''}</div>
     <div>${missing.length ? `<button class="btn" data-act="vfilter" data-id="${S.vfilter==='missing'?'all':'missing'}"><span class="pill p-warn">${fmtN(missing.length)}</span>${S.vfilter==='missing'?'Tüm ürünleri göster':'üründe alış fiyatı eksik'}</button>` : '<span class="pill p-good">Bütün ürünlerin alış fiyatı girildi</span>'}</div></div>
   <div class="tbl-wrap"><table class="t"><thead><tr>
     <th>Ürün</th>
