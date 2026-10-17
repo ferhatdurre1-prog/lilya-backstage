@@ -1055,7 +1055,7 @@ function viewStock(){
   const total = ps.reduce((n,p) => n + Math.max(0,p.qty), 0);
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
-    <div class="row"><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
+    <div class="row"><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1206,7 +1206,8 @@ async function scanHandle(raw){
 }
 function soMarkup(v){ try { if (v !== undefined) { localStorage.setItem('so_markup', String(v)); return Number(v); } const x = Number(localStorage.getItem('so_markup')); if (x >= 1 && x <= 200) return x; } catch(e) {} return 25; }
 const soTotals = (items, disc) => { const sub = Math.round(items.reduce((a, x) => a + (x.cost > 0 ? soPrice(x.cost) * x.n : 0), 0) * 100) / 100, d = Math.round(sub * (Number(disc) || 0)) / 100; return {sub, d, total: Math.round((sub - d) * 100) / 100}; };
-const soPrice = (cost) => Math.round((Number(cost) || 0) * (1 + soMarkup() / 100) * 100) / 100;
+let SO_MK = null; // geçmiş listenin PDF'i yeniden alınırken o listenin kâr oranı
+const soPrice = (cost) => Math.round((Number(cost) || 0) * (1 + (SO_MK !== null ? SO_MK : soMarkup()) / 100) * 100) / 100;
 // Satış listesi PDF'i (A4): resim, kod, ürün, adet, birim fiyat (alış + seçilen kâr), tutar; ara toplam, iskonto, genel toplam
 async function soSalesPdf(items, disc, note){
   const urls = [...new Set(items.map(x => x.image).filter(u => u && /^https:\/\//.test(u) && !LBL_IMGS.has(u)))];
@@ -1314,6 +1315,19 @@ function sheetScanOut(){
       <div class="small" id="so-total"></div>
     </div>
     <button class="btn primary" type="button" id="so-save" data-act="scan-save" style="width:100%;margin-top:12px" disabled>Çıkışı kaydet</button>`};
+}
+function sheetOutLists(){
+  const sh = S.sheet;
+  if (!sh.data) { if (!sh.loading) { sh.loading = true; api('/api/outlists/list', {}).then(d => { if (S.sheet === sh) { sh.data = d.lists; sh.loading = false; renderSheet(false); } }).catch(e => { sh.loading = false; toast(errText(e), true); }); } return {title: 'Çıkış listeleri', body: loading()}; }
+  if (!sh.data.length) return {title: 'Çıkış listeleri', body: '<div class="card"><p class="muted" style="margin:0">Henüz kayıtlı çıkış listesi yok. Barkodla çıkış yaptıkça burada birikir.</p></div>'};
+  const fd = (t) => new Date(t).toLocaleString('tr-TR', {day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
+  const rows = sh.data.map(L => { const rev = L.status === 'reverted', op = sh.open === String(L.id);
+    return `<div class="card" style="gap:8px;${rev ? 'opacity:.6' : ''}">
+      <button class="spread" type="button" data-act="outl-toggle" data-id="${L.id}" style="background:none;border:0;padding:0;color:inherit;text-align:left;cursor:pointer;width:100%"><div><b>Liste #${L.id}</b> <span class="muted small">· ${esc(fd(L.t))}</span><div class="muted small">${esc(L.reason || '')}${L.note ? ' · ' + esc(L.note) : ''} · ${fmtN(L.items.length)} ürün, ${fmtN(L.units)} adet${L.total ? ' · ' + tl2(L.total) : ''}${L.disc ? ' · iskonto %' + L.disc : ''}</div></div>${rev ? `<span class="pill p-mute">Geri alındı</span>` : '<span class="muted">›</span>'}</button>
+      ${op ? `<div class="list" style="box-shadow:none">${L.items.map(x => `<div class="item">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code || '')}</span></div></div><div class="end"><b class="num">${fmtN(x.n)}</b></div></div>`).join('')}</div>` : ''}
+      <div class="row"><button class="btn sm" type="button" data-act="outl-pdf" data-id="${L.id}">PDF</button><button class="btn sm" type="button" data-act="outl-reload" data-id="${L.id}">Listeyi yeniden yükle</button>${rev ? '' : `<button class="btn sm ghost" type="button" data-act="outl-revert" data-id="${L.id}" style="color:var(--bad)">Çıkışı geri al</button>`}</div>
+    </div>`; }).join('');
+  return {title: 'Çıkış listeleri', sub: `<span class="muted">${fmtN(sh.data.length)} liste</span>`, body: `<p class="muted small" style="margin:0 0 10px">Listeye dokununca ürünleri açılır. <b>PDF</b>: satış listesini o günkü fiyat ve iskontoyla yeniden alır. <b>Listeyi yeniden yükle</b>: ürünleri barkodla çıkış ekranına koyar, düzenleyip yeni çıkış yaparsın. <b>Çıkışı geri al</b>: adetleri stoğa geri ekler.</p>` + rows};
 }
 function sheetMatch(){
   const sh = S.sheet;
@@ -2847,7 +2861,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, scanout:sheetScanOut, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, scanout:sheetScanOut, outlists:sheetOutLists, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -2905,6 +2919,13 @@ document.addEventListener('click', async e => {
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'match-open': openSheet('match', {}); break;
     case 'scan-open': scanAudio(); scanIndex(); openSheet('scanout', {items: [], reason: 'Elden satış', pdf: true, disc: 0}); setTimeout(() => { const i = $('#so-in'); if (i) i.focus(); }, 60); break;
+    case 'outl-open': openSheet('outlists', {}); break;
+    case 'outl-toggle': { const sh = S.sheet; if (!sh) break; sh.open = sh.open === id ? null : id; renderSheet(false); break; }
+    case 'outl-pdf': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break; await run(async () => { SO_MK = Number(L.markup) || 0; try { await deliverPdf(await soSalesPdf(L.items, Number(L.disc) || 0, [L.reason, L.note].filter(Boolean).join(' · ') + ' · liste #' + L.id), `satis-listesi-${L.id}.pdf`, 0, 'Satış listesi'); } finally { SO_MK = null; } }); break; }
+    case 'outl-revert': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break;
+      if (!(await confirmBox(`Liste #${L.id}: ${fmtN(L.items.length)} üründen toplam ${fmtN(L.units)} adet stoğa geri eklenecek. Onaylıyor musun?`, 'Geri al'))) break;
+      await run(async () => { await api('/api/outlists/revert', {id: L.id}); await refresh(true); toast(`Liste #${L.id} geri alındı, ${fmtN(L.units)} adet stoğa eklendi.`); S.sheet.data = null; renderSheet(false); }); break; }
+    case 'outl-reload': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break; scanAudio(); scanIndex(); const items = L.items.map(x => { const p = scanOwner(x.key) || {}; return {key: p.id || x.key, code: p.code || x.code, name: p.name || x.name, image: p.image || x.image, qty: p.qty ?? 0, cost: p.cost ?? x.cost, n: x.n}; }); openSheet('scanout', {items, reason: L.reason || 'Elden satış', pdf: true, disc: Number(L.disc) || 0}); toast('Liste yüklendi. Düzenleyip yeniden çıkış yapabilirsin.'); break; }
     case 'scan-cam': S.sheet && S.sheet.cam ? scanStop() : scanStart(); break;
     case 'scan-reason': if (S.sheet) { S.sheet.reason = id; document.querySelectorAll('[data-act="scan-reason"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.id === id))); scanFocus(); } break;
     case 'scan-inc': case 'scan-dec': case 'scan-del': { const sh = S.sheet; const it = sh && sh.items[Number(id)]; if (!it) break; if (b.dataset.act === 'scan-del') sh.items.splice(Number(id), 1); else it.n = Math.max(1, it.n + (b.dataset.act === 'scan-inc' ? 1 : -1)); soList(); scanFocus(); break; }
@@ -2912,7 +2933,7 @@ document.addEventListener('click', async e => {
       const units = sh.items.reduce((a, x) => a + x.n, 0), neg = sh.items.filter(x => x.n > x.qty);
       if (!(await confirmBox(`${fmtN(sh.items.length)} üründen toplam ${fmtN(units)} adet stoktan düşülecek (${esc(sh.reason)}).${neg.length ? ` ${fmtN(neg.length)} üründe stok eksiye inecek.` : ''}`, 'Çıkışı kaydet'))) { scanFocus(); break; }
       const note = 'Barkodla çıkış · ' + sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '');
-      await run(async () => { await api('/api/stock/out-bulk', {items: sh.items.map(x => ({key: x.key, n: x.n})), note}); sh.saved = true; scanStop(); if (sh.pdf) { try { await deliverPdf(await soSalesPdf(sh.items, sh.disc, sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '')), `satis-listesi-${todayTR()}.pdf`, 0, 'Satış listesi'); } catch (e) { toast('PDF hazırlanamadı: ' + errText(e), true); } } await refresh(true); toast(`Çıkış kaydedildi: ${fmtN(units)} adet.`); closeSheetForce(); }); break; }
+      await run(async () => { await api('/api/stock/out-bulk', {items: sh.items.map(x => ({key: x.key, n: x.n, code: x.code, name: x.name, image: x.image, cost: x.cost})), note, reason: sh.reason, extra: (($('#so-note') || {}).value || '').trim(), markup: soMarkup(), disc: sh.disc || 0, total: soTotals(sh.items, sh.disc).total}); sh.saved = true; scanStop(); if (sh.pdf) { try { await deliverPdf(await soSalesPdf(sh.items, sh.disc, sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '')), `satis-listesi-${todayTR()}.pdf`, 0, 'Satış listesi'); } catch (e) { toast('PDF hazırlanamadı: ' + errText(e), true); } } await refresh(true); toast(`Çıkış kaydedildi: ${fmtN(units)} adet.`); closeSheetForce(); }); break; }
     case 'plabel': { const p = S.products.get(id); const sz = ($('#pl-size') || {}).value; if (sz) plSize(sz); if (p) await printProductLabels([p], ($('#pl-copies') || {}).value); break; }
     case 'plabel-all': { const ps = filteredProducts(); if (!ps.length) { toast('Listede ürün yok.', true); break; } if (!(await confirmBox(`Listede görünen ${fmtN(ps.length)} ürünün her biri için 1 koli etiketi (${plSize().replace('x','×')} mm) hazırlansın mı? Ölçüyü ürün sayfasından değiştirebilirsin; arama ve süzgeçle listeyi daraltabilirsin.`, 'Hazırla'))) break; await printProductLabels(ps, 1); break; }
     case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;

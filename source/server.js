@@ -18,6 +18,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS returns_created ON returns(created_at)`,
   `CREATE TABLE IF NOT EXISTS moves(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, pkey TEXT, sku TEXT, name TEXT, delta INTEGER, after INTEGER, type TEXT, channel TEXT, ref TEXT, note TEXT)`,
   `CREATE INDEX IF NOT EXISTS moves_pkey ON moves(pkey)`,
+  `CREATE TABLE IF NOT EXISTS out_lists(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, reason TEXT, note TEXT, markup REAL, disc REAL, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS guard(x INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS audit_pkg(pkg_id TEXT PRIMARY KEY, order_no TEXT, day TEXT, units INTEGER, revenue REAL, paid REAL, status TEXT, seen_at TEXT)`,
@@ -2273,13 +2274,31 @@ async function api(req, env, path, ctx) {
     return json({ ok: true, found: true, product: { key: p.key, code: p.code || '', name: p.name, image: p.image, qty: p.qty, cost: p.cost }, factor });
   }
   if (path === '/api/stock/out-bulk') {
-    const items = (Array.isArray(body.items) ? body.items : []).map(x => ({ key: String(x.key || ''), n: intOr(x.n, 0) })).filter(x => x.key && x.n > 0 && x.n <= 100000).slice(0, 500);
+    // Barkodla çıkış: stok düşülür ve liste kaydedilir (geçmiş çıkışlarda görülür, PDF'i yeniden alınır, geri alınabilir)
+    const items = (Array.isArray(body.items) ? body.items : []).map(x => ({ key: String(x.key || ''), n: intOr(x.n, 0), code: String(x.code || '').slice(0, 40), name: String(x.name || '').slice(0, 200), image: String(x.image || '').slice(0, 500), cost: numOrNull(x.cost) })).filter(x => x.key && x.n > 0 && x.n <= 100000).slice(0, 500);
     if (!items.length) return bad('Çıkış yapılacak ürün yok.');
-    const note = String(body.note || 'Barkodla çıkış').slice(0, 300), st = [];
-    for (const x of items) st.push(...changeQty(env, x.key, -x.n, { type: 'out', channel: 'manuel', note }));
+    const note = String(body.note || 'Barkodla çıkış').slice(0, 300), units = items.reduce((a, x) => a + x.n, 0);
+    const lst = await env.DB.prepare(`INSERT INTO out_lists(t, reason, note, markup, disc, items, units, total) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) RETURNING id`).bind(iso(), String(body.reason || '').slice(0, 60), String(body.extra || '').slice(0, 200), numOrNull(body.markup), numOrNull(body.disc) || 0, JSON.stringify(items), units, numOrNull(body.total)).first();
+    const st = []; for (const x of items) st.push(...changeQty(env, x.key, -x.n, { type: 'out', channel: 'manuel', ref: 'out:' + lst.id, note: note + ' · liste #' + lst.id }));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await env.DB.batch([REV(env)]);
-    return json({ ok: true, n: items.length, units: items.reduce((a, x) => a + x.n, 0) });
+    return json({ ok: true, id: lst.id, n: items.length, units });
+  }
+  if (path === '/api/outlists/list') {
+    const { results } = await env.DB.prepare('SELECT * FROM out_lists ORDER BY id DESC LIMIT 200').all();
+    return json({ ok: true, lists: results.map(r => ({ ...r, items: JSON.parse(r.items || '[]') })) });
+  }
+  if (path === '/api/outlists/revert') {
+    // Çıkışı geri al: listedeki adetler stoğa geri eklenir (bir kez)
+    const id = intOr(body.id, 0), r = await env.DB.prepare('SELECT * FROM out_lists WHERE id=?1').bind(id).first();
+    if (!r) return bad('Liste bulunamadı.', 404);
+    if (r.status === 'reverted') return bad('Bu liste zaten geri alınmış.');
+    const upd = await env.DB.prepare(`UPDATE out_lists SET status='reverted', reverted_at=?2 WHERE id=?1 AND status<>'reverted'`).bind(id, iso()).run();
+    if (!upd.meta || !upd.meta.changes) return bad('Bu liste zaten geri alınmış.');
+    const st = []; for (const x of JSON.parse(r.items || '[]')) { let k = x.key; const p = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(k).first(); if (p && p.merged_into) k = p.merged_into; st.push(...changeQty(env, k, x.n, { type: 'in', channel: 'manuel', ref: 'out:' + id, note: 'Barkodla çıkış geri alındı · liste #' + id })); }
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true });
   }
   if (path === '/api/orders/manual') {
     const channel = String(body.channel || 'manuel'), orderNo = String(body.orderNo || '').trim();
