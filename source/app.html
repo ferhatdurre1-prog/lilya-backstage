@@ -426,7 +426,7 @@ async function refresh(force){
     const nwKey = o => JSON.stringify(((o || {}).trendyol || {}).newOrders || null), nwChanged = nwKey(S.sync) !== nwKey(d.sync);
     S.settings = d.settings || {}; S.sync = d.sync || S.sync; if (d.usage) S.usage = d.usage; S.skew = Date.parse(d.now) - Date.now();
     if (!d.same) {
-      S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
+      S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); applySets(); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
       for (const k in S.loaded) S.loaded[k] = true;
       render();
     } else if (nwChanged && S.tab === 'home') render(); // bekleyen sipariş sayısı veri sürümünden bağımsız değişebilir
@@ -1049,11 +1049,15 @@ async function retry(fn, tries=5){
 
 /* ============ Stoklar ============ */
 // Trendyol'da pasif (arşivlenmiş) ve başka kanalda satılmayan ürünler listelerde gizlenir; "Pasif" süzgecinde görünür
+// Set ürün: adedi = içindeki ürünlerden kaç set çıkar; maliyeti = parça maliyetleri toplamı (hepsi biliniyorsa)
+function applySets(){ for (const p of S.products.values()) if (p.set && p.set.length) { let q = Infinity, c = 0, cok = true;
+  for (const [k, n] of p.set) { const x = S.products.get(k); if (!x) { q = 0; cok = false; continue; } q = Math.min(q, Math.floor(x.qty / n)); if (x.cost == null) cok = false; else c += x.cost * n; }
+  p.qty = Math.max(0, q === Infinity ? 0 : q); p.cost = cok ? Math.round(c * 100) / 100 : null; } }
 function productsArr(){ return [...S.products.values()].filter(p => !p.passive && !p.merged); }
 function passiveArr(){ return [...S.products.values()].filter(p => p.passive && !p.merged); }
 function viewStock(){
   const ps = productsArr();
-  const total = ps.reduce((n,p) => n + Math.max(0,p.qty), 0);
+  const total = ps.filter(p => !p.set).reduce((n,p) => n + Math.max(0,p.qty), 0); // setler fiziksel stok değil, içindekiler sayılır
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
     <div class="row"><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
@@ -1103,14 +1107,14 @@ function sheetProduct(first){
   const live = `<div class="spread"><div><div class="muted small">Depodaki adet</div><div class="qty ${p.qty<0?'neg':''}" style="font-size:34px">${fmtN(p.qty)}<small>adet</small></div></div><div style="text-align:right">${stockPill(p) || '<span class="pill p-good">Stokta</span>'}<div class="muted small" style="margin-top:6px">Stok değeri <b class="num" style="color:var(--ink)">${p.cost!=null?fmtTL(Math.max(0,p.qty)*p.cost):'—'}</b></div></div></div>${tyLine(p)}`;
   const body = `
   <div class="card"><div id="p-live">${live}</div>
-    <div class="seg" role="group" aria-label="Hareket türü">${[['in','Giriş'],['out','Çıkış'],['count','Sayım']].map(([id,l]) => `<button data-act="pmode" data-id="${id}" aria-pressed="${mode===id}">${l}</button>`).join('')}</div>
+${p.set ? `<div id="p-set">${setCard(p)}</div>` : `    <div class="seg" role="group" aria-label="Hareket türü">${[['in','Giriş'],['out','Çıkış'],['count','Sayım']].map(([id,l]) => `<button data-act="pmode" data-id="${id}" aria-pressed="${mode===id}">${l}</button>`).join('')}</div>
     <form id="f-move" class="grid2">
       <label class="f">${mode==='count'?'Sayılan gerçek adet':'Adet'}<input class="input num" id="mv-qty" inputmode="numeric" autocomplete="off" required placeholder="${mode==='count'?'Örn. 240':'Örn. 12'}"></label>
       <label class="f">Not / belge no<input class="input" id="mv-note" placeholder="${mode==='in'?'Örn. Tedarikçi faturası':'İsteğe bağlı'}" autocomplete="off"></label>
       ${mode === 'count' ? `<div style="grid-column:1/-1" id="p-pend">${pendLine(p)}</div>` : ''}
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">${mode==='in'?'Stoğa ekle':mode==='out'?'Stoktan düş':'Sayımı kaydet'}</button><span class="muted small">${mode==='count'?'Fark kadar düzeltme hareketi oluşur.':'Hareket kaydı otomatik tutulur.'}</span></div>
     </form>
-  </div>
+`}  </div>
   <div class="card"><div class="spread"><h3 style="margin:0">Koli etiketi</h3><span class="mono" style="font-weight:700">${esc(p.code || '')}</span></div>
     <div class="row"><label class="small" style="display:inline-flex;gap:6px;align-items:center">Adet <input class="input num" id="pl-copies" inputmode="numeric" value="1" style="width:70px"></label><select class="input" id="pl-size" style="width:auto">${['100x100','100x150'].map(v => `<option value="${v}" ${plSize() === v ? 'selected' : ''}>${v.replace('x','×')} mm</option>`).join('')}</select><button class="btn primary" data-act="plabel" data-id="${esc(p.id)}">Koli etiketi bas</button></div>
     <p class="muted small" style="margin:0">Ürün kodu, barkodu, adı ve resmi. El okuyucuyla okutunca ${esc(p.code || 'ürün kodu')} yazar.</p></div>
@@ -1126,10 +1130,11 @@ function sheetProduct(first){
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Bilgileri kaydet</button></div>
     </form>
   </div>
+  ${p.set ? '' : `<div class="card" style="gap:6px"><div class="spread"><h3 style="margin:0">Set ürün</h3><button class="btn sm" data-act="bundle-edit" data-id="${esc(p.id)}">Bu ürünü set yap</button></div><p class="muted small" style="margin:0">Bu ilan birden fazla ürünün setiyse (ör. 14 parçalık set) içindeki ürünleri ve adetlerini gir: set satılınca stok içindeki ürünlerden düşer, setin stoğu onlardan hesaplanır.</p></div>`}
   <div id="p-listings">${listingsCard(p)}</div>
   <div class="card"><h3>Son hareketler</h3><div id="p-moves">${pm.length ? pm.map(moveRow).join('') : '<p class="muted small" style="margin:0">Son günlerde bu ürünle ilgili hareket yok.</p>'}</div></div>
   <div class="row"><button class="btn danger sm" data-act="del-product" data-id="${esc(p.id)}">Ürünü sil</button></div>`;
-  return {title: esc(p.name), sub:`<span class="mono" style="font-weight:700">${esc(p.code || '')}</span> <span class="mono muted">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-listings': listingsCard(p), '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
+  return {title: esc(p.name), sub:`<span class="mono" style="font-weight:700">${esc(p.code || '')}</span> <span class="mono muted">${esc(p.sku)}</span> ${p.channels.map(chBadge).join(' ')}`, lead: thumb(p,'lg'), body, live:{'#p-live':live, '#p-set': p.set ? setCard(p) : null, '#p-listings': listingsCard(p), '#p-moves': pm.length ? pm.map(moveRow).join('') : null}};
 }
 // Sayımda: satılmış ama henüz kargolanmamış adet (rafta duruyor ama artık bizim değil) — sayılan adetten düşülür
 function pendLine(p){
@@ -1400,6 +1405,28 @@ function sheetPurchases(){
       <div class="row">${st === 'draft' ? `<button class="btn sm primary" type="button" data-act="purl-stock" data-id="${L.id}">Stoğa ekle</button><button class="btn sm" type="button" data-act="purl-edit" data-id="${L.id}">Düzenle</button>` : `<button class="btn sm" type="button" data-act="purl-unstock" data-id="${L.id}">Stoktan geri al</button>`}${L.cari_at ? `<button class="btn sm" type="button" data-act="purl-uncari" data-id="${L.id}">Cariden çıkar</button>` : `<button class="btn sm" type="button" data-act="purl-cari" data-id="${L.id}">Cariye işle</button>`}${st === 'draft' && !L.cari_at ? `<button class="btn sm ghost" type="button" data-act="purl-del" data-id="${L.id}" style="color:var(--bad)">Sil</button>` : ''}</div>
     </div>`; }).join('')};
 }
+function setCard(p){
+  const rows = (p.set || []).map(([k, n]) => { const x = S.products.get(k); if (!x) return `<div class="item"><div class="main"><div class="ttl muted">Silinmiş ürün</div></div><div class="end">× ${fmtN(n)}</div></div>`;
+    return `<div class="item" data-act="product" data-id="${esc(x.id)}" role="button" tabindex="0">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code || x.sku)}</span><span>· stok ${fmtN(x.qty)} → ${fmtN(Math.max(0, Math.floor(x.qty / n)))} set</span></div></div><div class="end"><b class="num" style="font-size:17px">× ${fmtN(n)}</b></div></div>`; }).join('');
+  const units = (p.set || []).reduce((a, x) => a + x[1], 0);
+  return `<div class="banner" style="background:var(--accent-soft);margin:6px 0"><div><b>Set ürün (${fmtN(units)} parça).</b> Stoğu içindeki ürünlerden hesaplanır: şu an en fazla <b>${fmtN(p.qty)} set</b>. Set satılınca içindeki ürünlerden düşer; giriş, çıkış ve sayımı içindeki ürünlerin sayfasından yap.</div></div>
+    <div class="list" style="box-shadow:none">${rows}</div>
+    <div class="row" style="margin-top:8px"><button class="btn sm" data-act="bundle-edit" data-id="${esc(p.id)}">Set içeriğini düzenle</button></div>`;
+}
+function sheetBundle(){
+  const sh = S.sheet, p = S.products.get(sh.id); if (!p) return {title: 'Ürün bulunamadı', body: ''};
+  const rows = sh.items.map((it, i) => { const x = S.products.get(it.key); return `<div class="item" style="cursor:default">${thumb(x || {name: '?'})}<div class="main"><div class="ttl">${esc(x ? x.name : 'Silinmiş ürün')}</div><div class="meta"><span class="mono">${esc(x ? x.code || x.sku : '')}</span>${x ? `<span>· stok ${fmtN(x.qty)}</span>` : ''}</div></div><div class="end" style="display:flex;align-items:center;gap:6px"><span class="small muted">adet</span><input class="input num" data-bn="${i}" inputmode="numeric" value="${it.n}" style="width:64px"><button class="btn sm ghost" type="button" data-act="bundle-rm" data-id="${i}" aria-label="Çıkar">✕</button></div></div>`; }).join('');
+  const units = sh.items.reduce((a, x) => a + (Number(x.n) || 0), 0);
+  return {title: 'Set içeriği', sub: `<span class="muted">${esc(p.name)}</span>`, body: `
+    <div class="card" style="gap:8px"><p class="muted small" style="margin:0">Bu set satıldığında hangi üründen kaç adet düşsün? Ürünü ara, ekle, adedini yaz.</p>
+      <input class="input" id="bq" placeholder="Ürün adı ya da kodu ile ara (ör. LH-0012)" autocomplete="off"><div class="list" id="bres" style="box-shadow:none"></div></div>
+    <div class="card" style="gap:6px"><h3 style="margin:0">Setin içindekiler · <span id="b-units">${fmtN(units)}</span> parça</h3>${rows ? `<div class="list" style="box-shadow:none">${rows}</div>` : '<p class="muted small" style="margin:0">Henüz ürün eklenmedi.</p>'}</div>
+    <div class="row" style="margin-top:12px"><button class="btn primary" type="button" data-act="bundle-save">Seti kaydet</button>${p.set ? '<button class="btn ghost" type="button" data-act="bundle-clear" style="color:var(--bad)">Set olmaktan çıkar</button>' : ''}<button class="btn ghost" type="button" data-act="product" data-id="${esc(p.id)}">Vazgeç</button></div>`};
+}
+function bundleSearch(){ const sh = S.sheet, box = $('#bres'), q = ($('#bq') || {}).value || ''; if (!box || !sh) return;
+  if (!q.trim()) { box.innerHTML = ''; return; }
+  const L = purCands(q).filter(x => x.id !== sh.id && !x.set && !sh.items.some(i => i.key === x.id));
+  box.innerHTML = L.length ? L.map(x => `<button class="item" type="button" data-act="bundle-add" data-id="${esc(x.id)}">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code || x.sku)}</span><span>· stok ${fmtN(x.qty)}</span></div></div><div class="end"><span class="btn sm">Ekle</span></div></button>`).join('') : '<p class="muted small" style="margin:6px 0">Eşleşen ürün yok.</p>'; }
 function sheetMatch(){
   const sh = S.sheet;
   if (!sh.data) { if (!sh.loading) { sh.loading = true; api('/api/products/suggest', {}).then(d => { if (S.sheet === sh) { sh.data = d; sh.loading = false; renderSheet(false); } }).catch(e => { sh.loading = false; toast(errText(e), true); }); }
@@ -2060,7 +2087,7 @@ async function returnDecision(id, accept, viaTy){
 /* ============ Stok değeri ============ */
 function viewValue(){
   // Stoklar ekranıyla aynı ürünler: birleştirilip gizlenen eski kayıtlar ve pasif ürünler sayılmaz
-  const ps = productsArr(), pas = passiveArr().filter(p => p.qty > 0);
+  const ps = productsArr().filter(p => !p.set), pas = passiveArr().filter(p => p.qty > 0 && !p.set);
   const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<div class="row"><button class="btn" data-act="export-value">Excel indir</button><button class="btn primary" data-act="open-costs">Excel'den fiyat / stok yükle</button></div>` : ''}</div>`;
   if (!S.loaded.products) return head + loading();
   if (!ps.length) return head + `<div class="panel empty"><h4>Hesaplanacak ürün yok</h4><p>Önce ürünleri ekle ya da aktar, sonra alış fiyatlarını buradan gir.</p></div>`;
@@ -2093,7 +2120,7 @@ async function saveCost(input){
   try { await api('/api/products/info', {key, cost}); p.cost = cost; await refresh(true); toast(`${p.name}: alış fiyatı kaydedildi.`); } catch(e) { toast(errText(e), true); }
 }
 async function exportValue(){
-  const ps = productsArr().sort((a,b) => a.name.localeCompare(b.name,'tr'));
+  const ps = productsArr().filter(p => !p.set).sort((a,b) => a.name.localeCompare(b.name,'tr'));
   const rows = ps.map(p => ({'Ürün adı':p.name, 'Stok kodu':p.sku, 'Barkod':p.barcode, 'Kanallar':p.channels.map(c => (CHANNELS[c]||{name:c}).name).join(', '), 'Adet':p.qty, 'Birim alış fiyatı (TL)':p.cost, 'Stok değeri (TL)': p.cost!=null ? Math.max(0,p.qty)*p.cost : null}));
   rows.push({'Ürün adı':'TOPLAM', 'Adet':ps.reduce((s,p)=>s+Math.max(0,p.qty),0), 'Stok değeri (TL)':ps.reduce((s,p)=>s+Math.max(0,p.qty)*(p.cost||0),0)});
   const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(rows); ws['!cols'] = [{wch:40},{wch:18},{wch:16},{wch:20},{wch:8},{wch:20},{wch:18}];
@@ -2932,7 +2959,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -2957,6 +2984,7 @@ async function run(fn){
 }
 
 /* ============ Olaylar ============ */
+document.addEventListener('input', e => { const t = e.target; if (!t || !S.sheet || S.sheet.type !== 'bundle') return; if (t.id === 'bq') bundleSearch(); if (t.dataset && t.dataset.bn !== undefined) { const it = S.sheet.items[Number(t.dataset.bn)]; if (it) { it.n = Math.max(0, Math.min(1000, parseInt(t.value, 10) || 0)); const u = $('#b-units'); if (u) u.textContent = fmtN(S.sheet.items.reduce((a, x) => a + (Number(x.n) || 0), 0)); } } });
 document.addEventListener('input', e => { const t = e.target; if (!t || !t.dataset || !S.sheet || S.sheet.type !== 'purchase' || !S.sheet.data) return; const D = S.sheet.data;
   if (t.dataset.pq !== undefined) { const x = D.items[Number(t.dataset.pq)]; if (x) { x.qty = Math.max(0, Math.round(Number(t.value) || 0)); purTotals(); } }
   if (t.dataset.pu !== undefined) { const x = D.items[Number(t.dataset.pu)]; if (x) { x.unit = Math.max(0, Number(t.value) || 0); purTotals(); } }
@@ -2993,6 +3021,14 @@ document.addEventListener('click', async e => {
     case 'vsort': S.vsort = id; render(); break;
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
+    case 'bundle-edit': { const p = S.products.get(id); if (!p) break; openSheet('bundle', {id, items: (p.set || []).map(([k, n]) => ({key: k, n}))}); setTimeout(() => { const i = $('#bq'); if (i) i.focus(); }, 60); break; }
+    case 'bundle-add': { const sh = S.sheet; if (!sh || sh.type !== 'bundle') break; sh.items.push({key: id, n: 1}); renderSheet(false); setTimeout(() => { const i = $('#bq'); if (i) { i.value = ''; i.focus(); } const n = $(`[data-bn="${sh.items.length - 1}"]`); if (n) n.select(); }, 30); break; }
+    case 'bundle-rm': { const sh = S.sheet; if (!sh) break; sh.items.splice(Number(id), 1); renderSheet(false); break; }
+    case 'bundle-save': case 'bundle-clear': { const sh = S.sheet; if (!sh) break; const clear = b.dataset.act === 'bundle-clear'; const items = clear ? [] : sh.items.filter(x => Number(x.n) > 0);
+      if (!clear && !items.length) { toast('Sete en az bir ürün ekle.', true); break; }
+      const p = S.products.get(sh.id), txt = clear ? `"${esc(p.name)}" artık set olmayacak; satılınca kendi stoğundan düşecek.` : `"${esc(p.name)}" seti kaydedilsin mi? Satılınca şunlar düşecek: ${items.map(x => { const c = S.products.get(x.key); return `${esc(c ? c.code || c.name : '?')} × ${x.n}`; }).join(', ')}.`;
+      if (!(await confirmBox(txt, clear ? 'Set olmaktan çıkar' : 'Seti kaydet'))) break;
+      await run(async () => { await api('/api/products/bundle', {key: sh.id, items}); await refresh(true); toast(clear ? 'Set kaldırıldı.' : 'Set kaydedildi. Trendyol stoğu birkaç saniye içinde güncellenir.'); openSheet('product', {id: sh.id}); }); break; }
     case 'match-open': openSheet('match', {}); break;
     case 'scan-open': scanAudio(); scanIndex(); openSheet('scanout', {items: [], reason: 'Elden satış', pdf: true, disc: 0}); setTimeout(() => { const i = $('#so-in'); if (i) i.focus(); }, 60); break;
     case 'pur-open': openSheet('purchase', {step: 'upload'}); break;

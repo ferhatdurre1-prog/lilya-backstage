@@ -18,6 +18,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS returns_created ON returns(created_at)`,
   `CREATE TABLE IF NOT EXISTS moves(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, pkey TEXT, sku TEXT, name TEXT, delta INTEGER, after INTEGER, type TEXT, channel TEXT, ref TEXT, note TEXT)`,
   `CREATE INDEX IF NOT EXISTS moves_pkey ON moves(pkey)`,
+  `CREATE TABLE IF NOT EXISTS bundles(pkey TEXT NOT NULL, comp TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(pkey, comp))`,
   `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
   `CREATE TABLE IF NOT EXISTS sup_map(supplier TEXT NOT NULL, k TEXT NOT NULL, pkey TEXT NOT NULL, PRIMARY KEY(supplier, k))`,
@@ -48,15 +49,19 @@ const orderId = (channel, no) => 'o-' + channel + '-' + safeSeg(String(no).trim(
 const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 let COLD_MS = null;
+// Set ürünler: set ilanı satılınca stok setin içindeki ürünlerden düşer (pkey → [[parça, adet]]); her isolate'te dakikada bir tazelenir
+let BUNDLES = new Map(), BUNDLES_AT = 0;
+async function loadBundles(env) { try { const { results } = await env.DB.prepare('SELECT pkey, comp, n FROM bundles').all(); const m = new Map(); for (const r of results) { if (!m.has(r.pkey)) m.set(r.pkey, []); m.get(r.pkey).push([r.comp, Number(r.n) || 1]); } BUNDLES = m; BUNDLES_AT = Date.now(); } catch (e) {} }
+const SET_QTY_SQL = (alias) => `COALESCE((SELECT MIN(cp.qty / b.n) FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=${alias}.key), ${alias}.qty)`;
 async function init(env) {
-  if (READY) return;
+  if (READY) { if (Date.now() - BUNDLES_AT > 60000) await loadBundles(env); return; }
   const ti0 = Date.now();
   try {
     // Kurulum/geçiş kontrolleri bu sürüm için bir kez yapıldıysa tek sorguyla geçilir
     let done = false;
     try { const r = await env.DB.prepare(`SELECT v FROM settings WHERE k='schema_build'`).first(); done = !!(r && r.v === APP_BUILD); } catch (e) {}
     if (!done) { await init0(env); await env.DB.prepare(`INSERT INTO settings(k,v) VALUES('schema_build',?1) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(APP_BUILD).run(); }
-    READY = true;
+    READY = true; await loadBundles(env);
   } finally { COLD_MS = Date.now() - ti0; }
 }
 async function init0(env) {
@@ -206,6 +211,8 @@ function ensureProduct(env, key, c, channel) {
   return stmts;
 }
 function changeQty(env, key, d, m = {}) {
+  const set = BUNDLES.get(key);
+  if (set && set.length) return set.flatMap(([comp, n]) => changeQty(env, comp, d * n, { ...m, note: (m.note ? m.note + ' · ' : '') + 'set içeriği' }));
   const now = iso();
   return [
     env.DB.prepare('UPDATE products SET qty=qty+?1, updated_at=?2 WHERE key=?3').bind(d, now, key),
@@ -276,6 +283,7 @@ async function listingMap(env, channel, exts) {
   return new Map((await selectIn(env, `SELECT l.ext, l.pkey, l.factor, p.sku FROM listings l LEFT JOIN products p ON p.key=l.pkey`, `l.channel='${channel === 'shopify' ? 'shopify' : 'trendyol'}' AND l.ext`, ids)).map(r => [String(r.ext), { pkey: r.pkey, factor: Math.max(1, Number(r.factor) || 1), sku: r.sku || '' }]));
 }
 async function ingestOrdersRaw(env, channel, input, opts = {}) {
+  await loadBundles(env); // set içerikleri her zaman güncel olsun (başka isolate'te yeni kaydedilmiş olabilir)
   const dry = !!opts.dry, source = opts.source || 'import';
   // İlanı bilinen satırlar doğrudan bağlı ürüne düşer (stok kodu değişse de); paket ilanında adet çarpanla
   if (channel === 'trendyol' || channel === 'shopify') {
@@ -735,7 +743,7 @@ async function syncShopifyProducts(env, force) {
 }
 /* Ortak stok → Shopify: her Shopify ilanına bağlı ürünün stoğu (paket ilanında stok / paket adedi) mağazanın ana konumuna yazılır.
    Gerekli yetkiler: read_inventory, write_inventory, read_locations. Shopify'ın kendi satışı zaten kendi stoğunu düşürür; burada eşitlenir. */
-const SH_PUSH_SQL = `SELECT l.ext, l.inv_item, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(p.qty / MAX(COALESCE(l2.factor,1),1), 0), 1000000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='shopify') t ON t.e=l.ext WHERE l.channel='shopify' AND l.inv_item IS NOT NULL AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 250`;
+const SH_PUSH_SQL = `SELECT l.ext, l.inv_item, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), 0), 1000000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='shopify') t ON t.e=l.ext WHERE l.channel='shopify' AND l.inv_item IS NOT NULL AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 250`;
 async function pushShopifyStock(env) {
   const s = await getSettings(env, ['sh_push', 'sh_paused', 'sh_loc']);
   if (s.sh_push === '0' || s.sh_paused === '1') return null;
@@ -1224,7 +1232,7 @@ async function syncTrendyolProducts(env, maxPages = 4) {
 }
 /* Ortak stok → Trendyol. Yalnızca değişen ürünler gönderilir (aynı istek 15 dk tekrarlanamaz). */
 // Her Trendyol ilanına bağlı ürünün stoğu gider; paket ilanında stok / paket adedi (ör. 7 adet stok, 2'li ilan → 3)
-const TY_PUSH_SQL = `SELECT l.ext barcode, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(p.qty / MAX(COALESCE(l2.factor,1),1), 0), 20000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='trendyol') t ON t.e=l.ext WHERE l.channel='trendyol' AND COALESCE(l.passive,0)=0 AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 1000`;
+const TY_PUSH_SQL = `SELECT l.ext barcode, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), 0), 20000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='trendyol') t ON t.e=l.ext WHERE l.channel='trendyol' AND COALESCE(l.passive,0)=0 AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 1000`;
 async function pushTrendyolStock(env) {
   if ((await getSetting(env, 'ty_push')) === '0') return null;
   const { results } = await env.DB.prepare(TY_PUSH_SQL).all();
@@ -1738,7 +1746,7 @@ async function computeProfit(env, from, to) {
   const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
   const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
-    env.DB.prepare('SELECT key, sku, name, image, cost, barcode, same_day FROM products'),
+    env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day FROM products`),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note, kept FROM returns WHERE order_id<>'' AND status<>'rejected'`),
     env.DB.prepare(`SELECT * FROM order_fin WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare(`SELECT order_no, json_extract(data,'$.name') n FROM order_cust WHERE order_no IN (${SUBQ})`).bind(from, to),
@@ -1939,7 +1947,7 @@ async function computePricing(env) {
 /* ---------- API ---------- */
 function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { kept: !!r.kept, outDesi: Number(r.o_desi) > 0 ? Number(r.o_desi) : null, autoAt: r.auto_at || null, retDesi: r.desi || r.f_ret_desi || null, retCargo: r.f_ret_cargo ?? null, claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
-function mapProduct(r) { return { code: r.code || '', merged: r.merged_into || null, passive: r.all_passive !== undefined && r.all_passive !== null ? !!r.all_passive : r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
+function mapProduct(r) { return { set: BUNDLES.get(r.key) || null, code: r.code || '', merged: r.merged_into || null, passive: r.all_passive !== undefined && r.all_passive !== null ? !!r.all_passive : r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
   const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg', 'hook_id', 'hook_at', 'hook_err']);
@@ -2255,6 +2263,7 @@ async function api(req, env, path, ctx) {
   if (path === '/api/stock') {
     const key = String(body.key || ''), mode = body.mode, n = intOr(body.n, NaN), note = String(body.note || '').slice(0, 300);
     const p = await env.DB.prepare('SELECT qty FROM products WHERE key=?1').bind(key).first(); if (!p) return bad('Ürün bulunamadı.', 404);
+    if (BUNDLES.has(key)) return bad('Bu bir set ürün: stoğu içindeki ürünlerden hesaplanır. Giriş, çıkış ve sayımı içindeki ürünlerin sayfasından yap.');
     if (!Number.isFinite(n) || (n < 0 && !(mode === 'count' && body.allowNeg)) || (mode !== 'count' && n === 0)) return bad('Adet geçersiz.');
     const st = mode === 'count' ? setQty(env, key, n, { type: 'count', channel: 'manuel', note }) : changeQty(env, key, mode === 'in' ? n : -n, { type: mode === 'in' ? 'in' : 'out', channel: 'manuel', note });
     await env.DB.batch([...st, REV(env)]);
@@ -2547,9 +2556,12 @@ ${catalog}` });
     const pkgs = new Set(pk.map(r => String(r.pkg_id))), nos = [...new Set(pk.map(r => String(r.order_no)))];
     // Birleştirilmiş eski ürün anahtarları ve bu ürüne bağlı Trendyol barkodları da sayılır (eski siparişler eski anahtarla kayıtlı olabilir)
     const keys = new Set([key, ...(await env.DB.prepare('SELECT key FROM products WHERE merged_into=?1').bind(key).all()).results.map(r => r.key)]);
+    const inSet = new Map((await env.DB.prepare('SELECT pkey, n FROM bundles WHERE comp=?1').bind(key).all()).results.map(r => [r.pkey, Number(r.n) || 1])); // bu ürünü içeren setlerin satışları
     const tyF = new Map((await env.DB.prepare(`SELECT ext, factor FROM listings WHERE channel='trendyol' AND pkey=?1`).bind(key).all()).results.map(l => [String(l.ext), Math.max(1, Number(l.factor) || 1)]));
     if (nos.length) for (const o of await selectIn(env, `SELECT order_no, lines FROM orders`, `channel='trendyol' AND order_no`, nos)) {
-      let n = 0; for (const l of JSON.parse(o.lines || '[]')) if ((keys.has(l.pkey) || tyF.has(String(l.barcode || l.ext || ''))) && l.status !== 'cancelled' && pkgs.has(String(l.key || '').split('|')[0])) n += Number(l.applied ?? l.qty) || 0;
+      let n = 0; for (const l of JSON.parse(o.lines || '[]')) { if (l.status === 'cancelled' || !pkgs.has(String(l.key || '').split('|')[0])) continue;
+        if (keys.has(l.pkey) || tyF.has(String(l.barcode || l.ext || ''))) n += Number(l.applied ?? l.qty) || 0;
+        else if (inSet.has(l.pkey)) n += (Number(l.applied ?? l.qty) || 0) * inSet.get(l.pkey); }
       if (n) { out.ty += n; out.orders.push('#' + o.order_no); }
     }
     const ls = (await env.DB.prepare(`SELECT ext, factor FROM listings WHERE channel='shopify' AND pkey=?1`).bind(key).all()).results;
@@ -2557,6 +2569,21 @@ ${catalog}` });
       for (const r of (await env.DB.prepare('SELECT order_no, data FROM sh_unf').all()).results) { let n = 0; const m = JSON.parse(r.data || '{}'); for (const [v, q] of Object.entries(m)) if (f.has(v)) n += q * f.get(v); if (n) { out.sh += n; out.orders.push(r.order_no); } } }
     out.total = out.ty + out.sh;
     return json({ ok: true, ...out });
+  }
+  if (path === '/api/products/bundle') {
+    // Set içeriğini kaydet: items boşsa ürün artık set değildir
+    const key = String(body.key || ''); const p = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(key).first();
+    if (!p || p.merged_into) return bad('Ürün bulunamadı.', 404);
+    const items = new Map(); for (const x of (Array.isArray(body.items) ? body.items : []).slice(0, 30)) { const k = String(x.key || ''), n = Math.max(1, Math.min(1000, intOr(x.n, 1))); if (k && k !== key) items.set(k, (items.get(k) || 0) + n); }
+    if (items.size) {
+      const rows = await selectIn(env, 'SELECT key, merged_into FROM products', 'key', [...items.keys()]);
+      if (rows.length !== items.size || rows.some(r => r.merged_into)) return bad('Set içindeki ürünlerden biri bulunamadı.');
+      for (const k of items.keys()) if (BUNDLES.has(k) || (await env.DB.prepare('SELECT 1 FROM bundles WHERE pkey=?1 LIMIT 1').bind(k).first())) return bad('Bir setin içine başka bir set konamaz.');
+      if (await env.DB.prepare('SELECT 1 FROM bundles WHERE comp=?1 LIMIT 1').bind(key).first()) return bad('Bu ürün başka bir setin içinde; set yapılamaz.');
+    }
+    await env.DB.batch([env.DB.prepare('DELETE FROM bundles WHERE pkey=?1').bind(key), ...[...items].map(([k, n]) => env.DB.prepare('INSERT INTO bundles(pkey, comp, n) VALUES(?1,?2,?3)').bind(key, k, n)), REV(env)]);
+    await loadBundles(env);
+    return json({ ok: true });
   }
   if (path === '/api/products/listings') {
     const key = String(body.key || '');
