@@ -196,6 +196,9 @@ label.f{display:grid;gap:5px;font-size:13px;color:var(--ink-2);font-weight:500;m
 .sortsel select{border:0;background:none;font:inherit;font-size:13px;font-weight:600;color:var(--ink);padding:7px 8px 7px 0;outline:none;cursor:pointer;-webkit-appearance:none;appearance:none}
 .chip{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--ink-2)}
 .chip[aria-pressed="true"]{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
+/* Koyu temada süzgeç düğmeleri: açık/şeffaf görünmesin, koyu dolgu */
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .chip{background:var(--surface-2);border-color:var(--line-strong);color:var(--ink)}:root:not([data-theme="light"]) .chip[aria-pressed="true"]{background:#2c2f6b;border-color:var(--accent);color:#fff;font-weight:600}:root:not([data-theme="light"]) .sortsel,:root:not([data-theme="light"]) .search input{background:var(--surface-2)}}
+:root[data-theme="dark"] .chip{background:var(--surface-2);border-color:var(--line-strong);color:var(--ink)}:root[data-theme="dark"] .chip[aria-pressed="true"]{background:#2c2f6b;border-color:var(--accent);color:#fff;font-weight:600}:root[data-theme="dark"] .sortsel,:root[data-theme="dark"] .search input{background:var(--surface-2)}
 .pill{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 8px;font-size:11.5px;font-weight:600;white-space:nowrap}
 .p-good{background:var(--good-soft);color:var(--good)} .p-warn{background:var(--warn-soft);color:var(--warn)} .p-bad{background:var(--bad-soft);color:var(--bad)} .p-mute{background:var(--surface-2);color:var(--ink-3);border:1px solid var(--line)} .p-brass{background:var(--brass-soft);color:var(--brass)}
 .ch{display:inline-block;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:600;letter-spacing:.01em}
