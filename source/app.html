@@ -193,6 +193,9 @@ label.f{display:grid;gap:5px;font-size:13px;color:var(--ink-2);font-weight:500;m
 .chips{display:flex;gap:6px;flex-wrap:wrap}
 .sortsel{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:0 4px 0 12px;color:var(--ink-2);font-size:13px;position:relative}
 .sortsel svg{width:15px;height:15px;color:var(--accent);flex:none}
+/* Açılır listelerin seçenekleri temanın renginde (koyu temada açık zemin üstünde açık yazı olmasın) */
+select option,select optgroup{background:var(--surface);color:var(--ink)}
+select{color-scheme:inherit}
 .sortsel select{border:0;background:none;font:inherit;font-size:13px;font-weight:600;color:var(--ink);padding:7px 8px 7px 0;outline:none;cursor:pointer;-webkit-appearance:none;appearance:none}
 .chip{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--ink-2)}
 .chip[aria-pressed="true"]{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
