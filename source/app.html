@@ -1037,8 +1037,9 @@ function thumb(p, cls=''){
   return `<div class="thumb ${cls}">${initials(p && p.name)}</div>`;
 }
 function chBadge(c){ return CHANNELS[c] ? `<span class="ch ch-${c}">${esc(CHANNELS[c].name)}</span>` : ''; }
-function isLow(p){ return p.qty > 0 && p.qty <= (p.min ?? 5); }
+function isLow(p){ return !p.mto && p.qty > 0 && p.qty <= (p.min ?? 5); }
 function stockPill(p){
+  if (p.mto) return p.qty < 0 ? `<span class="pill p-warn">Alınacak: ${fmtN(-p.qty)}</span>` : '<span class="pill p-mute">Sipariş üzerine</span>';
   if (p.qty < 0) return '<span class="pill p-bad">Eksi stok</span>';
   if (p.qty === 0) return '<span class="pill p-bad">Tükendi</span>';
   if (isLow(p)) return '<span class="pill p-warn">Düşük stok</span>';
@@ -1064,9 +1065,9 @@ function passiveArr(){ return [...S.products.values()].filter(p => p.passive && 
 function viewStock(){
   const ps = productsArr();
   const total = ps.filter(p => !p.set).reduce((n,p) => n + Math.max(0,p.qty), 0); // setler fiziksel stok değil, içindekiler sayılır
-  const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0).length;
+  const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0 && !p.mto && !p.set).length, need = ps.filter(p => p.mto && p.qty < 0);
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
-    <div class="row"><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
+    <div class="row"><button class="btn" data-act="need-open">Alınacaklar${need.length ? ` <span class="pill p-warn">${fmtN(need.length)}</span>` : ''}</button><button class="btn" data-act="psel-mode">${S.psel ? 'Seçimi kapat' : 'Toplu seç'}</button><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1077,14 +1078,14 @@ function viewStock(){
   if (!ps.length) return head + `<div class="panel empty"><h4>Depo henüz boş</h4><p>Trendyol bağlantısı kurulunca ürünler stok kodları ve görselleriyle kendiliğinden gelir. Eski uygulamanın yedeğini yükleyebilir ya da ürünleri tek tek ekleyebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar &amp; yedek</button><button class="btn" data-act="new-product">Elle ürün ekle</button></div></div>`;
   const usedCh = [...new Set(ps.flatMap(p => p.channels))].filter(c => CHANNELS[c]);
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="q" type="search" placeholder="Ürün adı, Lilya kodu, stok kodu veya barkod" value="${esc(S.q)}" aria-label="Ürün ara" autocomplete="off"></div></div>
-    <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
+    <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen'],['mto','Stoksuz satış']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
     <label class="sortsel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 8l4-4 4 4"/><path d="M17 20V4M13 16l4 4 4-4"/></svg><select id="psort" aria-label="Sırala">${[['code_asc','Ürün kodu: LH-0001 → son'],['code_desc','Ürün kodu: son → LH-0001'],['name_asc','İsim: A → Z'],['name_desc','İsim: Z → A'],['qty_desc','Stok: çoktan aza'],['qty_asc','Stok: azdan çoğa'],['value_desc','Stok değeri: yüksekten düşüğe'],['new','En yeni eklenen'],['updated','Son güncellenen']].map(([v,l]) => `<option value="${v}"${S.psort===v?' selected':''}>${l}</option>`).join('')}</select></label>
     ${usedCh.length > 1 ? `<div class="chips"><button class="chip" data-act="chf" data-id="" aria-pressed="${!S.ch}">Tüm kanallar</button>${usedCh.map(c => `<button class="chip" data-act="chf" data-id="${c}" aria-pressed="${S.ch===c}">${esc(CHANNELS[c].name)}</button>`).join('')}</div>` : ''}</div>`;
-  return head + tools + `<div id="plist">${productList()}</div>`;
+  return head + tools + (S.psel ? `<div class="rbulk" id="psel-bar">${pselBar()}</div>` : '') + `<div id="plist">${productList()}</div>`;
 }
 function filteredProducts(){
   const q = searchNorm(S.q.trim());
-  let ps = productsArr().filter(p => (!q || searchNorm(`${p.name} ${p.code} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || S.filter==='passive' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0)) && (!S.ch || p.channels.includes(S.ch)));
+  let ps = productsArr().filter(p => (!q || searchNorm(`${p.name} ${p.code} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || S.filter==='passive' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0 && !p.mto) || (S.filter==='mto' && p.mto)) && (!S.ch || p.channels.includes(S.ch)));
   const byName = (a,b) => a.name.localeCompare(b.name, 'tr');
   const val = p => Math.max(0, p.qty) * (p.cost || 0);
   const SORTS = {
@@ -1100,11 +1101,20 @@ function filteredProducts(){
   ps.sort(SORTS[S.psort] || byName);
   return ps;
 }
+function pselBar(){ const n = S.psel ? S.psel.size : 0;
+  return `<b>${fmtN(n)} ürün seçili</b><button class="btn sm" data-act="psel-all">Listedekilerin hepsini seç</button><button class="btn sm" data-act="psel-none">Seçimi temizle</button><button class="btn sm primary" data-act="mto-on" ${n ? '' : 'disabled'}>Stoksuz satış yap</button><button class="btn sm" data-act="mto-off" ${n ? '' : 'disabled'}>Stoksuz satıştan çıkar</button>`; }
+function sheetNeed(){
+  const L = productsArr().filter(p => p.mto && p.qty < 0).sort((a, b) => a.qty - b.qty);
+  const ords = (k) => [...new Set((S.orders || []).filter(o => o.status !== 'cancelled' && (o.lines || []).some(l => l.pkey === k && l.status !== 'cancelled')).slice(0, 6).map(o => '#' + o.orderNo))];
+  if (!L.length) return {title: 'Alınacaklar', body: '<div class="card"><p class="muted" style="margin:0">Alınacak ürün yok. Stoksuz satış işaretli ürünler satıldıkça burada birikir.</p></div>'};
+  const units = L.reduce((a, p) => a + -p.qty, 0), cost = L.reduce((a, p) => a + (p.cost || 0) * -p.qty, 0);
+  return {title: 'Alınacaklar', sub: `<span class="muted">${fmtN(L.length)} ürün · ${fmtN(units)} adet${cost ? ' · yaklaşık ' + tl2(cost) : ''}</span>`, body: `<p class="muted small" style="margin:0 0 10px">Stoksuz satış işaretli ürünlerden satılıp henüz alınmamış olanlar. Aldığında ürüne <b>Giriş</b> yap ya da alış faturasıyla stoğa ekle; eksi kapanınca listeden düşer.</p><div class="list">${L.map(p => `<div class="item" role="button" tabindex="0" data-act="product" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.code || p.sku)}</span>${p.cost ? `<span>· alış ${tl2(p.cost)}</span>` : ''}</div><div class="meta muted">${esc(ords(p.id).join(', '))}</div></div><div class="end" style="text-align:right"><b class="num" style="font-size:20px;color:var(--warn)">${fmtN(-p.qty)}</b><div class="muted small">adet alınacak</div></div></div>`).join('')}</div>`};
+}
 function productList(){
   const ps = filteredProducts();
   if (!ps.length) return `<div class="panel empty"><h4>Eşleşen ürün yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
   const shown = ps.slice(0, 300);
-  return `<div class="list">${shown.map(p => `<div class="item" role="button" tabindex="0" data-act="product" data-id="${esc(p.id)}" style="cursor:pointer">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end" style="display:flex;align-items:center;gap:10px"><div style="text-align:right"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div>${p.code ? `<button class="btn sm" type="button" data-act="plabel" data-id="${esc(p.id)}" title="Koli barkodu bas (${esc(p.code)})" aria-label="Koli barkodu bas" style="padding:6px 8px;gap:4px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 5v14M7 5v14M10 5v14M14 5v14M17 5v14M20 5v14" stroke-width="1.6"/></svg><span class="hide-xs">Koli</span></button>` : ''}</div></div>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
+  return `<div class="list">${shown.map(p => `<div class="item" role="button" tabindex="0" data-act="${S.psel ? 'psel' : 'product'}" data-id="${esc(p.id)}" style="cursor:pointer;${S.psel ? 'grid-template-columns:auto auto 1fr auto' : ''}">${S.psel ? `<span class="rsel" aria-pressed="${S.psel.has(p.id)}"></span>` : ''}${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end" style="display:flex;align-items:center;gap:10px"><div style="text-align:right"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div>${p.code ? `<button class="btn sm" type="button" data-act="plabel" data-id="${esc(p.id)}" title="Koli barkodu bas (${esc(p.code)})" aria-label="Koli barkodu bas" style="padding:6px 8px;gap:4px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 5v14M7 5v14M10 5v14M14 5v14M17 5v14M20 5v14" stroke-width="1.6"/></svg><span class="hide-xs">Koli</span></button>` : ''}</div></div>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
 }
 
 /* ============ Ürün sayfası ============ */
@@ -1139,6 +1149,7 @@ ${p.set ? `<div id="p-set">${setCard(p)}</div>` : `    <div class="seg" role="gr
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Bilgileri kaydet</button></div>
     </form>
   </div>
+  <div class="card" style="gap:6px"><div class="spread"><h3 style="margin:0">Stoksuz satış ${p.mto ? '<span class="pill p-good">Açık</span>' : ''}</h3><button class="btn sm" data-act="mto-one" data-id="${esc(p.id)}">${p.mto ? 'Kapat' : 'Aç'}</button></div><p class="muted small" style="margin:0">${p.mto ? `Stok yokken de Trendyol ve Shopify'da en az 10 adet görünür; satıldıkça stok eksiye iner${p.qty < 0 ? ` (şu an <b>${fmtN(-p.qty)} adet alınacak</b>)` : ''}.` : 'Sattıkça alıyorsan aç: stok yokken de kanallarda en az 10 adet görünür, satılanlar "Alınacaklar" listesine düşer.'}</p></div>
   ${p.set ? '' : `<div class="card" style="gap:6px"><div class="spread"><h3 style="margin:0">Set ürün</h3><button class="btn sm" data-act="bundle-edit" data-id="${esc(p.id)}">Bu ürünü set yap</button></div><p class="muted small" style="margin:0">Bu ilan birden fazla ürünün setiyse (ör. 14 parçalık set) içindeki ürünleri ve adetlerini gir: set satılınca stok içindeki ürünlerden düşer, setin stoğu onlardan hesaplanır.</p></div>`}
   <div id="p-listings">${listingsCard(p)}</div>
   <div class="card"><h3>Son hareketler</h3><div id="p-moves">${pm.length ? pm.map(moveRow).join('') : '<p class="muted small" style="margin:0">Son günlerde bu ürünle ilgili hareket yok.</p>'}</div></div>
@@ -2968,7 +2979,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -3038,6 +3049,17 @@ document.addEventListener('click', async e => {
       const p = S.products.get(sh.id), txt = clear ? `"${esc(p.name)}" artık set olmayacak; satılınca kendi stoğundan düşecek.` : `"${esc(p.name)}" seti kaydedilsin mi? Satılınca şunlar düşecek: ${items.map(x => { const c = S.products.get(x.key); return `${esc(c ? c.code || c.name : '?')} × ${x.n}`; }).join(', ')}.`;
       if (!(await confirmBox(txt, clear ? 'Set olmaktan çıkar' : 'Seti kaydet'))) break;
       await run(async () => { await api('/api/products/bundle', {key: sh.id, items}); await refresh(true); toast(clear ? 'Set kaldırıldı.' : 'Set kaydedildi. Trendyol stoğu birkaç saniye içinde güncellenir.'); openSheet('product', {id: sh.id}); }); break; }
+    case 'need-open': openSheet('need', {}); break;
+    case 'psel-mode': S.psel = S.psel ? null : new Set(); render(); break;
+    case 'psel': { if (!S.psel) break; S.psel.has(id) ? S.psel.delete(id) : S.psel.add(id); const r = b.querySelector('.rsel'); if (r) r.setAttribute('aria-pressed', String(S.psel.has(id))); const bar = $('#psel-bar'); if (bar) bar.innerHTML = pselBar(); break; }
+    case 'psel-all': if (S.psel) { filteredProducts().slice(0, 300).forEach(p => S.psel.add(p.id)); render(); } break;
+    case 'psel-none': if (S.psel) { S.psel.clear(); render(); } break;
+    case 'mto-on': case 'mto-off': { if (!S.psel || !S.psel.size) break; const on = b.dataset.act === 'mto-on', keys = [...S.psel];
+      if (!(await confirmBox(on ? `${fmtN(keys.length)} ürün stoksuz satışa alınsın mı? Stok yokken de Trendyol ve Shopify'da en az 10 adet görünür; satıldıkça stok eksiye iner ve "Alınacaklar"da listelenir.` : `${fmtN(keys.length)} ürün stoksuz satıştan çıkarılsın mı? Kanallara gerçek stok gönderilir (stok yoksa 0).`, on ? 'Stoksuz satış yap' : 'Çıkar'))) break;
+      await run(async () => { await api('/api/products/mto', {keys, on}); S.psel = null; await refresh(true); toast(on ? `${fmtN(keys.length)} ürün stoksuz satışa alındı.` : `${fmtN(keys.length)} ürün stoksuz satıştan çıkarıldı.`); }); break; }
+    case 'mto-one': { const p = S.products.get(id); if (!p) break; const on = !p.mto;
+      if (!(await confirmBox(on ? 'Bu ürün stoksuz satışa alınsın mı? Stok yokken de kanallarda en az 10 adet görünür.' : 'Bu ürün stoksuz satıştan çıkarılsın mı?', on ? 'Stoksuz satış yap' : 'Çıkar'))) break;
+      await run(async () => { await api('/api/products/mto', {keys: [id], on}); await refresh(true); toast(on ? 'Stoksuz satışa alındı.' : 'Stoksuz satıştan çıkarıldı.'); renderSheet(true); }); break; }
     case 'match-open': openSheet('match', {}); break;
     case 'scan-open': scanAudio(); scanIndex(); openSheet('scanout', {items: [], reason: 'Elden satış', pdf: true, disc: 0}); setTimeout(() => { const i = $('#so-in'); if (i) i.focus(); }, 60); break;
     case 'pur-open': openSheet('purchase', {step: 'upload'}); break;

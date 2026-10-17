@@ -52,6 +52,7 @@ let COLD_MS = null;
 // Set ürünler: set ilanı satılınca stok setin içindeki ürünlerden düşer (pkey → [[parça, adet]]); her isolate'te dakikada bir tazelenir
 let BUNDLES = new Map(), BUNDLES_AT = 0;
 async function loadBundles(env) { try { const { results } = await env.DB.prepare('SELECT pkey, comp, n FROM bundles').all(); const m = new Map(); for (const r of results) { if (!m.has(r.pkey)) m.set(r.pkey, []); m.get(r.pkey).push([r.comp, Number(r.n) || 1]); } BUNDLES = m; BUNDLES_AT = Date.now(); } catch (e) {} }
+const MTO_QTY = 10; // stoksuz satış ürünlerinde kanallara gönderilen en az adet (stok yokken de satılabilsin)
 const SET_QTY_SQL = (alias) => `COALESCE((SELECT MIN(cp.qty / b.n) FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=${alias}.key), ${alias}.qty)`;
 async function init(env) {
   if (READY) { if (Date.now() - BUNDLES_AT > 60000) await loadBundles(env); return; }
@@ -76,6 +77,7 @@ async function init0(env) {
     env.DB.prepare(`INSERT INTO moves(t,pkey,sku,name,delta,after,type,channel,ref,note) SELECT ?1,key,sku,name,-qty,0,'count','manuel','','Set ürün: setin kendi stoğu sıfırlandı (stok içindeki ürünlerden hesaplanır)' FROM products WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now),
     env.DB.prepare(`UPDATE products SET qty=0, updated_at=?1 WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now)]); } catch (e) {}
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
+  try { await env.DB.prepare('ALTER TABLE products ADD COLUMN mto INTEGER').run(); } catch (e) {} // stoksuz satış (sipariş üzerine)
   for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   if (priceCol && await env.DB.prepare(`SELECT 1 FROM settings WHERE k='ty_prod_done' AND v<>''`).first()) await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]);
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tydate'`).first())) {
@@ -747,7 +749,7 @@ async function syncShopifyProducts(env, force) {
 }
 /* Ortak stok → Shopify: her Shopify ilanına bağlı ürünün stoğu (paket ilanında stok / paket adedi) mağazanın ana konumuna yazılır.
    Gerekli yetkiler: read_inventory, write_inventory, read_locations. Shopify'ın kendi satışı zaten kendi stoğunu düşürür; burada eşitlenir. */
-const SH_PUSH_SQL = `SELECT l.ext, l.inv_item, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), 0), 1000000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='shopify') t ON t.e=l.ext WHERE l.channel='shopify' AND l.inv_item IS NOT NULL AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 250`;
+const SH_PUSH_SQL = `SELECT l.ext, l.inv_item, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(CASE WHEN COALESCE(p.mto,0)=1 THEN MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), ${MTO_QTY}) ELSE MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), 0) END, 1000000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='shopify') t ON t.e=l.ext WHERE l.channel='shopify' AND l.inv_item IS NOT NULL AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 250`;
 async function pushShopifyStock(env) {
   const s = await getSettings(env, ['sh_push', 'sh_paused', 'sh_loc']);
   if (s.sh_push === '0' || s.sh_paused === '1') return null;
@@ -1236,7 +1238,7 @@ async function syncTrendyolProducts(env, maxPages = 4) {
 }
 /* Ortak stok → Trendyol. Yalnızca değişen ürünler gönderilir (aynı istek 15 dk tekrarlanamaz). */
 // Her Trendyol ilanına bağlı ürünün stoğu gider; paket ilanında stok / paket adedi (ör. 7 adet stok, 2'li ilan → 3)
-const TY_PUSH_SQL = `SELECT l.ext barcode, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), 0), 20000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='trendyol') t ON t.e=l.ext WHERE l.channel='trendyol' AND COALESCE(l.passive,0)=0 AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 1000`;
+const TY_PUSH_SQL = `SELECT l.ext barcode, t.q FROM listings l JOIN (SELECT l2.ext e, MIN(CASE WHEN COALESCE(p.mto,0)=1 THEN MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), ${MTO_QTY}) ELSE MAX(${SET_QTY_SQL('p')} / MAX(COALESCE(l2.factor,1),1), 0) END, 20000) q FROM listings l2 JOIN products p ON p.key=l2.pkey WHERE l2.channel='trendyol') t ON t.e=l.ext WHERE l.channel='trendyol' AND COALESCE(l.passive,0)=0 AND (l.ext_qty IS NULL OR (l.ext_qty <> t.q AND l.ext_qty <> -(t.q+2))) LIMIT 1000`;
 async function pushTrendyolStock(env) {
   if ((await getSetting(env, 'ty_push')) === '0') return null;
   const { results } = await env.DB.prepare(TY_PUSH_SQL).all();
@@ -1951,7 +1953,7 @@ async function computePricing(env) {
 /* ---------- API ---------- */
 function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { kept: !!r.kept, outDesi: Number(r.o_desi) > 0 ? Number(r.o_desi) : null, autoAt: r.auto_at || null, retDesi: r.desi || r.f_ret_desi || null, retCargo: r.f_ret_cargo ?? null, claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
-function mapProduct(r) { return { set: BUNDLES.get(r.key) || null, code: r.code || '', merged: r.merged_into || null, passive: r.all_passive !== undefined && r.all_passive !== null ? !!r.all_passive : r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
+function mapProduct(r) { return { mto: r.mto === 1, set: BUNDLES.get(r.key) || null, code: r.code || '', merged: r.merged_into || null, passive: r.all_passive !== undefined && r.all_passive !== null ? !!r.all_passive : r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
   const s = await getSettings(env, ['rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg', 'hook_id', 'hook_at', 'hook_err']);
@@ -2573,6 +2575,13 @@ ${catalog}` });
       for (const r of (await env.DB.prepare('SELECT order_no, data FROM sh_unf').all()).results) { let n = 0; const m = JSON.parse(r.data || '{}'); for (const [v, q] of Object.entries(m)) if (f.has(v)) n += q * f.get(v); if (n) { out.sh += n; out.orders.push(r.order_no); } } }
     out.total = out.ty + out.sh;
     return json({ ok: true, ...out });
+  }
+  if (path === '/api/products/mto') {
+    // Stoksuz satış işareti (toplu): işaretli ürünlerde stok yokken de kanallara en az 10 adet gönderilir, satılınca stok eksiye iner (= alınacak)
+    const keys = (Array.isArray(body.keys) ? body.keys : []).map(String).filter(Boolean).slice(0, 1000); if (!keys.length) return bad('Ürün seç.');
+    const st = []; for (let i = 0; i < keys.length; i += 80) { const part = keys.slice(i, i + 80); st.push(env.DB.prepare(`UPDATE products SET mto=?1 WHERE key IN (${part.map((_, j) => '?' + (j + 2)).join(',')})`).bind(body.on ? 1 : null, ...part)); }
+    await env.DB.batch([...st, REV(env)]);
+    return json({ ok: true, n: keys.length });
   }
   if (path === '/api/products/bundle') {
     // Set içeriğini kaydet: items boşsa ürün artık set değildir
