@@ -2256,6 +2256,11 @@ async function api(req, env, path, ctx) {
     const after = await env.DB.prepare('SELECT qty FROM products WHERE key=?1').bind(key).first();
     return json({ ok: true, qty: after.qty });
   }
+  if (path === '/api/products/scan-index') {
+    // Barkodla çıkış için hızlı yerel arama: bütün ilan barkod / stok kodu / kanal numaraları → ürün (paket çarpanıyla)
+    const { results } = await env.DB.prepare('SELECT barcode, sku, ext, pkey, factor FROM listings').all();
+    return json({ ok: true, l: results.map(r => [r.barcode || '', r.sku || '', r.ext || '', r.pkey, Math.max(1, Number(r.factor) || 1)]) });
+  }
   if (path === '/api/products/lookup') {
     // Barkod okutma: Lilya kodu, ürün barkodu/stok kodu ya da bir kanal ilanının barkodu/stok kodu → ürün (paket ilanında adet çarpanıyla)
     const c = String(body.code || '').trim().slice(0, 80); if (!c) return bad('Kod boş.');
