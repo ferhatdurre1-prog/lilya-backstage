@@ -1586,7 +1586,7 @@ function drawLabelPages(p, W, H, sid, mk){
   const dateStr = p.date ? new Date(p.date).toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
   const colQty = mm(11), colAmt = mm(19), pad = mm(1.6), nameW = cw - colQty - colAmt - 2 * pad - mm(1);
   const PER = 4, footH = mm(12), gap = mm(1.2);  // alt kenarda yazıcının basamadığı pay için geniş boşluk
-  const items = p.lines.map(l => ({l, name: [String(l.name || l.sku || '').replace(/,?\s*one size\b/ig, '').trim(), l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ')})); // yer kazanmak için stok kodu ve 'one size' yazılmaz
+  const items = p.lines.map(l => ({l, name: [String(l.name || l.sku || '').replace(/,?\s*one size\b/ig, '').trim(), l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ')})); // stok kodu ve 'one size' yazılmaz; Lilya ürün kodu kutuda ayrı satırda
   const chunks = []; for (let i = 0; i < items.length; i += PER) chunks.push(items.slice(i, i + PER)); if (!chunks.length) chunks.push([]);
   const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
   const newCanvas = mk || (() => { const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; return {cv, c}; });
@@ -1602,10 +1602,13 @@ function drawLabelPages(p, W, H, sid, mk){
     const img = tall && it.l.image ? LBL_IMGS.get(it.l.image) : null, isz = tall ? Math.min(h - 2 * mm(1.2), mm(30)) : 0;
     if (img && c.drawPhoto) c.drawPhoto(img, x + mm(1.2), y + (h - isz) / 2, isz, isz);
     const nx = x + pad + (tall ? isz + mm(1.2) : 0), nW = nameW - (tall ? isz + mm(1.2) : 0);
-    let sz = 5, lines = [];
-    for (; sz >= 2.3; sz -= 0.1) { font(c, sz, false); lines = wrapText(c, it.name, nW); if (lines.length * sz * 1.2 * D * u <= h - 2 * pad && lines.every(t => c.measureText(t).width <= nW)) break; }
-    const lh = mm(sz * 1.2), ty = y + (h - lines.length * lh) / 2 + mm(sz * 0.1);
-    font(c, sz, false); lines.forEach((t, k) => c.fillText(t, nx, ty + k * lh));
+    // Lilya ürün kodu: adın üstünde kalın satır (paket ilanında "× 2" gibi kaç adet çıkacağı da yazılır)
+    const code = it.l.code ? String(it.l.code) + (Number(it.l.factor) > 1 ? ' × ' + it.l.factor + ' adet' : '') : '';
+    let sz = 5, lines = [], cs = 0;
+    for (; sz >= 2.3; sz -= 0.1) { cs = code ? Math.min(4.6, sz * 1.05) : 0; font(c, sz, false); lines = wrapText(c, it.name, nW); if ((lines.length * sz * 1.2 + cs * 1.25) * D * u <= h - 2 * pad && lines.every(t => c.measureText(t).width <= nW)) break; }
+    const lh = mm(sz * 1.2), ch = mm(cs * 1.25), ty = y + (h - lines.length * lh - ch) / 2 + mm(sz * 0.1);
+    if (code) { font(c, cs, true); c.fillText(code, nx, ty); }
+    font(c, sz, false); lines.forEach((t, k) => c.fillText(t, nx, ty + ch + k * lh));
     const qs = Math.min(5, Math.max(3, h / D / u * 0.32)); font(c, qs, true); const q = String(it.l.qty); c.fillText(q, xQty - c.measureText(q).width / 2, y + (h - mm(qs)) / 2);
     const ps = Math.min(3.6, qs * 0.75); font(c, ps, false); const a = tl2(it.l.unit || it.l.amount); c.fillText(a, PW - m - pad - c.measureText(a).width, y + (h - mm(ps)) / 2);
   };
