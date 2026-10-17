@@ -75,6 +75,7 @@ main{padding-bottom:32px}
 body[data-tab="home"] .home-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 /* Ana ekran sıkı düzen: telefonda her şey kaydırmadan tek ekrana sığsın */
+@media (max-width:420px){ .hide-xs{display:none} }
 @media (max-width:640px){
 body[data-tab="home"] .top{padding-block:6px 6px}
 body[data-tab="home"] .hero{padding-bottom:36px}
@@ -1090,7 +1091,7 @@ function productList(){
   const ps = filteredProducts();
   if (!ps.length) return `<div class="panel empty"><h4>Eşleşen ürün yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
   const shown = ps.slice(0, 300);
-  return `<div class="list">${shown.map(p => `<button class="item" data-act="product" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div></button>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
+  return `<div class="list">${shown.map(p => `<div class="item" role="button" tabindex="0" data-act="product" data-id="${esc(p.id)}" style="cursor:pointer">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end" style="display:flex;align-items:center;gap:10px"><div style="text-align:right"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div>${p.code ? `<button class="btn sm" type="button" data-act="plabel" data-id="${esc(p.id)}" title="Koli barkodu bas (${esc(p.code)})" aria-label="Koli barkodu bas" style="padding:6px 8px;gap:4px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 5v14M7 5v14M10 5v14M14 5v14M17 5v14M20 5v14" stroke-width="1.6"/></svg><span class="hide-xs">Koli</span></button>` : ''}</div></div>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
 }
 
 /* ============ Ürün sayfası ============ */
@@ -3095,6 +3096,7 @@ document.addEventListener('input', e => {
   if (t.id === 'bdq') { if (S.sheet) S.sheet.q = t.value; applyBdFilter(); }
   if (t.id === 'pq') { profS().q = t.value; profS().opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.dataset.act) { e.preventDefault(); e.target.click(); return; } });
 document.addEventListener('keydown', e => { const t = e.target; if (t && t.id === 'so-in') scanAudio(); if (t && t.id === 'so-in' && (e.key === 'Enter' || e.key === 'Tab')) { e.preventDefault(); const v = t.value; t.value = ''; scanHandle(v); } });
 document.addEventListener('change', e => {
   const t = e.target;
