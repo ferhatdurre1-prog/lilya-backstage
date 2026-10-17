@@ -71,6 +71,10 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ty_qty INTEGER').run(); } catch (e) { /* sütun zaten var */ }
   let priceCol = false;
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ty_price REAL').run(); priceCol = true; } catch (e) {}
+  // Set ürünlerin kendi stoğu tutulmaz: set yapılmadan önce girilmiş adet sıfırlanır (hareket kaydıyla)
+  try { const now = iso(); await env.DB.batch([
+    env.DB.prepare(`INSERT INTO moves(t,pkey,sku,name,delta,after,type,channel,ref,note) SELECT ?1,key,sku,name,-qty,0,'count','manuel','','Set ürün: setin kendi stoğu sıfırlandı (stok içindeki ürünlerden hesaplanır)' FROM products WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now),
+    env.DB.prepare(`UPDATE products SET qty=0, updated_at=?1 WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now)]); } catch (e) {}
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
   for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   if (priceCol && await env.DB.prepare(`SELECT 1 FROM settings WHERE k='ty_prod_done' AND v<>''`).first()) await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]);
@@ -2581,7 +2585,7 @@ ${catalog}` });
       for (const k of items.keys()) if (BUNDLES.has(k) || (await env.DB.prepare('SELECT 1 FROM bundles WHERE pkey=?1 LIMIT 1').bind(k).first())) return bad('Bir setin içine başka bir set konamaz.');
       if (await env.DB.prepare('SELECT 1 FROM bundles WHERE comp=?1 LIMIT 1').bind(key).first()) return bad('Bu ürün başka bir setin içinde; set yapılamaz.');
     }
-    await env.DB.batch([env.DB.prepare('DELETE FROM bundles WHERE pkey=?1').bind(key), ...[...items].map(([k, n]) => env.DB.prepare('INSERT INTO bundles(pkey, comp, n) VALUES(?1,?2,?3)').bind(key, k, n)), REV(env)]);
+    await env.DB.batch([env.DB.prepare('DELETE FROM bundles WHERE pkey=?1').bind(key), ...[...items].map(([k, n]) => env.DB.prepare('INSERT INTO bundles(pkey, comp, n) VALUES(?1,?2,?3)').bind(key, k, n)), ...(items.size ? setQty(env, key, 0, { type: 'count', channel: 'manuel', note: 'Set ürün: setin kendi stoğu sıfırlandı (stok içindeki ürünlerden hesaplanır)' }) : []), REV(env)]);
     await loadBundles(env);
     return json({ ok: true });
   }
