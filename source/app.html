@@ -801,6 +801,7 @@ function viewAddr(){
   if (!A.data) return h + loading();
   h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px"><div class="small"><b>Sürat Kargo etiketi</b><div class="muted">Barkodu olmayan siparişlere tek seferde LH barkodlu etiket bas; desi şubede girilir.</div></div><div class="row" style="gap:6px;flex-wrap:wrap">${(() => { const el = srBulkList(A); const ns = el.filter(o => A.sel && A.sel.has(o.gid)).length; return A.bulk ? `<button class="btn sm" disabled>Oluşturuluyor… ${A.bulk}</button>` : `<button class="btn sm" data-act="sr-selall" ${el.length && A.view !== 'done' ? '' : 'disabled'}>${ns && ns === el.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><button class="btn sm primary" data-act="sr-bulk" data-id="sel" ${ns ? '' : 'disabled'}>✅ Seçilenlere barkod oluştur (${fmtN(ns)})</button><button class="btn sm" data-act="sr-bulk" ${el.length ? '' : 'disabled'}>📦 Tümüne barkod oluştur (${fmtN(el.length)})</button>`; })()}</div></div>`;
   const hasBc = new Set((A.data.ships || []).map(x => x.gid)), done = A.view === 'done';
+  if (!done) h += A.no ? newOrderForm() : `<div style="margin:0 0 12px"><button class="btn" data-act="no-open">➕ Yeni sipariş oluştur</button></div>`;
   const rows = A.data.orders.filter(o => hasBc.has(o.gid) === done).map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
   const nBad = rows.filter(r => r.issues.length).length;
   h += `<div class="small muted" style="margin:0 0 10px">${fmtN(rows.length)}${A.data.after ? '+' : ''} sipariş · <b style="color:${nBad ? 'var(--bad)' : 'var(--good)'}">${nBad ? fmtN(nBad) + ' tanesinde kontrol edilecek bir şey var' : 'hepsi düzgün görünüyor'}</b></div>`;
@@ -844,7 +845,7 @@ function suratBlock(o, e, issues){
     const fe = last.fulfill_err ? `<div class="banner bad" style="margin:0"><div><b>Shopify'a işlenemedi:</b> ${esc(last.fulfill_err)}</div></div>` : '';
     const man = A.srm === o.gid ? `<form class="row srman" data-gid="${g}" style="gap:6px"><input class="input mono" id="sr-man" inputmode="numeric" placeholder="Sürat takip no" style="flex:1;min-width:0"><button class="btn sm primary" type="submit" ${busy ? 'disabled' : ''}>Kaydet ve Shopify'a işle</button><button class="btn sm ghost" type="button" data-act="sr-man" data-id="">Vazgeç</button></form>` : '';
     return `<div class="srb"><div style="min-width:0;display:grid;gap:2px"><div><span class="pill p-good">Sürat barkodu</span> <b class="mono">${esc(last.ref)}</b> <span class="small muted">${esc(fmtDate(last.at))} · ${fmtN(last.adet)} koli · ${esc(String(last.desi).replace('.', ','))} desi</span></div>${tk}</div>
-    <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm primary" data-act="sr-print" data-id="${esc(last.ref)}">🖨 Etiketi yazdır</button>${last.fulfilled_at ? '' : `<button class="btn sm" data-act="sr-track" data-id="${g}" ${busy ? 'disabled' : ''}>${busy === 'track' ? 'Kontrol ediliyor…' : last.tracking ? "Shopify'a tekrar işle" : 'Şimdi kontrol et'}</button>${last.tracking ? '' : `<button class="btn sm ghost" data-act="sr-man" data-id="${g}">Takip no'yu elle gir</button>`}`}<button class="btn sm ghost" data-act="sr-open" data-id="${g}" ${busy ? 'disabled' : ''}>Yeni barkod</button></div></div>${fe}${man}${A.sr === o.gid ? suratForm(o, true) : ''}`; }
+    <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm primary" data-act="sr-print" data-id="${esc(last.ref)}">🖨 Etiketi yazdır</button>${last.fulfilled_at ? '' : `<button class="btn sm" data-act="sr-track" data-id="${g}" ${busy ? 'disabled' : ''}>${busy === 'track' ? 'Kontrol ediliyor…' : last.tracking ? "Shopify'a tekrar işle" : 'Şimdi kontrol et'}</button>${last.tracking ? '' : `<button class="btn sm ghost" data-act="sr-man" data-id="${g}">Takip no'yu elle gir</button>`}`}<button class="btn sm ghost" data-act="sr-open" data-id="${g}" ${busy ? 'disabled' : ''}>Yeni barkod</button>${last.fulfilled_at ? '' : `<button class="btn sm ghost" data-act="sr-unship" data-id="${g}" ${busy ? 'disabled' : ''}>↩ Bekleyene geri al</button>`}</div></div>${fe}${man}${A.sr === o.gid ? suratForm(o, true) : ''}`; }
   if (A.sr === o.gid) return suratForm(o, false);
   const blocked = e ? "Önce değişiklikleri Shopify'a kaydet" : issues.some(i => i[0] === 'bad') ? 'Önce kırmızı işaretli sorunları düzelt' : '';
   return `<div class="srb"><span class="small muted">${blocked ? esc(blocked) : 'Sürat barkodu yok'}</span><button class="btn sm" data-act="sr-open" data-id="${g}" ${blocked || busy ? 'disabled' : ''}>📦 Sürat barkodu oluştur</button></div>`;
@@ -897,6 +898,27 @@ async function suratPrint(list){
   });
 }
 function srApply(gid, r){ const A = aS(), sh = (A.data.ships || []).filter(x => x.gid === gid).pop(); if (!sh || !r) return; sh.tracking = r.tracking || sh.tracking; sh.track_at = new Date().toISOString(); sh.track_msg = r.msg || sh.track_msg; if (r.fulfilled) sh.fulfilled_at = sh.track_at; sh.fulfill_err = r.err || null; }
+// Yeni sipariş formu: Shopify'da sipariş açar (ürünler Shopify ilanlarından aranır)
+function newOrderForm(){
+  const A = aS(), N = A.no, f = N.f, busy = A.busy.no, iv = (k, label, ex = '') => `<label class="f">${label}<input class="input" id="no-${k}" data-nof="${k}" value="${esc(f[k])}" autocomplete="off" ${ex}></label>`;
+  const il = ilFind(f.province), ilces = il == null ? [] : ilceList(TR_IL[il]);
+  const sum = N.items.reduce((t, x) => t + (String(x.price).trim() !== '' ? Number(String(x.price).replace(',', '.')) || 0 : 0) * x.qty, 0);
+  return `<div class="card" style="gap:10px;border:2px solid var(--accent)"><div class="spread"><h3 style="margin:0">➕ Yeni Shopify siparişi</h3><button class="btn sm ghost" data-act="no-close" ${busy ? 'disabled' : ''}>Vazgeç</button></div>
+    <div class="grid2">${iv('firstName', 'Ad')}${iv('lastName', 'Soyad')}${iv('phone', 'Telefon', 'inputmode="tel" placeholder="05xx xxx xx xx"')}${iv('email', 'E-posta (isteğe bağlı)', 'inputmode="email"')}
+      <label class="f">İl<select class="input" id="no-province" data-nof="province"><option value="">— seç —</option>${TR_IL.map(x => `<option ${x === f.province ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+      <label class="f">İlçe<select class="input" id="no-city" data-nof="city" ${ilces.length ? '' : 'disabled'}><option value="">${ilces.length ? '— seç —' : 'Önce il seç'}</option>${ilces.map(x => `<option ${x === f.city ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label></div>
+    <label class="f">Adres (mahalle, cadde/sokak, bina no)<textarea class="input" rows="2" id="no-address1" data-nof="address1">${esc(f.address1)}</textarea></label>
+    <div class="grid2">${iv('address2', 'Apartman / daire (isteğe bağlı)')}${iv('zip', 'Posta kodu (isteğe bağlı)', 'inputmode="numeric" maxlength="5"')}</div>
+    <div class="f"><span>Ürünler</span><input class="input" id="no-q" placeholder="Ürün ara: ad, stok kodu ya da LH kodu" value="${esc(N.q)}" autocomplete="off"><div id="no-res" class="afs" ${N.res.length ? '' : 'hidden'}>${noResHtml(N)}</div></div>
+    ${N.items.length ? `<div class="afl">${N.items.map((x, i) => `<div class="afr" style="grid-template-columns:minmax(0,1fr) 70px 100px auto"><span class="afv">${x.code ? `<b class="mono">${esc(x.code)}</b> ` : ''}${esc(x.name)}</span><input class="input num" data-noi="${i}" data-k="qty" value="${x.qty}" inputmode="numeric" title="Adet"><input class="input num" data-noi="${i}" data-k="price" value="${esc(x.price)}" inputmode="decimal" placeholder="Shopify fiyatı" title="Birim fiyat (boşsa Shopify fiyatı)"><button class="btn sm ghost" data-act="no-del" data-i="${i}">✕</button></div>`).join('')}</div>` : '<div class="small muted">Henüz ürün eklenmedi. Fiyatı boş bırakırsan Shopify\'daki satış fiyatı kullanılır.</div>'}
+    <div class="grid2"><label class="f">Ödeme<select class="input" id="no-paid"><option value="1" ${N.paid ? 'selected' : ''}>Ödendi</option><option value="0" ${N.paid ? '' : 'selected'}>Ödeme bekliyor</option></select></label>
+      <label class="f">Kargo ücreti (TL, isteğe bağlı)<input class="input num" id="no-ship" value="${esc(N.ship)}" inputmode="decimal" placeholder="0"></label></div>
+    <label class="f">Not (isteğe bağlı)<input class="input" id="no-note" value="${esc(N.note)}" autocomplete="off"></label>
+    <label class="chk small"><input type="checkbox" id="no-rcpt" ${N.rcpt ? 'checked' : ''}><span>Müşteriye Shopify sipariş onayı e-postası gönder</span></label>
+    <div class="spread"><span class="small muted" id="no-sum">${sum > 0 ? 'Girilen fiyatlarla ara toplam: ' + esc(fmtTL(sum)) : ''}</span><button class="btn primary" data-act="no-save" ${busy ? 'disabled' : ''}>${busy ? 'Oluşturuluyor…' : "Shopify'da sipariş oluştur"}</button></div></div>`;
+}
+const noResHtml = N => N.res.map((x, i) => `<button type="button" class="afo" data-act="no-add" data-i="${i}">${x.code ? `<b class="mono">${esc(x.code)}</b> · ` : ''}${esc(x.name)}${x.sku ? ` <span class="muted small mono">${esc(x.sku)}</span>` : ''}${x.qty != null ? ` <span class="muted small">· stok ${fmtN(x.qty)}</span>` : ''}</button>`).join('') || '<div class="small muted" style="padding:6px 8px">Bulunamadı</div>';
+let noTimer = null;
 const ADDR_FIELDS = [['firstName','Ad'],['lastName','Soyad'],['phone','Telefon'],['province','İl'],['city','İlçe'],['address1','Adres'],['address2','Apartman / daire'],['zip','Posta kodu'],['company','Firma']];
 const addrSugHtml = sug => sug.length ? sug.map((x, i) => `<button type="button" class="afo" data-act="ad-pick" data-i="${i}">${esc(x.label)}${x.sub ? ` <span class="muted small">${esc(x.sub)}</span>` : ''}</button>`).join('') : '<div class="small muted" style="padding:6px 8px">Eşleşen yok; yazdığın haliyle kaydedebilirsin.</div>';
 // Açık alanın değerini taslağa yaz (il değişince ilçe o ilde yoksa ilçe alanı açılır)
@@ -3276,6 +3298,18 @@ document.addEventListener('input', e => { const t = e.target; if (!t || !t.datas
   if (t.dataset.pu !== undefined) { const x = D.items[Number(t.dataset.pu)]; if (x) { x.unit = Math.max(0, Number(t.value) || 0); purTotals(); } }
   if (t.dataset.ps !== undefined) purSearch(t);
   if (t.id === 'pur-sup') D.supplier = t.value; if (t.id === 'pur-doc') D.doc_no = t.value; if (t.id === 'pur-date') D.date = t.value; });
+document.addEventListener('input', e => { const t = e.target, N = S.addr && S.addr.no; if (!t || !N) return;
+  if (t.dataset.nof) N.f[t.dataset.nof] = t.value;
+  if (t.dataset.noi !== undefined) { const x = N.items[Number(t.dataset.noi)]; if (x) { if (t.dataset.k === 'qty') x.qty = Math.max(1, parseInt(t.value, 10) || 1); else x.price = t.value; }
+    const sum = N.items.reduce((s2, y) => s2 + (String(y.price).trim() !== '' ? Number(String(y.price).replace(',', '.')) || 0 : 0) * y.qty, 0), el = $('#no-sum'); if (el) el.textContent = sum > 0 ? 'Girilen fiyatlarla ara toplam: ' + fmtTL(sum) : ''; }
+  if (t.id === 'no-ship') N.ship = t.value; if (t.id === 'no-note') N.note = t.value;
+  if (t.id === 'no-q') { N.q = t.value; clearTimeout(noTimer); const q = t.value.trim(); if (q.length < 2) { N.res = []; const box = $('#no-res'); if (box) box.hidden = true; return; }
+    noTimer = setTimeout(() => api('/api/shorder/products', {q}).then(d => { if (S.addr.no !== N || N.q.trim() !== q) return; N.res = d.items || []; const box = $('#no-res'); if (box) { box.innerHTML = noResHtml(N); box.hidden = false; } }).catch(() => {}), 250); } });
+document.addEventListener('change', e => { const t = e.target, N = S.addr && S.addr.no; if (!t || !N) return;
+  if (t.id === 'no-province') { N.f.province = t.value; N.f.city = ''; render(); }
+  if (t.id === 'no-city') N.f.city = t.value;
+  if (t.id === 'no-paid') N.paid = t.value === '1';
+  if (t.id === 'no-rcpt') N.rcpt = t.checked; });
 document.addEventListener('input', e => { const t = e.target; if (!t || t.id !== 'af-in') return; const A = aS(), F = A.field; if (!F) return; F.v = t.value;
   const o = A.data.orders.find(x => x.gid === F.gid), sug = addrSuggest(F.k, F.v, A.edit[F.gid] || addrForm((o && o.addr) || {})), box = $('#af-sug'); if (box && sug) box.innerHTML = addrSugHtml(sug); });
 document.addEventListener('keydown', e => { const t = e.target; if (!t || t.id !== 'af-in') return; const A = aS(), F = A.field; if (!F) return;
@@ -3456,6 +3490,24 @@ document.addEventListener('click', async e => {
     case 'ad-fok': addrFieldCommit(); break;
     case 'sr-open': { const A = aS(); A.sr = id; if (!S.surat || S.surat.connected === undefined) suratCard(); render(); break; }
     case 'sr-close': aS().sr = null; render(); break;
+    case 'sr-unship': { const A = aS(), o = A.data.orders.find(x => x.gid === id); if (!(await confirmBox(`${esc(o ? o.name : '')} siparişi "Barkod bekleyen"e geri alınsın mı? Basılan etiket kullanılmamalı; yeniden barkod oluşturabilirsin.`, 'Geri al'))) break;
+      await run(async () => { await api('/api/surat/unship', {gid: id}); A.data.ships = (A.data.ships || []).filter(x => x.gid !== id); render(); toast('Sipariş bekleyenlere geri alındı.'); }); break; }
+    case 'no-open': aS().no = {f: {firstName:'', lastName:'', phone:'', email:'', province:'', city:'', address1:'', address2:'', zip:''}, items: [], q: '', res: [], paid: true, ship: '', note: '', rcpt: false}; render(); setTimeout(() => { const i = $('#no-firstName'); if (i) i.focus(); }, 30); break;
+    case 'no-close': aS().no = null; render(); break;
+    case 'no-add': { const N = aS().no, x = N && N.res[Number(b.dataset.i)]; if (!x) break; const ex = N.items.find(y => y.ext === x.ext); if (ex) ex.qty++; else N.items.push({ext: x.ext, name: x.name, code: x.code || '', image: x.image || '', qty: 1, price: ''}); N.q = ''; N.res = []; render(); setTimeout(() => { const i = $('#no-q'); if (i) i.focus(); }, 20); break; }
+    case 'no-del': { const N = aS().no; if (N) { N.items.splice(Number(b.dataset.i), 1); render(); } break; }
+    case 'no-save': { const A = aS(), N = A.no; if (!N) break; const f = N.f, ph = phoneFix(f.phone), i = ilFind(f.province);
+      if (!f.firstName.trim() || !f.lastName.trim()) { toast('Ad ve soyad gerekli.', true); break; }
+      if (!ph) { toast('Telefon geçersiz (05xx xxx xx xx).', true); break; }
+      if (i == null || !f.city) { toast('İl ve ilçe seç.', true); break; }
+      if (f.address1.trim().length < 10) { toast('Adresi yaz (mahalle, sokak, no).', true); break; }
+      if (!N.items.length) { toast('En az bir ürün ekle.', true); break; }
+      if (!(await confirmBox(`Shopify'da yeni sipariş oluşturulsun mu?<br><br><span class="small">${esc(f.firstName + ' ' + f.lastName)} · ${esc(f.city + ' / ' + TR_IL[i])}<br>${N.items.map(x => esc(x.qty + '× ' + x.name)).join('<br>')}<br>${N.paid ? 'Ödendi' : 'Ödeme bekliyor'}</span>`, 'Oluştur'))) break;
+      A.busy.no = 1; render();
+      try { const r = await api('/api/shorder/create', {addr: {...f, phone: ph, province: TR_IL[i], provinceCode: 'TR-' + String(i + 1).padStart(2, '0')}, items: N.items.map(x => ({ext: x.ext, qty: x.qty, price: x.price})), paid: N.paid, gateway: N.gw, shipping: N.ship, note: N.note, sendReceipt: N.rcpt});
+        A.no = null; toast(`Shopify'da ${r.order.name} siparişi oluşturuldu.`); A.at = 0; delete A.busy.no; await loadAddr(true); }
+      catch(err) { toast(errText(err), true); delete A.busy.no; render(); }
+      break; }
     case 'sr-selall': { const A = aS(), el = srBulkList(A); A.sel = A.sel || new Set(); if (el.every(o => A.sel.has(o.gid))) A.sel.clear(); else el.forEach(o => A.sel.add(o.gid)); render(); break; }
     case 'sr-bulk': { const A = aS(), list = srBulkList(A).filter(o => id !== 'sel' || (A.sel && A.sel.has(o.gid))); if (!list.length) break;
       const skipped = id === 'sel' ? 0 : A.data.orders.length - list.length - new Set((A.data.ships || []).map(x => x.gid)).size;

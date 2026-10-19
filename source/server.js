@@ -2730,6 +2730,50 @@ ${catalog}` });
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     return json({ ok: true, at: now });
   }
+  // Kayıtlı → bekleyen: siparişin Sürat barkodu kaydı silinir (etiket kullanılmayacaksa)
+  if (path === '/api/surat/unship') {
+    const gid = String(body.gid || ''); if (!gid) return bad('Sipariş bulunamadı.');
+    const f = await env.DB.prepare('SELECT 1 FROM sr_ship WHERE gid=?1 AND fulfilled_at IS NOT NULL').bind(gid).first();
+    if (f) return bad("Bu sipariş Shopify'da kargolandı olarak işlendi; geri alınamaz.");
+    await env.DB.prepare('DELETE FROM sr_ship WHERE gid=?1').bind(gid).run();
+    return json({ ok: true });
+  }
+  // ---------- Yeni Shopify siparişi (elle) ----------
+  if (path === '/api/shorder/products') {
+    const q = String(body.q || '').trim().slice(0, 60); if (q.length < 2) return json({ items: [] });
+    const like = '%' + q.replace(/[%_]/g, '') + '%', low = '%' + q.toLocaleLowerCase('tr').replace(/[%_]/g, '') + '%', up = '%' + q.toLocaleUpperCase('tr').replace(/[%_]/g, '') + '%';
+    const { results } = await env.DB.prepare(`SELECT l.ext, l.name, l.sku, l.image, l.factor, p.code, p.qty FROM listings l LEFT JOIN products p ON p.key=l.pkey WHERE l.channel='shopify' AND (l.name LIKE ?1 OR l.name LIKE ?2 OR l.name LIKE ?3 OR l.sku LIKE ?1 OR p.code LIKE ?1 OR p.code LIKE ?3) ORDER BY l.name LIMIT 25`).bind(like, low, up).all();
+    return json({ items: results });
+  }
+  if (path === '/api/shorder/create') {
+    const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
+    const a = body.addr || {}, t = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n || 255);
+    const items = (Array.isArray(body.items) ? body.items : []).filter(x => /^\d+$/.test(String(x.ext || '')) && Number(x.qty) > 0).slice(0, 50);
+    if (!items.length) return bad('En az bir ürün ekle.');
+    const first = t(a.firstName), last = t(a.lastName), phone = t(a.phone, 20);
+    if (!first || !last) return bad('Ad ve soyad gerekli.'); if (!t(a.address1)) return bad('Adres gerekli.'); if (!t(a.city) || !t(a.province)) return bad('İl ve ilçe gerekli.');
+    if (!/^\+905\d{9}$/.test(phone)) return bad('Telefon 05xx xxx xx xx biçiminde olmalı.');
+    // Fiyat girilmeyen ürünlerde Shopify'daki satış fiyatı kullanılır
+    let prices = {}; try { const d = await shGql(env, c, `query($ids:[ID!]!){nodes(ids:$ids){... on ProductVariant{id price}}}`, { ids: items.map(x => 'gid://shopify/ProductVariant/' + x.ext) }); for (const n of d.nodes || []) if (n && n.id) prices[shId(n.id)] = Number(n.price) || 0; } catch (e) { return bad(shAddrErr(e)); }
+    const money = (v) => ({ shopMoney: { amount: String(Math.round(Number(v) * 100) / 100), currencyCode: 'TRY' } });
+    const lineItems = items.map(x => { const pr = String(x.price ?? '').trim() !== '' ? Number(String(x.price).replace(',', '.')) : prices[String(x.ext)]; return { variantId: 'gid://shopify/ProductVariant/' + x.ext, quantity: Math.min(999, Math.max(1, parseInt(x.qty, 10) || 1)), ...(Number.isFinite(pr) && pr >= 0 ? { priceSet: money(pr) } : {}) }; });
+    const ma = { firstName: first, lastName: last, address1: t(a.address1), address2: t(a.address2), city: t(a.city), provinceCode: t(a.provinceCode, 10) || undefined, countryCode: 'TR', zip: t(a.zip, 10) || undefined, phone };
+    const ship = Number(String(body.shipping ?? '').replace(',', '.'));
+    const total = lineItems.reduce((s2, l) => s2 + (l.priceSet ? Number(l.priceSet.shopMoney.amount) * l.quantity : 0), 0) + (ship > 0 ? ship : 0);
+    const paid = body.paid !== false;
+    const order = { lineItems, shippingAddress: ma, billingAddress: ma, phone, currency: 'TRY', financialStatus: paid ? 'PAID' : 'PENDING', sourceName: 'Lilya Backstage', tags: ['Backstage'], note: t(body.note, 1000) || undefined,
+      ...(t(a.email) ? { email: t(a.email), customer: { toUpsert: { firstName: first, lastName: last, email: t(a.email) } } } : {}),
+      ...(ship > 0 ? { shippingLines: [{ title: 'Kargo', priceSet: money(ship) }] } : {}),
+      ...(paid && total > 0 ? { transactions: [{ kind: 'SALE', status: 'SUCCESS', gateway: body.gateway === 'havale' ? 'Havale/EFT' : 'manual', amountSet: money(total) }] } : {}) };
+    try {
+      const r = await shGql(env, c, `mutation($order:OrderCreateOrderInput!,$options:OrderCreateOptionsInput){orderCreate(order:$order,options:$options){order{id name}userErrors{field message}}}`,
+        { order, options: { inventoryBehaviour: 'DECREMENT_IGNORING_POLICY', sendReceipt: !!body.sendReceipt } });
+      const ue = r.orderCreate.userErrors || []; if (ue.length) return bad('Shopify kabul etmedi: ' + ue.map(e => e.message).join(' · '));
+      const o = r.orderCreate.order;
+      try { await syncShopifyOrders(env, { pages: 1 }); } catch (e) {} // stok hemen düşsün
+      return json({ ok: true, order: o });
+    } catch (e) { return bad(shAddrErr(e)); }
+  }
   if (path === '/api/surat/ship') {
     // Varsayılan: Excel ile (Sürat eKargo → Gönderi Girişi Excel). Web servis yalnız sr_mode=api ise kullanılır.
     const cr = await srCreds(env), apiMode = (await getSetting(env, 'sr_mode')) === 'api' && cr.user && cr.pass;
