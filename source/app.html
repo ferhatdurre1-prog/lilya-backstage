@@ -1992,6 +1992,7 @@ function retCard(g){
       ${r.cnote ? `<div class="meta"><span>Müşteri notu: ${esc(r.cnote)}</span></div>` : ''}
       ${note ? `<div class="meta">${esc(note)}</div>` : ''}
       ${r.kept ? '<div class="meta"><span class="pill p-warn">Ürün müşteride kaldı · stoğa eklenmedi</span></div>' : ''}
+      ${r.inspect === 'pending' ? '<div class="meta"><span class="pill p-warn">Kusurlu iade · sağlam/kırık kontrolü bekliyor</span> <button class="btn sm" data-act="insp-open">Kontrol et</button></div>' : r.inspect === 'done' ? `<div class="meta"><span class="pill ${Number(r.inspOk) >= Number(r.qty) ? 'p-good' : 'p-bad'}">Kontrol edildi: ${fmtN(r.inspOk || 0)} sağlam${Number(r.qty) - Number(r.inspOk || 0) ? ' · ' + fmtN(Number(r.qty) - Number(r.inspOk || 0)) + ' kırık (ziyan)' : ''}</span></div>` : r.status === 'accepted' && !r.kept ? `<div class="meta"><button class="btn sm ghost" data-act="insp-add" data-id="${esc(r.id)}">Kırık/kusurlu geldi · kontrole al</button></div>` : ''}
       ${r.cargo || r.retDesi || r.outDesi ? `<div class="meta"><span>İade kargosu: ${r.cargo ? (r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)) : ''}</span>${r.retDesi ? `<span class="pill p-mute">${esc(String(r.retDesi).replace('.', ','))} desi</span>` : r.outDesi ? `<span class="pill p-mute" title="Trendyol iade desisini kargo faturasıyla bildirir; o zamana kadar gönderim desisi gösterilir">~${esc(String(r.outDesi).replace('.', ','))} desi (gönderim)</span>` : ''}${r.retCargo ? `<span class="pill p-mute">Kargo ${fmtTL(r.retCargo)}</span>` : ''}</div>` : ''}</div>
       <div class="end"><div class="qty" style="font-size:18px">${fmtN(g.qty)}<small>adet</small></div><span class="pill ${st[1]}">${esc(st[0])}</span>${btns ? `<div class="row" style="justify-content:flex-end">${btns}</div>` : ''}</div></div>
   </div>`;
@@ -2005,11 +2006,13 @@ function viewReturns(){
   const head = `<div class="spread"><div><h2 class="sec">İadeler</h2><p class="lead small">Trendyol iadeleri kendiliğinden gelir. Ürün depoya ulaşınca onayla: Trendyol'da da onaylanır ve stok artar.</p></div><button class="btn primary" data-act="new-return">İade kaydı aç</button></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${tabs.map(([id,l]) => `<button class="chip" data-act="rfilter" data-id="${id}" aria-pressed="${S.rfilter===id}">${l} · ${fmtN(c[id]||0)}</button>`).join('')}</div></div>`;
   if (!S.loaded.returns) return head + loading();
-  const warn = urgent ? `<div class="banner bad"><div><b>${fmtN(urgent)} iade için Trendyol'daki işlem süren 24 saatten az.</b> Süre dolarsa Trendyol iadeyi kendiliğinden onaylar.</div></div>` : '';
+  const inspN = (S.returns || []).filter(x => x.inspect === 'pending' && x.status === 'accepted' && !x.kept).reduce((t, x) => t + (Number(x.qty) || 1), 0);
+  const inspBan = `<div class="banner" style="background:${inspN ? 'var(--warn-soft)' : 'var(--surface-2)'};align-items:center"><div style="flex:1"><b>Kusurlu iadeler</b> · ${inspN ? `<b>${fmtN(inspN)} ürün sağlam mı kırık mı kontrol bekliyor.</b> Sağlamsa stoğa eklenir, kırıksa ziyan yazılır.` : 'Kontrol bekleyen ürün yok.'}</div><button class="btn sm ${inspN ? 'primary' : ''}" data-act="insp-open">${inspN ? 'Kontrole başla' : 'Kontrol edilenler'}</button></div>`;
+  const warn = inspBan + (urgent ? `<div class="banner bad"><div><b>${fmtN(urgent)} iade için Trendyol'daki işlem süren 24 saatten az.</b> Süre dolarsa Trendyol iadeyi kendiliğinden onaylar.</div></div>` : '');
   const rs = gs.filter(g => S.rfilter === 'all' || g.bucket === S.rfilter)
     .sort((a, b) => { const da = retDeadline(a.r), db = retDeadline(b.r); if (da !== null || db !== null) return (da === null ? Infinity : da) - (db === null ? Infinity : db); return String(b.r.createdAt).localeCompare(String(a.r.createdAt)); });
   const empty = {action:'Aksiyon bekleyen iade yok', created:'Yolda olan iade talebi yok', stock:'Stoğa eklenecek iade yok', analysis:'İncelemede iade yok'}[S.rfilter] || 'Kayıt yok';
-  if (!rs.length) return head + `<div class="panel empty"><h4>${empty}</h4><p>Trendyol'da iade talebi açıldığında burada "Talep oluşturulan" olarak görünür. Ürün depoya ulaşınca "Aksiyon bekleyen"e geçer; onaylayınca stok artar.</p></div>`;
+  if (!rs.length) return head + inspBan + `<div class="panel empty"><h4>${empty}</h4><p>Trendyol'da iade talebi açıldığında burada "Talep oluşturulan" olarak görünür. Ürün depoya ulaşınca "Aksiyon bekleyen"e geçer; onaylayınca stok artar.</p></div>`;
   const acts = rs.filter(g => g.r.status === 'requested' && g.r.extStatus === 'WaitingInAction' && g.r.canTy).map(g => JSON.stringify(g.rows.map(x => x.id)));
   const sel = retSel(); for (const k of [...sel]) if (!acts.includes(k)) sel.delete(k);
   const bulk = acts.length > 1 ? `<div class="rbulk"><button class="btn sm" data-act="ret-selall">${sel.size === acts.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(sel.size)} / ${fmtN(acts.length)} seçili</span><button class="btn sm primary" data-act="ret-bulk" ${sel.size ? '' : 'disabled'}>Seçilenleri onayla</button></div>` : '';
@@ -2423,11 +2426,42 @@ async function submitReturn(){
 async function returnDecision(id, accept, viaTy){
   const ids = retIds(id), rows = ids.map(i => S.returns.find(x => x.id === i)).filter(Boolean); if (!rows.length) return;
   const r = rows[0], qty = rows.reduce((s, x) => s + (Number(x.qty) || 0), 0);
-  if (accept && !(await confirmBox(viaTy ? `<b>${fmtN(qty)} adet</b> ${esc(r.name)} iadesi <b>Trendyol'da onaylanacak</b> (müşteriye para iadesi yapılır) ve ortak stoğa eklenecek. Devam edilsin mi?` : `<b>${fmtN(qty)} adet</b> ${esc(r.name)} depoya ulaştı ve kabul edildi. Ortak stoğa eklensin mi?`, viaTy ? 'Onayla' : 'Stoğa ekle'))) return;
+  const defect = rows.some(x => INSPECT_RE.test(`${x.reason || ''} ${x.cnote || ''} ${x.note || ''}`.toLocaleLowerCase('tr-TR')));
+  const tail = defect ? ` <b>Kusurlu iade:</b> stoğa hemen eklenmez, <b>Kusurlu iadeler</b> paneline düşer; ürünü kontrol edip sağlam/kırık işaretlersin.` : ' ve ortak stoğa eklenecek.';
+  if (accept && !(await confirmBox(viaTy ? `<b>${fmtN(qty)} adet</b> ${esc(r.name)} iadesi <b>Trendyol'da onaylanacak</b> (müşteriye para iadesi yapılır)${defect ? '.' + tail : tail} Devam edilsin mi?` : `<b>${fmtN(qty)} adet</b> ${esc(r.name)} depoya ulaştı ve kabul edildi.${defect ? tail : ' Ortak stoğa eklensin mi?'}`, viaTy ? 'Onayla' : defect ? 'Kabul et' : 'Stoğa ekle'))) return;
   if (!accept && !(await confirmBox('İade burada reddedilecek; stok değişmez. Trendyol\'a bir şey gönderilmez.', 'Reddet', true))) return;
-  await run(async () => { const d = await api('/api/returns/decide', {ids, accept, trendyol: !!viaTy}); await refresh(true); toast(accept ? (d.tyApproved ? `Trendyol'da onaylandı, ${fmtN(qty)} adet stoğa eklendi.` : `${fmtN(qty)} adet stoğa eklendi.`) : 'İade reddedildi.'); });
+  await run(async () => { const d = await api('/api/returns/decide', {ids, accept, trendyol: !!viaTy}); await refresh(true); toast(accept ? (d.inspect ? `${d.tyApproved ? 'Trendyol\'da onaylandı. ' : ''}Kusurlu iade kontrole alındı: İadeler → Kusurlu iadeler'den sağlam/kırık işaretle.` : d.tyApproved ? `Trendyol'da onaylandı, ${fmtN(qty)} adet stoğa eklendi.` : `${fmtN(qty)} adet stoğa eklendi.`) : 'İade reddedildi.'); if (accept && d.inspect) openSheet('insp', {}); });
 }
 
+/* ============ Kusurlu iadeler: tek tek sağlam / kırık ============ */
+const INSPECT_RE = /kusurlu|hasarl[ıi]|defolu|ay[ıi]pl[ıi]|bozuk|k[ıi]r[ıi]k|[çc]al[ıi][şs]m[ıi]yor|çizik|yırtık|eksik parça|parça eksik/;
+function sheetInsp(){
+  const sh = S.sheet;
+  if (!sh.items || sh.reload) { if (!sh.loading) { sh.loading = true; sh.reload = false; api('/api/inspect/list', {done: !!sh.done}).then(d => { if (S.sheet === sh) { sh.items = d.items; sh.loading = false; sh.i = 0; renderSheet(false); } }).catch(e => { sh.loading = false; toast(errText(e), true); }); }
+    return {title: 'Kusurlu iadeler', body: loading()}; }
+  const tabs = `<div class="chips" style="margin-bottom:12px"><button class="chip" data-act="insp-tab" data-id="0" aria-pressed="${!sh.done}">Kontrol bekleyen</button><button class="chip" data-act="insp-tab" data-id="1" aria-pressed="${!!sh.done}">Kontrol edilenler</button></div>`;
+  if (sh.done) return {title: 'Kusurlu iadeler', body: tabs + (sh.items.length ? `<div class="list">${sh.items.map(x => { const br = Number(x.qty) - Number(x.insp_ok || 0); return `<div class="item" style="cursor:default">${thumb({name: x.name, image: x.image})}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code || x.sku)}</span><span>#${esc(x.order_no)}</span><span>${esc(fmtDate(x.insp_at))}</span></div></div><div class="end"><span class="pill ${br ? 'p-bad' : 'p-good'}">${fmtN(x.insp_ok || 0)} sağlam${br ? ' · ' + fmtN(br) + ' kırık' : ''}</span><button class="btn sm ghost" data-act="insp-redo" data-id="${esc(x.id)}">Düzelt</button></div></div>`; }).join('')}</div>` : '<div class="card"><p class="muted" style="margin:0">Henüz kontrol edilen yok.</p></div>')};
+  const L = sh.items, x = L[sh.i];
+  if (!x && sh.redo) { sh.redo = false; sh.done = true; sh.items = null; return sheetInsp(); }
+  if (!x) return {title: 'Kusurlu iadeler', body: tabs + `<div class="card" style="text-align:center;gap:8px"><div style="font-size:40px">✅</div><h3 style="margin:0">Kontrol bekleyen ürün kalmadı</h3><p class="muted small" style="margin:0">Sağlam olanlar stoğa eklendi, kırıklar ziyan yazıldı.</p><div><button class="btn" data-act="insp-tab" data-id="1">Kontrol edilenleri gör</button></div></div>`};
+  const q = Math.max(1, Number(x.qty) || 1), busy = sh.busy, cost = Number(x.cost) || 0;
+  return {title: 'Kusurlu iadeler', sub: `<span class="muted">${fmtN(sh.i + 1)} / ${fmtN(L.length)}</span>`, body: tabs + `<div class="card insp" style="gap:12px;min-width:0;overflow:hidden">${sh.redo ? `<div class="banner" style="margin:0;background:var(--accent-soft)"><div><b>Düzeltme:</b> önceki kararın (${fmtN(x.insp_ok || 0)} sağlam) geri alınıp yenisi kaydedilir.</div></div>` : ''}
+    <div style="display:flex;gap:14px;align-items:center">${x.image ? `<img src="/api/img?u=${encodeURIComponent(x.image)}" alt="" style="width:110px;height:110px;object-fit:contain;border-radius:12px;background:var(--surface-2)">` : thumb({name: x.name})}
+      <div style="min-width:0"><div style="font-weight:700;font-size:17px;overflow-wrap:anywhere">${esc(x.name)}</div><div class="small muted" style="overflow-wrap:anywhere"><span class="mono" style="font-weight:600">${esc(x.code || x.sku)}</span> · #${esc(x.order_no)} ${chBadge(x.channel)}${x.customer ? ' · ' + esc(x.customer) : ''}</div>
+        <div class="small" style="margin-top:4px;overflow-wrap:anywhere">İade: <b>${fmtN(q)} adet</b>${cost ? ` · birim maliyet ${esc(tl2(cost))}` : ''} · depodaki stok ${fmtN(x.pqty ?? 0)}</div></div></div>
+    ${x.reason ? `<div class="banner" style="margin:0;background:var(--warn-soft)"><div><b>İade sebebi:</b> ${esc(x.reason)}${x.cnote ? `<br><b>Müşteri notu:</b> ${esc(x.cnote)}` : ''}</div></div>` : ''}
+    <h3 style="margin:4px 0 0;text-align:center">Ürün sağlam mı?</h3>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px">
+      <button class="btn primary" style="display:block;white-space:normal;min-width:0;padding:16px 6px;font-size:17px;background:var(--good);border-color:var(--good)" data-act="insp-do" data-id="${q}" ${busy ? 'disabled' : ''}>✅ Sağlam${q > 1 ? ' (hepsi)' : ''}<div class="small" style="font-weight:400;opacity:.9">stoğa eklenir</div></button>
+      <button class="btn" style="display:block;white-space:normal;min-width:0;padding:16px 6px;font-size:17px;background:var(--bad);border-color:var(--bad);color:#fff" data-act="insp-do" data-id="0" ${busy ? 'disabled' : ''}>❌ Kırık${q > 1 ? ' (hepsi)' : ''}<div class="small" style="font-weight:400;opacity:.9">ziyan, stoğa eklenmez</div></button></div>
+    ${q > 1 ? `<div class="row" style="gap:8px;justify-content:center;align-items:center;flex-wrap:wrap"><span class="small">Bir kısmı sağlam:</span><input class="input num" id="insp-ok" inputmode="numeric" style="width:80px" placeholder="0–${q}"><span class="small">adet sağlam</span><button class="btn sm" data-act="insp-part" ${busy ? 'disabled' : ''}>Kaydet</button></div>` : ''}
+    <div class="row" style="justify-content:space-between"><button class="btn sm ghost" data-act="insp-nav" data-id="-1" ${sh.i ? '' : 'disabled'}>← Önceki</button><button class="btn sm ghost" data-act="insp-nav" data-id="1">Sonra bakarım →</button></div></div>`};
+}
+async function inspDo(okQty){ const sh = S.sheet, x = sh && sh.items && sh.items[sh.i]; if (!x) return; sh.busy = true; renderSheet(false);
+  try { const r = await api('/api/inspect/decide', {id: x.id, ok: okQty}); sh.items.splice(sh.i, 1); if (sh.i >= sh.items.length) sh.i = Math.max(0, sh.items.length - 1);
+    toast(r.broken && r.okQty ? `${fmtN(r.okQty)} sağlam stoğa eklendi, ${fmtN(r.broken)} kırık ziyan yazıldı.` : r.okQty ? `Sağlam: ${fmtN(r.okQty)} adet stoğa eklendi.` : `Kırık: ${fmtN(r.broken)} adet ziyan yazıldı.`); refresh(true); }
+  catch(e) { toast(errText(e), true); }
+  sh.busy = false; renderSheet(false); }
 /* ============ Stok değeri ============ */
 function viewValue(){
   // Stoklar ekranıyla aynı ürünler: birleştirilip gizlenen eski kayıtlar ve pasif ürünler sayılmaz
@@ -3346,7 +3380,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, insp:sheetInsp, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -3452,6 +3486,14 @@ document.addEventListener('click', async e => {
       await run(async () => { await api('/api/products/bundle', {key: sh.id, items}); await refresh(true); toast(clear ? 'Set kaldırıldı.' : 'Set kaydedildi. Trendyol stoğu birkaç saniye içinde güncellenir.'); openSheet('product', {id: sh.id}); }); break; }
     case 'need-open': openSheet('need', {}); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
+    case 'insp-open': openSheet('insp', {}); break;
+    case 'insp-tab': if (S.sheet) { S.sheet.done = id === '1'; S.sheet.items = null; renderSheet(false); } break;
+    case 'insp-nav': if (S.sheet && S.sheet.items) { S.sheet.i = (S.sheet.i + Number(id) + S.sheet.items.length) % Math.max(1, S.sheet.items.length); renderSheet(false); } break;
+    case 'insp-do': await inspDo(Number(id) || 0); break;
+    case 'insp-part': { const sh = S.sheet, x = sh && sh.items && sh.items[sh.i]; if (!x) break; const v = parseInt(($('#insp-ok') || {}).value, 10); if (!(v >= 0 && v <= Number(x.qty))) { toast(`0 ile ${x.qty} arasında yaz.`, true); break; } await inspDo(v); break; }
+    case 'insp-redo': { const sh = S.sheet, x = sh && sh.items && sh.items.find(y => y.id === id); if (!x) break; sh.done = false; sh.items = [x]; sh.i = 0; sh.redo = true; renderSheet(false); break; }
+    case 'insp-add': if (!(await confirmBox('Bu iade kusurlu iadeler paneline alınsın mı? Stoğa eklenen iade adedi geri alınır; ürünü kontrol edip sağlam/kırık işaretlersin.', 'Kontrole al'))) break;
+      await run(async () => { await api('/api/inspect/add', {id}); await refresh(true); openSheet('insp', {}); }); break;
     case 'buy-selall': { const B = bS(), rows = buyRows(); if (rows.every(r => B.sel.has(r.p.id))) rows.forEach(r => B.sel.delete(r.p.id)); else rows.forEach(r => B.sel.add(r.p.id)); render(); break; }
     case 'buy-selsup': { const B = bS(); buyRows().filter(r => (r.sup || 'Tedarikçi belli değil') === id).forEach(r => B.sel.add(r.p.id)); render(); break; }
     case 'buy-list': openSheet('buylist', {}); break;
