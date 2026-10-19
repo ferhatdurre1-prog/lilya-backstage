@@ -866,7 +866,7 @@ function suratForm(o, again){
   const A = aS(), g = esc(o.gid), busy = A.busy['sr' + o.gid], sr = S.surat || {};
   return `<div class="srf"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end"><label class="f" style="width:90px">Koli adedi<input class="input num" id="sr-adet" inputmode="numeric" value="1"></label><label class="f" style="width:90px">Desi<input class="input num" id="sr-d" inputmode="decimal" value="${esc(String(sr.desi || 2).replace('.', ','))}"></label>
     <button class="btn primary" data-act="sr-ship" data-id="${g}" ${again ? 'data-again="1"' : ''} ${busy ? 'disabled' : ''}>${busy ? "Sürat'a gönderiliyor…" : again ? 'Yeni barkod oluştur ve yazdır' : 'Oluştur ve etiketi yazdır'}</button><button class="btn ghost" data-act="sr-close" ${busy ? 'disabled' : ''}>Vazgeç</button></div>
-    <p class="small muted" style="margin:0">${again ? "Eski barkod Sürat'ta kayıtlı kalır; şubeye yalnız yeni etiketli paketi ver." : "Etiket PDF'i açılır; gönderi Sürat Excel dosyasına eklenir (üstteki 'Sürat Excel indir')."}</p></div>`;
+    <p class="small muted" style="margin:0">${again ? "Eski barkod Sürat'ta kayıtlı kalır; şubeye yalnız yeni etiketli paketi ver." : "Etiket PDF'i açılır (100×200 mm)."}</p></div>`;
 }
 // Sürat etiketi: üstte kendi barkodumuz, altında alıcı adresi (şube okutamazsa elle de girebilsin), gönderici ve ürünler
 function drawSuratLabel(sh, W, H, mk){
@@ -901,12 +901,19 @@ function drawSuratLabel(sh, W, H, mk){
   return pg.cv || c;
 }
 async function suratPrint(list){
-  const {w, h} = lblSize();
+  const w = 100, h = 200; // Sürat etiketi: 100×200 mm, sayfa başına 8 ürün kutusu, fazlası ek sayfada
   await run(async () => {
     await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
+    const urls = [...new Set(list.flatMap(sh => (sh.lines || []).map(l => l.image)).filter(u => u && !LBL_IMGS.has(u)))];
+    await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
     const doc = new MiniPdf(w, h), mk = () => ({cv: null, c: doc.addPage()});
-    for (const sh of list) for (let i = 0; i < Math.max(1, sh.adet || 1); i++) drawSuratLabel(sh, w, h, mk); // her koliye bir etiket
+    for (const sh of list) { const a = sh.addr || {}, tel = /^5\d{9}$/.test(a.tel || '') ? `0${a.tel.slice(0,3)} ${a.tel.slice(3,6)} ${a.tel.slice(6,8)} ${a.tel.slice(8)}` : '';
+      const p = { orderNo: sh.order_no, date: sh.at, tracking: sh.tracking || sh.ref, codeLabel: sh.tracking ? 'Sürat takip no: ' : 'Sürat barkodu: ', per: 8,
+        to: { name: a.name || '', addr: [a.adres, a.zip].filter(Boolean).join(' · '), city: `${a.ilce || ''} / ${a.il || ''}`.toLocaleUpperCase('tr-TR'), phone: tel },
+        lines: (sh.lines || []).map(l => ({ name: l.name, code: l.code, factor: l.factor, qty: l.qty, unit: l.unit, image: l.image })),
+        total: (sh.lines || []).reduce((t, l) => t + (Number(l.unit) || 0) * (Number(l.qty) || 0), 0) };
+      for (let i = 0; i < Math.max(1, sh.adet || 1); i++) drawLabelPages(p, w, h, '', mk); } // her koliye bir etiket
     await deliverPdf(doc.output(), `surat-etiket-${list.length === 1 ? list[0].ref : list.length + '-gonderi'}-${todayTR()}.pdf`, list.reduce((t, x) => t + Math.max(1, x.adet || 1), 0));
   });
 }
@@ -2131,7 +2138,7 @@ function drawLabelPages(p, W, H, sid, mk){
   const orderLabel = String(p.orderNo), custName = (p.to.name || '').toLocaleUpperCase('tr-TR');
   const dateStr = p.date ? new Date(p.date).toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
   const colQty = mm(11), colAmt = mm(19), pad = mm(1.6), nameW = cw - colQty - colAmt - 2 * pad - mm(1);
-  const PER = 4, footH = mm(12), gap = mm(1.2);  // alt kenarda yazıcının basamadığı pay için geniş boşluk
+  const PER = p.per || 4, footH = mm(12), gap = mm(1.2);  // alt kenarda yazıcının basamadığı pay için geniş boşluk
   const items = p.lines.map(l => ({l, name: [String(l.name || l.sku || '').replace(/,?\s*one size\b/ig, '').trim(), l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ')})); // stok kodu ve 'one size' yazılmaz; Lilya ürün kodu kutuda ayrı satırda
   const chunks = []; for (let i = 0; i < items.length; i += PER) chunks.push(items.slice(i, i + PER)); if (!chunks.length) chunks.push([]);
   const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
@@ -2167,7 +2174,7 @@ function drawLabelPages(p, W, H, sid, mk){
       if (p.tracking && window.JsBarcode) { try { lblBarcode(c, p.tracking, bx, by, bw, bh); } catch(e) {} }
       else { c.lineWidth = mm(0.3); c.setLineDash([mm(1.2), mm(1)]); c.strokeRect(bx, by, bw, bh); c.setLineDash([]); font(c, 3.2, true); const t = 'Takip numarası bekleniyor'; c.fillText(t, bx + (bw - c.measureText(t).width) / 2, by + bh / 2 - mm(1.6)); }
       let yR = by + bh + mm(1.6); font(c, 3, false); c.fillText('Sipariş No: ' + orderLabel, bx, yR); yR += mm(4.2);
-      if (p.tracking) { let sz = 3; const t = 'Kargo Kampanya Kodu: ' + p.tracking; font(c, sz, false); while (c.measureText(t).width > bw && sz > 2.2) { sz -= 0.1; font(c, sz, false); } c.fillText(t, bx, yR); yR += mm(sz * 1.15); }
+      if (p.tracking) { let sz = 3; const t = (p.codeLabel || 'Kargo Kampanya Kodu: ') + p.tracking; font(c, sz, false); while (c.measureText(t).width > bw && sz > 2.2) { sz -= 0.1; font(c, sz, false); } c.fillText(t, bx, yR); yR += mm(sz * 1.15); }
       // logo barkodla aynı dikey merkezde
       const lgW = bx - m - mm(4), lgH = lgW * 352 / 900, lgY = by + (bh - lgH) / 2;
       if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, lgY, lgW, lgH); else if (!c.isPdf) drawLogo(c, m - mm(1), m - mm(1), mm(24));
@@ -2176,6 +2183,11 @@ function drawLabelPages(p, W, H, sid, mk){
       const ruleY = Math.max(yR, lgY + lgH + nl.length * lh) + mm(0.8);
       nl.forEach((t, k) => c.fillText(t, m, ruleY - mm(0.8) - (nl.length - k) * lh));
       rule(c, ruleY, 0.4); y = ruleY + mm(1.2);
+      // Alıcı adresi (Sürat etiketi): şube okutamazsa elle girebilsin
+      if (p.to.addr) { font(c, 2.4, true); c.fillText('ALICI ADRESİ', m, y); y += mm(3.2);
+        font(c, 3.3, false); for (const t of wrapText(c, p.to.addr, cw).slice(0, 3)) { c.fillText(t, m, y); y += mm(4); }
+        font(c, 3.8, true); c.fillText(p.to.city || '', m, y); if (p.to.phone) { font(c, 3.2, false); const t = 'Tel: ' + p.to.phone; c.fillText(t, PW - m - c.measureText(t).width, y + mm(0.4)); } y += mm(4.8);
+        rule(c, y, 0.4); y += mm(1.2); }
     } else {
       y = m; font(c, 3, false);
       for (const t of wrapText(c, `Sipariş No: ${orderLabel} · ${custName}`, cw)) { c.fillText(t, m, y); y += mm(4); }
