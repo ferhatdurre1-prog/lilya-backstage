@@ -3093,6 +3093,9 @@ function srDiagHtml(d){
     <div>Kullanıcı adı: <span class="mono">${esc((c.user || {}).mask || '')}</span> (${ci(c.user)}) · Cari kodu: <span class="mono">${esc((c.cari || {}).mask || '')}</span> (${ci(c.cari)})</div>
     <div>Kayıtlı şifre: ${ci(c.pass)} · Web servis şifresi: ${ci(c.web)}</div>
     ${(d.tests || []).map(t => `<div>• ${esc(t.label)} → Sürat: <b>${esc(t.msg)}</b></div>`).join('')}
+    ${(d.lists || []).map(t => `<div>• Liste (${esc(t.label)}) → <b>${esc(t.msg)}</b></div>`).join('')}
+    ${(d.create || []).map(t => `<div>• Gönderi girişi ${esc(t.label)} → <b>${esc(t.msg)}</b></div>`).join('')}
+    ${d.listParams && d.listParams.length ? `<div class="mono" style="font-size:11px">Liste alanları: ${esc(d.listParams.join(', '))}</div>` : ''}
     ${d.list ? `<div>• Son 2 günün gönderi listesi → ${d.list.err ? `<b style="color:var(--bad)">${esc(d.list.err)}</b>` : `<b>${fmtN(d.list.count)} gönderi</b>${d.list.mesaj ? ' · ' + esc(d.list.mesaj) : ''}${d.list.text ? ' · ' + esc(d.list.text) : ''}`}</div>${d.list.sample ? `<div class="mono" style="font-size:11px;overflow-wrap:anywhere">${esc(JSON.stringify(d.list.sample))}</div>` : ''}` : ''}
     ${d.schema && !d.schema.err ? `<div>Gönderi: <span class="mono">${esc((d.schema.create || []).join(' · '))}</span></div><div>Sorgu: <span class="mono">${esc(d.schema.query || '—')}</span></div>` : ''}
     ${d.schema ? `<details><summary>Teknik ayrıntı</summary><div class="mono" style="font-size:11px;overflow-wrap:anywhere">${esc(JSON.stringify(d.schema))}</div></details>` : ''}

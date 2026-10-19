@@ -2753,6 +2753,10 @@ ${catalog}` });
     const tries = [['Cari kodu + şifre', { ...cr, cari: cr.cari, web: '' }]];
     if (cr.user && cr.user !== cr.cari) tries.push(['Kullanıcı adı + şifre', { ...cr, cari: cr.user, web: '' }]);
     if (cr.web) tries.push(['Cari kodu + web servis şifresi', { ...cr, web: cr.web }]);
+    // Liste: her iki şifreyle; gönderi girişi: boş gönderiyle (şifre doğruysa Sürat alan hatası verir, kayıt oluşmaz)
+    out.lists = []; for (const [label, c2] of [['Cari kodu + gönderim şifresi', { ...cr, web: '' }], ['Cari kodu + web servis şifresi', cr]]) { if (label.includes('web') && !cr.web) continue; try { const L = await srList(env, c2, 2); out.lists.push({ label, msg: L ? (L.rows.length && !L.mesaj ? `${L.rows.length} gönderi` : (L.mesaj || L.text || `${L.rows.length} satır`)) : 'işlem yok' }); } catch (e) { out.lists.push({ label, msg: String(e.message || e) }); } }
+    out.listParams = ((sc.lists || {}).CariKoduveSifre || []).map(p => p.name + ':' + p.type);
+    out.create = []; for (const a of (sc.alts || [])) { for (const [label, u] of [['kullanıcı adı', cr.user], ['cari kodu', cr.cari]].filter((x, i, arr) => i === 0 || x[1] !== arr[0][1])) { try { const t = await srCall(env, a.method, a.params, p => p.tns ? null : /kullanici|cari/i.test(p.name) ? u : /sifre|password/i.test(p.name) ? cr.pass : null); out.create.push({ label: `${a.method} (${label} + gönderim şifresi)`, msg: srText(t).slice(0, 200) || '(boş)' }); } catch (e) { out.create.push({ label: a.method, msg: String(e.message || e) }); } } }
     try { const L = await srList(env, cr, 2); out.list = L ? { count: L.rows.length, mesaj: L.mesaj, text: L.text, sample: L.rows[0] || null, keys: L.rows[0] ? Object.keys(L.rows[0]) : [] } : { err: 'Listeleme işlemi yok' }; } catch (e) { out.list = { err: String(e.message || e) }; }
     for (const [label, c] of tries) { try { const q = await srQuery(env, c, 'LH0'); out.tests.push({ label, msg: q.durum || q.raw || '(boş cevap)' }); } catch (e) { out.tests.push({ label, msg: String(e.message || e) }); } }
     return json(out);
