@@ -793,7 +793,7 @@ async function loadAddrMore(){
 }
 const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(' / '), a.zip].filter(Boolean).map(esc).join(' · ') : '<span class="muted">Adres yok</span>';
 function viewAddr(){
-  const A = aS(); loadAddr(false);
+  const A = aS(); loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Kargolanmamış bütün Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
   <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const has = new Set(((A.data && A.data.ships) || []).map(x => x.gid)), all = (A.data && A.data.orders) || [], nDone = all.filter(o => has.has(o.gid)).length; return `<button class="chip" data-act="ad-view" data-id="pending" aria-pressed="${A.view !== 'done'}">Barkod bekleyen · ${fmtN(all.length - nDone)}</button><button class="chip" data-act="ad-view" data-id="done" aria-pressed="${A.view === 'done'}">Kayıtlı (barkodu oluşturuldu) · ${fmtN(nDone)}</button>`; })()}<button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button></div>
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
