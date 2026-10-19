@@ -743,7 +743,7 @@ function addrIssues(a, o){
   if (!a.phone.trim() && !(o && o.phone)) bad('Telefon yok'); else if (a.phone.trim() && !phoneFix(a.phone)) bad('Telefon geçersiz');
   if ((a.countryCode || 'TR') !== 'TR') warn('Ülke Türkiye değil: ' + a.countryCode);
   const il = ilFind(a.province), cityIl = ilFind(a.city);
-  if (!a.province.trim()) bad('İl yok'); else if (il == null) bad('İl tanınmadı: ' + a.province); else if (TR_IL[il] !== a.province.trim()) warn('İl yazımı düzeltilebilir → ' + TR_IL[il]);
+  if (!a.province.trim()) bad('İl yok'); else if (il == null) bad('İl tanınmadı: ' + a.province); else if (trFold(TR_IL[il]) !== trFold(a.province)) warn('İl yazımı düzeltilebilir → ' + TR_IL[il]); // il adını Shopify kendi listesinden yazar ("Istanbul" gibi); sadece harf farkı sorun sayılmaz
   if (!a.city.trim()) bad('İlçe yok');
   else if (il != null && trFold(a.city) === trFold(TR_IL[il])) warn('İlçe yerine il yazılmış olabilir');
   else if (cityIl != null && trFold(a.city) === trFold(TR_IL[cityIl]) && cityIl !== il) warn('İl ile ilçe karışmış olabilir');
