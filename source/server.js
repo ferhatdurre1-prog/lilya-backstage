@@ -639,7 +639,7 @@ const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&'
 const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1]] = m[2]; return o; };
 async function srSchema(env, force) {
   const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
-  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 6) return c; } catch (e) {} }
+  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 7) return c; } catch (e) {} }
   const r = await fetch(SR_URL + '?WSDL', { headers: { 'user-agent': 'LilyaBackstage/1.0' } });
   if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
   const w = await r.text();
@@ -656,8 +656,8 @@ async function srSchema(env, force) {
   const ct = new RegExp(`<(?:\\w+:)?complexType[^>]*name="${gp.type}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?complexType>`).exec(w);
   if (!ct) throw new Error('Sürat gönderi alanları okunamadı.');
   let query = null; for (const m of ['WebSiparisKodu', 'WebSiparisKoduToplu']) { const b = elBlock(m); if (b) { query = { method: m, params: fields(b) }; break; } }
-  const lists = {}; for (const m of ['CariKoduveSifre', 'KargoTakipHareketDetayliV2', 'WebSiparisKodundanKargoTeslimatBilgisi']) { const b = elBlock(m); if (b) lists[m] = fields(b); }
-  const sc = { v: 6, ns, method, params, alts, ops, lists, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
+  const lists = {}; for (const m of ['CariKoduveSifre', 'KargoTakipHareketDetayliV2', 'WebSiparisKodundanKargoTeslimatBilgisi', 'KargoBarkoduSiparis', 'KargoBarkodu', 'Barkod', 'WebSiparisKoduAlicidan']) { const b = elBlock(m); if (b) lists[m] = fields(b); }
+  const sc = { v: 7, ns, method, params, alts, ops, lists, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
   await env.DB.batch([setStmt(env, 'sr_schema', JSON.stringify(sc)), setStmt(env, 'sr_schema_at', String(Date.now()))]);
   return sc;
 }
@@ -690,7 +690,18 @@ async function srSend(env, creds, g, alt) {
   const bc = ((/<(\w*(?:Barkod|Takip)\w*)>\s*(\d{8,20})\s*</i.exec(inner) || [])[2]) || ((/"\w*(?:Barkod|Takip)\w*"\s*:\s*"?(\d{8,20})/i.exec(inner) || [])[1]) || (/^\s*(\d{10,20})\s*$/.exec(msg) || [])[1] || '';
   if (!r.ok) throw new Error(`Sürat ${r.status}: ${msg || 'cevap okunamadı'}`);
   if (!bc && (!res || SR_FAIL.test(msg))) throw new Error('Sürat kabul etmedi: ' + (msg || 'boş cevap'));
-  return { msg: msg || 'Tamam', method: sc.method, barcode: bc };
+  return { msg: msg || 'Tamam', method: sc.method, barcode: bc, raw: srText(inner).slice(0, 400) };
+}
+// Gönderinin Sürat barkodunu iste: barkod işlemleri sırayla (kullanıcı/şifre + bizim referansımız)
+async function srFetchBarcode(env, cr, ref) {
+  const sc = await srSchema(env, false), L = sc.lists || {}, log = [];
+  for (const m of ['KargoBarkoduSiparis', 'KargoBarkodu', 'Barkod', 'WebSiparisKoduAlicidan']) { const ps = L[m]; if (!ps) continue;
+    try { const t = await srCall(env, m, ps, p => p.tns ? null : /cari/i.test(p.name) ? cr.cari : /kullanici/i.test(p.name) ? (cr.user || cr.cari) : /sifre|password|parola/i.test(p.name) ? cr.pass : /siparis|referans|ozel|webtakip|kod/i.test(p.name) ? ref : /bool/i.test(p.type) ? 'false' : null);
+      const body = t.replace(/<xs:schema[\s\S]*?<\/xs:schema>/g, '');
+      const bc = ((/<(\w*(?:Barkod|Takip)\w*)>\s*(\d{8,20})\s*</i.exec(body) || [])[2]) || ((/"\w*(?:Barkod|Takip)\w*"\s*:\s*"?(\d{8,20})/i.exec(body) || [])[1]) || '';
+      log.push(m + ': ' + srText(body).slice(0, 120)); if (bc) return { barcode: bc, log };
+    } catch (e) { log.push(m + ': ' + String(e.message || e).slice(0, 120)); } }
+  return { barcode: '', log };
 }
 // Takip: bizim barkodumuzla (WebSiparisKodu) Sürat'ın takip numarası sorulur; şube okutunca dolar
 const SR_TRACK_URL = (no) => `https://suratkargo.com.tr/KargoTakip/?kargotakipno=${encodeURIComponent(no)}`;
@@ -2784,6 +2795,8 @@ ${catalog}` });
   if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/track') {
+    if (body.number === undefined) { const cr1 = await srCreds(env), row1 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
+      if (row1 && !row1.tracking && row1.mode === 'api' && cr1.user) { try { const fb = await srFetchBarcode(env, cr1, row1.ref); if (fb.barcode) { row1.tracking = fb.barcode; row1.track_msg = 'Sürat barkodu'; return json({ ok: true, r: await srTrackOne(env, row1, cr1, await shCreds(env)) }); } await env.DB.prepare('UPDATE sr_ship SET track_msg=?2, track_at=?3 WHERE ref=?1').bind(row1.ref, ('Barkod sorgusu: ' + fb.log.join(' / ')).slice(0, 600), iso()).run(); } catch (e) {} } }
     if (body.number === undefined) { const cr0 = await srCreds(env), row0 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
       if (row0 && !row0.tracking && cr0.cari) { try { const L = await srList(env, cr0, 6), m = L && srMatch(L.rows, row0), tn = m && srRowTrack(m); if (tn) { row0.tracking = tn; row0.track_msg = srRowState(m) || 'Sürat listesinden'; return json({ ok: true, r: await srTrackOne(env, row0, cr0, await shCreds(env)) }); } } catch (e) {} } }
     const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
@@ -2874,7 +2887,7 @@ ${catalog}` });
     const L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
     const icerik = L.map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ').slice(0, 100);
     const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: 0, kapidanodemetutari: 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: '', irsaliyesirano: '' };
-    let res; if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); break; } catch (e1) { errs.push(a.method.replace('GonderiyiKargoyaGonder', '…') + ': ' + String(e1.message || e1).slice(0, 160)); } } if (!res) throw new Error(errs.join(' | ')); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
+    let res; if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); if (!res.barcode && /daha [öo]nce/i.test(res.msg)) { const fb = await srFetchBarcode(env, cr, ref); if (fb.barcode) res.barcode = fb.barcode; errs.push('barkod sorgusu: ' + fb.log.join(' / ')); } if (errs.length) res.msg = res.msg + ' ‖ ' + errs.join(' | '); break; } catch (e1) { errs.push(a.method.replace('GonderiyiKargoyaGonder', '…') + ': ' + String(e1.message || e1).slice(0, 220)); } } if (!res) throw new Error(errs.join(' | ')); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
     const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik };
     await env.DB.batch([env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel'), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
     // Sürat barkodu geldiyse takip no hemen Shopify'a işlenir (Trendyol'daki gibi)
