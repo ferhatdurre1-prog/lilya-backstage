@@ -2675,10 +2675,10 @@ ${catalog}` });
     // STOĞA EKLE (kullanıcı onayıyla): eşleşmiş satırlar stoğa girer, maliyet fişteki birim fiyat olur
     const id = intOr(body.id, 0), r = await env.DB.prepare('SELECT * FROM purchases WHERE id=?1').bind(id).first();
     if (!r) return bad('Alış bulunamadı.', 404);
-    if (r.status !== 'draft') return bad('Bu alış zaten stoğa eklenmiş.');
+    if (r.status !== 'draft' && r.status !== 'costed') return bad('Bu alış zaten stoğa eklenmiş.');
     const items = JSON.parse(r.items || '[]'), use = items.filter(x => x.pkey && x.qty > 0);
     if (!use.length) return bad('Stoğa eklenecek eşleşmiş satır yok; önce listeyi düzenleyip ürünleri eşleştir.');
-    const upd = await env.DB.prepare(`UPDATE purchases SET status='stocked', stocked_at=?2 WHERE id=?1 AND status='draft'`).bind(id, iso()).run();
+    const upd = await env.DB.prepare(`UPDATE purchases SET status='stocked', stocked_at=?2 WHERE id=?1 AND status IN ('draft','costed')`).bind(id, iso()).run();
     if (!upd.meta || !upd.meta.changes) return bad('Bu alış zaten stoğa eklenmiş.');
     const cur = new Map(); for (const p of await selectIn(env, 'SELECT key, qty, cost, cost_date FROM products', 'key', [...new Set(use.map(x => x.pkey))])) cur.set(p.key, { ...p });
     const st = [], docD = r.doc_date || String(r.t || '').slice(0, 10);
