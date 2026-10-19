@@ -771,7 +771,7 @@ function viewAddr(){
   const rows = A.data.orders.map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
   const nBad = rows.filter(r => r.issues.length).length;
   h += `<div class="small muted" style="margin:0 0 10px">${fmtN(rows.length)}${A.data.after ? '+' : ''} sipariş · <b style="color:${nBad ? 'var(--bad)' : 'var(--good)'}">${nBad ? fmtN(nBad) + ' tanesinde kontrol edilecek bir şey var' : 'hepsi düzgün görünüyor'}</b></div>`;
-  const list = rows.filter(r => !A.only || r.issues.length || r.e).sort((x, y) => (y.issues.some(i => i[0]==='bad') - x.issues.some(i => i[0]==='bad')) || (y.issues.length > 0) - (x.issues.length > 0));
+  const list = rows.filter(r => !A.only || r.issues.length || r.e).sort((x, y) => String(y.o.createdAt).localeCompare(String(x.o.createdAt))); // sipariş tarihine göre, en yeni üstte
   if (!list.length) h += `<div class="panel empty"><h4>${rows.length ? 'Sorunlu adres yok' : 'Sipariş yok'}</h4><p>${rows.length ? '"Sadece sorunlular" filtresini kapatıp hepsini görebilirsin.' : A.q ? 'Aramayla eşleşen sipariş bulunamadı.' : 'Kargolanmamış Shopify siparişi yok.'}</p></div>`;
   for (const {o, e, issues} of list) {
     const g = esc(o.gid), busy = A.busy[o.gid];
