@@ -124,7 +124,7 @@ async function init0(env) {
   // Sürat Kargo gönderileri: kendi barkodumuz (OzelKargoTakipNo) ve Sürat'a bildirilen adres
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ship(ref TEXT PRIMARY KEY, gid TEXT, order_no TEXT, adet INTEGER, desi REAL, addr TEXT, lines TEXT, msg TEXT, at TEXT)').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS sr_ship_gid ON sr_ship(gid)').run();
-  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_listing1'`).first())) {
@@ -2680,7 +2680,7 @@ ${catalog}` });
         total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0).map(l => `${l.unfulfilledQuantity}× ${l.name}`),
         addr: o.shippingAddress || null }));
       const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
-      const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
+      const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err, exported_at, mode FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
       return json({ ok: true, orders, log, ships, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
   }
@@ -2718,8 +2718,21 @@ ${catalog}` });
   }
   if (path === '/api/surat/disconnect') { await env.DB.batch([setStmt(env, 'sr_cari', ''), setStmt(env, 'sr_user', ''), setStmt(env, 'sr_pass', ''), setStmt(env, 'sr_web', '')]); return json({ ok: true }); }
   if (path === '/api/surat/schema') { try { const sc = await srSchema(env, true); return json({ ok: true, method: sc.method, fields: sc.gonderi.fields.map(f => f.name + (f.min ? '*' : '')) }); } catch (e) { return bad(String(e.message || e)); } }
+  // Sürat Excel: yüklenmeyi bekleyen (ya da son 7 günün) gönderileri; indirildikten sonra işaretlenir
+  if (path === '/api/surat/export') {
+    const all = !!body.all;
+    const { results } = await env.DB.prepare(`SELECT ref, gid, order_no, adet, desi, addr, lines, at, exported_at FROM sr_ship s WHERE COALESCE(mode,'excel')='excel' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND ${all ? 'at > ?1' : 'exported_at IS NULL AND at > ?1'} ORDER BY at`).bind(iso(Date.now() - (all ? 7 : 30) * 86400000)).all();
+    return json({ ok: true, ships: results.map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) });
+  }
+  if (path === '/api/surat/exported') {
+    const refs = (Array.isArray(body.refs) ? body.refs : []).map(String).slice(0, 500); if (!refs.length) return json({ ok: true });
+    const now = iso(); const st = refs.map(r => env.DB.prepare('UPDATE sr_ship SET exported_at=COALESCE(exported_at, ?2) WHERE ref=?1').bind(r, now));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    return json({ ok: true, at: now });
+  }
   if (path === '/api/surat/ship') {
-    const cr = await srCreds(env); if (!cr.user || !cr.pass) return bad('Sürat Kargo bağlı değil. Bağlantılar bölümünden kullanıcı adı ve şifreyi gir.');
+    // Varsayılan: Excel ile (Sürat eKargo → Gönderi Girişi Excel). Web servis yalnız sr_mode=api ise kullanılır.
+    const cr = await srCreds(env), apiMode = (await getSetting(env, 'sr_mode')) === 'api' && cr.user && cr.pass;
     const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
     const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
     const adet = Math.max(1, Math.min(50, parseInt(body.adet, 10) || 1)), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || cr.desi).replace(',', '.')) || cr.desi));
@@ -2742,10 +2755,10 @@ ${catalog}` });
     const L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
     const icerik = L.map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ').slice(0, 100);
     const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: 0, kapidanodemetutari: 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: '', irsaliyesirano: '' };
-    let res; try { try { res = await srSend(env, cr, g); } catch (e1) { const sc = await srSchema(env, false), other = (sc.alts || []).find(a => a.method !== sc.method); if (other && /kullan|[şs]ifre|yetki/i.test(String(e1.message))) res = await srSend(env, cr, g, other.method); else throw e1; } } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
-    const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel };
-    await env.DB.batch([env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso()), setStmt(env, 'sr_ok', iso()), setStmt(env, 'sr_err', '')]);
-    return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
+    let res; if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { try { res = await srSend(env, cr, g); } catch (e1) { const sc = await srSchema(env, false), other = (sc.alts || []).find(a => a.method !== sc.method); if (other && /kullan|[şs]ifre|yetki/i.test(String(e1.message))) res = await srSend(env, cr, g, other.method); else throw e1; } } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
+    const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik };
+    await env.DB.batch([env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel'), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
+    return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), mode: apiMode ? 'api' : 'excel', total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
   }
   if (path === '/api/shaddr/save') {
     const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
