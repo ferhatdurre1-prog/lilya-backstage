@@ -3080,6 +3080,7 @@ function suratCard(){
     <dt>Web servis şifresi</dt><dd><form id="f-srweb" class="row" style="gap:6px"><input class="input mono" id="sr-web2" type="password" placeholder="${d.web ? 'Kayıtlı (değiştirmek için yaz)' : 'Yok — cari şifresi kullanılır'}" autocomplete="off" style="width:220px"><button class="btn sm" type="submit">Kaydet</button></form></dd>
     <dt>Son gönderi</dt><dd>${d.ok ? esc(ago(d.ok)) : 'Henüz yok'}</dd>
     <dt>Takip</dt><dd>Şube okutunca takip no 30 dakikada bir alınır, Shopify'a işlenir ve müşteriye bildirim gider.${d.trackErr ? `<div style="color:var(--bad);font-size:12px">${esc(d.trackErr.slice(27) || d.trackErr)}</div>` : ''}</dd></dl>
+    <label class="chk small"><input type="checkbox" id="sr-mode" ${d.mode === 'api' ? 'checked' : ''}><span><b>Otomatik gönderim:</b> barkod oluşturunca gönderi doğrudan Sürat'a kaydedilsin (Excel yüklemeye gerek kalmaz). Bağlantı testi geçtikten sonra aç.</span></label>
     <p class="muted small" style="margin:0">Barkodlar <b>Adres düzeltme</b> sekmesinden oluşturulur.</p>
     <div><button class="btn sm" data-act="sr-diag">🔎 Bağlantıyı test et</button></div>${S.srDiag ? srDiagHtml(S.srDiag) : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Son hata:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}</div>`;
@@ -3702,6 +3703,7 @@ document.addEventListener('change', e => {
   if (t.id === 'cost-file') onCostFile(t.files[0]);
   if (t.id === 'cost-setstock') { S.costImp.setStock = t.checked; recomputeCosts(); }
   if (t.id === 'fe-desimode') { const w = $('#fe-desi-wrap'); if (w) w.hidden = !t.checked; }
+  if (t.id === 'sr-mode') api('/api/surat/mode', {api: t.checked}).then(() => { S.surat = null; renderSheet(false); toast(t.checked ? 'Otomatik gönderim açık: yeni barkodlar doğrudan Sürat\'a kaydedilir.' : 'Otomatik gönderim kapalı: Excel ile yükleme.'); }).catch(e => toast(errText(e), true));
   if (t.id === 'sh-push') api('/api/shopify/push', {on: t.checked}).then(() => { S.shop = null; toast(t.checked ? 'Stok değişiklikleri Shopify\'a gönderilecek.' : 'Shopify\'a stok gönderimi durduruldu.'); }).catch(e => toast(errText(e), true));
   if (t.id === 'set-push') saveSetting({pushStock:t.checked}, t.checked ? 'Stok değişiklikleri Trendyol\'a gönderilecek.' : 'Trendyol\'a stok gönderimi durduruldu.');
   if (t.id === 'imp-kind') { S.imp.kind = t.value; computePreview(); }

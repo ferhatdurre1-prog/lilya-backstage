@@ -2733,9 +2733,9 @@ ${catalog}` });
   // ---------- Sürat Kargo ----------
   if (path === '/api/surat/status') {
     const c = await srCreds(env), s = await getSettings(env, ['sr_err', 'sr_ok']);
-    const tk = await getSettings(env, ['sr_track_err']);
+    const tk = await getSettings(env, ['sr_track_err', 'sr_mode']);
     const mask = (x) => x ? x.slice(0, 2) + '•••' + x.slice(-2) : '';
-    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
+    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
   }
   if (path === '/api/surat/connect') {
     const user = String(body.user || '').trim(), cari = String(body.cari || '').trim() || user, pass = String(body.pass || '').trim(), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2));
@@ -2770,6 +2770,7 @@ ${catalog}` });
       try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
     return json({ ok: true, rows: rows.length, pending: results.length, tracked: out.length, fulfilled: out.filter(x => x.fulfilled).length, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
   }
+  if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/track') {
     if (body.number === undefined) { const cr0 = await srCreds(env), row0 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
