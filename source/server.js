@@ -2614,7 +2614,7 @@ ${catalog}` });
     const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model, max_tokens: 12000, messages: [{ role: 'user', content }] }) });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) return bad((data.error && data.error.message) || ('Yapay zekâ hatası ' + r.status), 502);
+    if (!r.ok) { const m = (data.error && data.error.message) || ''; return bad(/credit balance/i.test(m) ? 'Yapay zekâ kredisi bitti. platform.claude.com → Billing (Faturalandırma) bölümünden kredi yükle, sonra tekrar dene.' : (m || ('Yapay zekâ hatası ' + r.status)), 502); }
     const txt = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
     let out; try { out = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1)); } catch (e) { return bad('Belge okunamadı; daha net bir fotoğrafla tekrar dene.', 422); }
     const byCode = new Map(prods.map(p => [String(p.code).toUpperCase(), p.key]));
