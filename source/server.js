@@ -77,7 +77,8 @@ async function init0(env) {
   try { const now = iso(); await env.DB.batch([
     env.DB.prepare(`INSERT INTO moves(t,pkey,sku,name,delta,after,type,channel,ref,note) SELECT ?1,key,sku,name,-qty,0,'count','manuel','','Set ürün: setin kendi stoğu sıfırlandı (stok içindeki ürünlerden hesaplanır)' FROM products WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now),
     env.DB.prepare(`UPDATE products SET qty=0, updated_at=?1 WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now)]); } catch (e) {}
-  try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN terms TEXT').run(); } catch (e) {} // cari ödeme şekli (vade)
+  try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN terms TEXT').run(); } catch (e) {}
+  try { await env.DB.prepare('ALTER TABLE products ADD COLUMN cost_date TEXT').run(); } catch (e) {} // maliyetin geldiği fiş tarihi // cari ödeme şekli (vade)
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN mto INTEGER').run(); } catch (e) {} // stoksuz satış (sipariş üzerine)
   for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -133,7 +134,7 @@ async function init0(env) {
     // Kullanıcı isteği (19.10.2026): bütün ürün maliyetleri silinir, fişlerle baştan girilecek (sessiz yedek settings'te kalır)
     try { const { results } = await env.DB.prepare('SELECT key, cost FROM products WHERE cost IS NOT NULL').all(), at = iso();
       await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_costreset1','1')`), setStmt(env, 'cost_backup_mig1', JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })),
-        env.DB.prepare('UPDATE products SET cost=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]); } catch (e) {}
+        env.DB.prepare('UPDATE products SET cost=NULL, cost_date=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]); } catch (e) {}
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_missing1'`).first())) {
     try { const { results } = await env.DB.prepare(`SELECT * FROM returns WHERE kept=1 AND status='accepted'`).all();
@@ -263,6 +264,14 @@ function cariSchedule(c, today) {
   for (const x of items) x.st = x.left <= 0.004 ? 'paid' : x.due < today ? 'late' : x.due === today ? 'today' : x.due <= wk ? 'week' : 'later';
   const sum = (f) => r2(open.filter(f).reduce((a, x) => a + x.left, 0));
   return { items, next: open[0] ? { due: open[0].due, amount: open[0].left, st: open[0].st } : null, overdue: sum(x => x.due < today), today: sum(x => x.due === today), week: sum(x => x.due > today && x.due <= wk) };
+}
+// Fiş fiyatı maliyete yazılsın mı: eski tarihli fiş yenisinin maliyetini ezmez; aynı tarihte (aynı yüklemede) yüksek fiyat kazanır
+function costPick(p, unit, date) {
+  const u = Math.round((Number(unit) || 0) * 100) / 100; if (!(u > 0)) return null;
+  const c0 = p.cost === null || p.cost === undefined ? null : Number(p.cost), d0 = p.cost_date || '';
+  if (c0 !== null && d0 && date && d0 > date) return null;          // mevcut maliyet daha yeni fişten
+  if (c0 !== null && d0 && date && d0 === date && c0 >= u) return null; // aynı tarih: yüksek olan kalır
+  return u;
 }
 async function selectIn(env, sql, col, values, chunk = 80) {
   const out = [];
@@ -2518,7 +2527,7 @@ async function api(req, env, path, ctx) {
     if (body.name !== undefined) { const n = String(body.name).trim(); if (!n) return bad('Ürün adı boş olamaz.'); sets.push('name'); vals.push(n);
       const cur = await env.DB.prepare('SELECT name FROM products WHERE key=?1').bind(key).first(); if (cur && cur.name !== n) { sets.push('name_manual'); vals.push(1); } } // elle verilen ad kanaldan ezilmez
     if (body.barcode !== undefined) { sets.push('barcode'); vals.push(String(body.barcode).trim()); }
-    if (body.cost !== undefined) { const c = numOrNull(body.cost); if (c !== null && c < 0) return bad('Alış fiyatı eksi olamaz.'); sets.push('cost'); vals.push(c); }
+    if (body.cost !== undefined) { const c = numOrNull(body.cost); if (c !== null && c < 0) return bad('Alış fiyatı eksi olamaz.'); sets.push('cost'); vals.push(c); sets.push('cost_date'); vals.push(null); }
     if (body.min !== undefined) { const m = intOr(body.min, NaN); if (!(m >= 0)) return bad('Düşük stok sınırı geçersiz.'); sets.push('min'); vals.push(m); }
     if (Array.isArray(body.channels)) { sets.push('channels'); vals.push(JSON.stringify(body.channels.map(String))); }
     if (body.sameDay !== undefined) { sets.push('same_day'); vals.push(body.sameDay ? 1 : 0); }
@@ -2671,14 +2680,15 @@ ${catalog}` });
     if (!use.length) return bad('Stoğa eklenecek eşleşmiş satır yok; önce listeyi düzenleyip ürünleri eşleştir.');
     const upd = await env.DB.prepare(`UPDATE purchases SET status='stocked', stocked_at=?2 WHERE id=?1 AND status='draft'`).bind(id, iso()).run();
     if (!upd.meta || !upd.meta.changes) return bad('Bu alış zaten stoğa eklenmiş.');
-    const cur = new Map(); for (const p of await selectIn(env, 'SELECT key, qty, cost FROM products', 'key', [...new Set(use.map(x => x.pkey))])) cur.set(p.key, { ...p });
-    const st = [];
+    const cur = new Map(); for (const p of await selectIn(env, 'SELECT key, qty, cost, cost_date FROM products', 'key', [...new Set(use.map(x => x.pkey))])) cur.set(p.key, { ...p });
+    const st = [], docD = r.doc_date || String(r.t || '').slice(0, 10);
     for (const x of use) { const p = cur.get(x.pkey); if (!p) { x.skipped = true; continue; }
-      const q0 = Math.max(0, Number(p.qty) || 0), c0 = p.cost === null || p.cost === undefined ? null : Number(p.cost);
-      const c1 = x.unit > 0 ? Math.round(x.unit * 100) / 100 : c0; // fişteki birim fiyat aynen yeni maliyet olur (ortalama yok, KDV eklenmez); fiyatsız satır maliyeti değiştirmez
-      x.prevCost = c0; x.newCost = c1; x.stocked = true; p.qty = (Number(p.qty) || 0) + x.qty; p.cost = c1;
+      // fişteki birim fiyat aynen maliyet olur (ortalama yok, KDV eklenmez); eski tarihli fiş yenisini ezmez, aynı yüklemede yüksek fiyat kazanır
+      const c1 = costPick(p, x.unit, docD);
+      if (c1 !== null) { x.prevCost = p.cost === undefined ? null : p.cost; x.prevDate = p.cost_date || null; x.newCost = c1; p.cost = c1; p.cost_date = docD; p.touched = true; }
+      x.stocked = true; p.qty = (Number(p.qty) || 0) + x.qty;
       st.push(...changeQty(env, x.pkey, x.qty, { type: 'in', channel: 'manuel', ref: 'pur:' + id, note: `Alış · ${r.supplier}${r.doc_no ? ' · ' + r.doc_no : ''} · alış #${id}` })); }
-    for (const [k, p] of cur) st.push(env.DB.prepare('UPDATE products SET cost=?2, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso()));
+    for (const [k, p] of cur) if (p.touched) st.push(env.DB.prepare('UPDATE products SET cost=?2, cost_date=?4, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso(), p.cost_date));
     st.push(env.DB.prepare('UPDATE purchases SET items=?2 WHERE id=?1').bind(id, JSON.stringify(items)));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await env.DB.batch([REV(env)]);
@@ -2693,16 +2703,19 @@ ${catalog}` });
     if (!use.length) return bad('Maliyeti güncellenecek eşleşmiş ve fiyatlı satır yok; önce listeyi düzenleyip ürünleri eşleştir.');
     const upd = await env.DB.prepare(`UPDATE purchases SET status='costed', stocked_at=?2 WHERE id=?1 AND status='draft'`).bind(id, iso()).run();
     if (!upd.meta || !upd.meta.changes) return bad('Bu alış zaten işlenmiş.');
-    const cur = new Map(); for (const p of await selectIn(env, 'SELECT key, cost FROM products', 'key', [...new Set(use.map(x => x.pkey))])) cur.set(p.key, { ...p });
-    let n = 0;
-    for (const x of use) { const p = cur.get(x.pkey); if (!p) { x.skipped = true; continue; }
-      x.prevCost = p.cost === null || p.cost === undefined ? null : Number(p.cost); x.newCost = Math.round(Number(x.unit) * 100) / 100; x.costOnly = true; p.cost = x.newCost; n++; }
+    const cur = new Map(); for (const p of await selectIn(env, 'SELECT key, cost, cost_date FROM products', 'key', [...new Set(use.map(x => x.pkey))])) cur.set(p.key, { ...p });
+    const docD = r.doc_date || String(r.t || '').slice(0, 10), seen = new Set(); let n = 0, kept = 0;
+    for (const x of use) { const p = cur.get(x.pkey); if (!p) { x.skipped = true; continue; } x.costOnly = true;
+      const c1 = costPick(p, x.unit, docD);
+      if (c1 === null) { x.costKept = true; continue; }
+      x.prevCost = p.cost === null || p.cost === undefined ? null : Number(p.cost); x.prevDate = p.cost_date || null; x.newCost = c1; p.cost = c1; p.cost_date = docD; p.touched = true; seen.add(x.pkey); }
+    n = seen.size; kept = [...new Set(use.filter(x => x.costKept && !seen.has(x.pkey)).map(x => x.pkey))].length;
     const st = [];
-    for (const [k, p] of cur) st.push(env.DB.prepare('UPDATE products SET cost=?2, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso()));
+    for (const [k, p] of cur) if (p.touched) st.push(env.DB.prepare('UPDATE products SET cost=?2, cost_date=?4, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso(), p.cost_date));
     st.push(env.DB.prepare('UPDATE purchases SET items=?2 WHERE id=?1').bind(id, JSON.stringify(items)));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await env.DB.batch([REV(env)]);
-    return json({ ok: true, lines: n });
+    return json({ ok: true, lines: n, kept });
   }
   if (path === '/api/purchase/revert') {
     // STOKTAN GERİ AL: eklenen adetler düşülür, maliyet (sonradan değişmediyse) eski haline döner; liste taslak olarak kalır
@@ -2713,10 +2726,10 @@ ${catalog}` });
     const upd = await env.DB.prepare(`UPDATE purchases SET status='draft', stocked_at=NULL WHERE id=?1 AND status IN ('stocked','active','costed')`).bind(id).run();
     if (!upd.meta || !upd.meta.changes) return bad('Bu alış stoğa eklenmemiş.');
     const items = JSON.parse(r.items || '[]'), done = items.filter(x => x.pkey && (costOnly ? x.costOnly : x.qty > 0 && (x.stocked || r.status === 'active'))), st = [];
-    const last = new Map(); for (const x of done) last.set(x.pkey, x); const first = new Map(); for (const x of done.slice().reverse()) first.set(x.pkey, x);
+    const chg = done.filter(x => x.newCost !== undefined), last = new Map(); for (const x of chg) last.set(x.pkey, x); const first = new Map(); for (const x of chg.slice().reverse()) first.set(x.pkey, x);
     if (!costOnly) for (const x of done) st.push(...changeQty(env, x.pkey, -x.qty, { type: 'out', channel: 'manuel', ref: 'pur:' + id, note: 'Alış stoktan geri alındı · alış #' + id }));
-    for (const [k, x] of last) if (x.newCost !== undefined) st.push(env.DB.prepare('UPDATE products SET cost=?2 WHERE key=?1 AND ABS(COALESCE(cost,-1) - ?3) < 0.006').bind(k, first.get(k).prevCost ?? null, x.newCost));
-    for (const x of items) { delete x.stocked; delete x.prevCost; delete x.newCost; delete x.costOnly; }
+    for (const [k, x] of last) st.push(env.DB.prepare('UPDATE products SET cost=?2, cost_date=?4 WHERE key=?1 AND ABS(COALESCE(cost,-1) - ?3) < 0.006').bind(k, first.get(k).prevCost ?? null, x.newCost, first.get(k).prevDate ?? null));
+    for (const x of items) { delete x.stocked; delete x.prevCost; delete x.newCost; delete x.prevDate; delete x.costOnly; delete x.costKept; }
     st.push(env.DB.prepare('UPDATE purchases SET items=?2 WHERE id=?1').bind(id, JSON.stringify(items)));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await env.DB.batch([REV(env)]);
@@ -2733,7 +2746,7 @@ ${catalog}` });
     const { results } = await env.DB.prepare('SELECT key, cost FROM products WHERE cost IS NOT NULL').all();
     const at = iso(), k = 'cost_backup_' + at.replace(/[^0-9]/g, '').slice(0, 14);
     await env.DB.batch([setStmt(env, k, JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })), setStmt(env, 'cost_backup_last', k)]);
-    await env.DB.batch([env.DB.prepare('UPDATE products SET cost=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]);
+    await env.DB.batch([env.DB.prepare('UPDATE products SET cost=NULL, cost_date=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]);
     return json({ ok: true, n: results.length, at });
   }
   if (path === '/api/cari/list') {
@@ -3559,7 +3572,7 @@ ${catalog}` });
     }
     if (!body.dry && (changes.length || stockChanges.length)) {
       const now = iso();
-      const all = [...changes.map(c => env.DB.prepare('UPDATE products SET cost=?1, updated_at=?2 WHERE key=?3').bind(c.cost, now, c.key)),
+      const all = [...changes.map(c => env.DB.prepare('UPDATE products SET cost=?1, cost_date=NULL, updated_at=?2 WHERE key=?3').bind(c.cost, now, c.key)),
         ...stockChanges.flatMap(c => setQty(env, c.key, c.qty, { type: 'count', channel: 'manuel', note: 'Excel ile stok güncelleme' }))];
       for (let i = 0; i < all.length; i += 80) { const part = all.slice(i, i + 80); part.push(REV(env)); await env.DB.batch(part); }
     }
