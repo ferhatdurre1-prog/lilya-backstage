@@ -2619,7 +2619,7 @@ ${catalog}` });
   }
   // Sipariş ver: ürün başına son tedarikçi ve son alış fiyatı (alış listelerinden)
   if (path === '/api/buy/suppliers') {
-    const { results } = await env.DB.prepare(`SELECT supplier, doc_date, t, items FROM purchases WHERE status IN ('stocked','draft') ORDER BY COALESCE(doc_date, t) DESC LIMIT 400`).all();
+    const { results } = await env.DB.prepare(`SELECT supplier, doc_date, t, items FROM purchases WHERE status IN ('stocked','draft','costed') ORDER BY COALESCE(doc_date, t) DESC LIMIT 400`).all();
     const map = {};
     for (const r of results) { let items = []; try { items = JSON.parse(r.items || '[]'); } catch (e) {}
       for (const x of items) if (x.pkey && !map[x.pkey]) map[x.pkey] = { supplier: r.supplier || '', unit: Number(x.unit) || 0, date: r.doc_date || String(r.t || '').slice(0, 10), code: x.code || '' }; }
@@ -2678,18 +2678,39 @@ ${catalog}` });
     await env.DB.batch([REV(env)]);
     return json({ ok: true, lines: use.filter(x => x.stocked).length, units: use.filter(x => x.stocked).reduce((a, x) => a + x.qty, 0) });
   }
+  if (path === '/api/purchase/cost') {
+    // SADECE MALİYETİ GÜNCELLE: eşleşmiş satırlarda ürün maliyeti fişteki birim fiyat olur; stok adedi DEĞİŞMEZ
+    const id = intOr(body.id, 0), r = await env.DB.prepare('SELECT * FROM purchases WHERE id=?1').bind(id).first();
+    if (!r) return bad('Alış bulunamadı.', 404);
+    if (r.status !== 'draft') return bad('Bu alış zaten işlenmiş (stoğa eklenmiş ya da maliyeti güncellenmiş).');
+    const items = JSON.parse(r.items || '[]'), use = items.filter(x => x.pkey && Number(x.unit) > 0);
+    if (!use.length) return bad('Maliyeti güncellenecek eşleşmiş ve fiyatlı satır yok; önce listeyi düzenleyip ürünleri eşleştir.');
+    const upd = await env.DB.prepare(`UPDATE purchases SET status='costed', stocked_at=?2 WHERE id=?1 AND status='draft'`).bind(id, iso()).run();
+    if (!upd.meta || !upd.meta.changes) return bad('Bu alış zaten işlenmiş.');
+    const cur = new Map(); for (const p of await selectIn(env, 'SELECT key, cost FROM products', 'key', [...new Set(use.map(x => x.pkey))])) cur.set(p.key, { ...p });
+    let n = 0;
+    for (const x of use) { const p = cur.get(x.pkey); if (!p) { x.skipped = true; continue; }
+      x.prevCost = p.cost === null || p.cost === undefined ? null : Number(p.cost); x.newCost = Math.round(Number(x.unit) * 100) / 100; x.costOnly = true; p.cost = x.newCost; n++; }
+    const st = [];
+    for (const [k, p] of cur) st.push(env.DB.prepare('UPDATE products SET cost=?2, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso()));
+    st.push(env.DB.prepare('UPDATE purchases SET items=?2 WHERE id=?1').bind(id, JSON.stringify(items)));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true, lines: n });
+  }
   if (path === '/api/purchase/revert') {
     // STOKTAN GERİ AL: eklenen adetler düşülür, maliyet (sonradan değişmediyse) eski haline döner; liste taslak olarak kalır
     const id = intOr(body.id, 0), r = await env.DB.prepare('SELECT * FROM purchases WHERE id=?1').bind(id).first();
     if (!r) return bad('Alış bulunamadı.', 404);
-    if (!(r.status === 'stocked' || r.status === 'active')) return bad('Bu alış stoğa eklenmemiş.');
-    const upd = await env.DB.prepare(`UPDATE purchases SET status='draft', stocked_at=NULL WHERE id=?1 AND status IN ('stocked','active')`).bind(id).run();
+    if (!(r.status === 'stocked' || r.status === 'active' || r.status === 'costed')) return bad('Bu alış stoğa eklenmemiş.');
+    const costOnly = r.status === 'costed';
+    const upd = await env.DB.prepare(`UPDATE purchases SET status='draft', stocked_at=NULL WHERE id=?1 AND status IN ('stocked','active','costed')`).bind(id).run();
     if (!upd.meta || !upd.meta.changes) return bad('Bu alış stoğa eklenmemiş.');
-    const items = JSON.parse(r.items || '[]'), done = items.filter(x => x.pkey && x.qty > 0 && (x.stocked || r.status === 'active')), st = [];
+    const items = JSON.parse(r.items || '[]'), done = items.filter(x => x.pkey && (costOnly ? x.costOnly : x.qty > 0 && (x.stocked || r.status === 'active'))), st = [];
     const last = new Map(); for (const x of done) last.set(x.pkey, x); const first = new Map(); for (const x of done.slice().reverse()) first.set(x.pkey, x);
-    for (const x of done) st.push(...changeQty(env, x.pkey, -x.qty, { type: 'out', channel: 'manuel', ref: 'pur:' + id, note: 'Alış stoktan geri alındı · alış #' + id }));
+    if (!costOnly) for (const x of done) st.push(...changeQty(env, x.pkey, -x.qty, { type: 'out', channel: 'manuel', ref: 'pur:' + id, note: 'Alış stoktan geri alındı · alış #' + id }));
     for (const [k, x] of last) if (x.newCost !== undefined) st.push(env.DB.prepare('UPDATE products SET cost=?2 WHERE key=?1 AND ABS(COALESCE(cost,-1) - ?3) < 0.006').bind(k, first.get(k).prevCost ?? null, x.newCost));
-    for (const x of items) { delete x.stocked; delete x.prevCost; delete x.newCost; }
+    for (const x of items) { delete x.stocked; delete x.prevCost; delete x.newCost; delete x.costOnly; }
     st.push(env.DB.prepare('UPDATE purchases SET items=?2 WHERE id=?1').bind(id, JSON.stringify(items)));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await env.DB.batch([REV(env)]);
