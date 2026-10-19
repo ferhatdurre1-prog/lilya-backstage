@@ -3026,7 +3026,7 @@ function suratCard(){
   if (!H || (H.loadedAt && Date.now() - H.loadedAt > 30000 && !H.loading)) { if (!H || !H.loading) { S.surat = {...(H || {}), loading: true}; api('/api/surat/status', {}).then(d => { S.surat = {...d, loadedAt: Date.now()}; if (S.sheet) renderSheet(false); if (S.tab === 'addr') render(); }).catch(e => { S.surat = {err: errText(e), loadedAt: Date.now()}; }); } }
   const d = S.surat || {}, badge = '<span class="pill p-brass">Sürat Kargo</span>';
   if (d.loading && d.connected === undefined) return `<div class="card"><h3>${badge}</h3>${loading()}</div>`;
-  if (!d.connected) return `<div class="card"><h3 style="margin:0">${badge} Bağlan</h3>
+  if (!d.connected || S.srEdit) return `<div class="card"><div class="spread"><h3 style="margin:0">${badge} ${d.connected ? 'Bilgileri değiştir' : 'Bağlan'}</h3>${d.connected ? '<button class="btn sm ghost" data-act="sr-edit" data-id="0">Vazgeç</button>' : ''}</div>
     <p class="muted small" style="margin:0">Shopify siparişleri için kendi barkodumuz (LH + sipariş no) oluşturulur ve adresle birlikte Sürat'a bildirilir. Şube barkodu okutunca adres Sürat'ın sisteminde çıkar. Web servis kullanıcı adı ve şifresini Sürat müşteri temsilcin verir; cari kodundan farklı olabilir.</p>
     <form id="f-surat" class="grid2">
       <label class="f">Kullanıcı adı <span class="muted small">(gönderi oluşturma)</span><input class="input mono" id="sr-user" required autocomplete="off"></label>
@@ -3034,9 +3034,9 @@ function suratCard(){
       <label class="f">Cari kodu <span class="muted small">(takip için; kullanıcı adıyla aynıysa boş bırak)</span><input class="input mono" id="sr-cari" autocomplete="off"></label>
       <label class="f">Varsayılan desi<input class="input num" id="sr-desi" inputmode="decimal" value="2"></label>
       <label class="f">Web servis şifresi <span class="muted small">(takip için ayrı şifren varsa)</span><input class="input mono" id="sr-web" type="password" autocomplete="off"></label>
-      <div class="row" style="align-items:flex-end"><button class="btn primary" type="submit">Bağlan</button></div>
+      <div class="row" style="align-items:flex-end"><button class="btn primary" type="submit">${d.connected ? 'Kaydet' : 'Bağlan'}</button></div>
     </form>${d.err ? `<div class="banner bad" style="margin:0"><div>${esc(d.err)}</div></div>` : ''}</div>`;
-  return `<div class="card"><div class="spread"><h3 style="margin:0">${badge} Bağlı</h3><button class="btn sm ghost" data-act="sr-disconnect">Kaldır</button></div>
+  return `<div class="card"><div class="spread"><h3 style="margin:0">${badge} Bağlı</h3><div class="row" style="gap:6px"><button class="btn sm" data-act="sr-edit" data-id="1">Bilgileri değiştir</button><button class="btn sm ghost" data-act="sr-disconnect">Kaldır</button></div></div>
     <dl class="kv"><dt>Kullanıcı adı</dt><dd class="mono">${esc(d.user)}</dd><dt>Cari kodu</dt><dd class="mono">${esc(d.cari)}</dd><dt>Varsayılan desi</dt><dd><form id="f-srdesi" class="row" style="gap:6px"><input class="input num" id="sr-desi2" inputmode="decimal" value="${esc(String(d.desi).replace('.', ','))}" style="width:80px"><button class="btn sm" type="submit">Kaydet</button></form></dd>
     <dt>Web servis şifresi</dt><dd><form id="f-srweb" class="row" style="gap:6px"><input class="input mono" id="sr-web2" type="password" placeholder="${d.web ? 'Kayıtlı (değiştirmek için yaz)' : 'Yok — cari şifresi kullanılır'}" autocomplete="off" style="width:220px"><button class="btn sm" type="submit">Kaydet</button></form></dd>
     <dt>Son gönderi</dt><dd>${d.ok ? esc(ago(d.ok)) : 'Henüz yok'}</dd>
@@ -3435,6 +3435,7 @@ document.addEventListener('click', async e => {
     case 'ad-fok': addrFieldCommit(); break;
     case 'sr-open': { const A = aS(); A.sr = id; if (!S.surat || S.surat.connected === undefined) suratCard(); render(); break; }
     case 'sr-close': aS().sr = null; render(); break;
+    case 'sr-edit': S.srEdit = id === '1'; renderSheet(false); break;
     case 'sr-man': aS().srm = id || null; render(); setTimeout(() => { const i = $('#sr-man'); if (i) i.focus(); }, 20); break;
     case 'sr-track': { const A = aS(); A.busy['sr' + id] = 'track'; render();
       try { const r = (await api('/api/surat/track', {gid: id})).r; srApply(id, r); toast(r.fulfilled ? `Takip no ${r.tracking} Shopify'a işlendi; müşteriye bildirim gitti.` : r.tracking ? `Takip no: ${r.tracking}${r.err ? ' · Shopify: ' + r.err : ''}` : `Henüz takip no yok${r.msg ? ' · Sürat: ' + r.msg : ''}. Paket şubede okutulunca gelir.`, !!r.err); }
@@ -3521,7 +3522,7 @@ document.addEventListener('submit', async e => {
     try { const r = (await api('/api/surat/track', {gid, number: ($('#sr-man') || {}).value || ''})).r; srApply(gid, r); A.srm = null; toast(r.fulfilled ? `Takip no ${r.tracking} Shopify'a işlendi; müşteriye bildirim gitti.` : `Takip no kaydedildi${r.err ? ' · Shopify: ' + r.err : ''}`, !!r.err); } catch(err) { toast(errText(err), true); }
     delete A.busy['sr' + gid]; render(); return; }
   if (id === 'f-srweb') { await run(async () => { await api('/api/surat/settings', {desi: (S.surat || {}).desi || 2, web: $('#sr-web2').value}); S.surat = null; renderSheet(false); toast('Web servis şifresi kaydedildi.'); }); return; }
-  if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; renderSheet(false); toast('Sürat Kargo bağlandı.'); }); return; }
+  if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
   if (id === 'f-srdesi') { await run(async () => { await api('/api/surat/settings', {desi: $('#sr-desi2').value}); S.surat = null; renderSheet(false); toast('Varsayılan desi kaydedildi.'); }); return; }
   if (id === 'f-adq') { const A = aS(); A.q = ($('#ad-q') || {}).value || ''; A.data = null; render(); return; }
   if (id === 'f-login') {
