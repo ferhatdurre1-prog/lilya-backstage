@@ -697,10 +697,11 @@ async function srQuery(env, creds, ref) {
   const raw = await r.text(), fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(raw);
   if (fault) throw new Error('Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 200));
   const t = raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-  const no = (/<KargoTakipNo>\s*(\d{6,20})\s*</i.exec(t) || /KargoTakipNo["'\s:=]*(\d{6,20})/i.exec(t) || /<TakipNo>\s*(\d{6,20})\s*</i.exec(t) || [])[1] || '';
+  // Takip no: KargoTakipNo / TakipNo / KargoTakipNumarasi / Barkod… adlı herhangi bir alandan (JSON ya da XML)
+  const no = (/<KargoTakipNo>\s*(\d{6,20})\s*</i.exec(t) || /KargoTakipNo["'\s:=]*(\d{6,20})/i.exec(t) || /<(\w*Takip\w*)>\s*(\d{8,20})\s*</i.exec(t) && [0, /<(\w*Takip\w*)>\s*(\d{8,20})\s*</i.exec(t)[2]] || /"\w*(?:Takip|Barkod)\w*"\s*:\s*"?(\d{8,20})/i.exec(t) || /<(?:\w*Barkod\w*)>\s*(\d{8,20})\s*</i.exec(t) || [])[1] || '';
   const durum = ((/<(?:Son)?Durum>([^<]{1,120})</i.exec(t) || /<Mesaj>([^<]{1,160})</i.exec(t) || [])[1] || '').trim();
   if (!r.ok) throw new Error(`Sürat ${r.status}: ${durum || t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`);
-  return { no, durum, raw: t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300) };
+  return { no, durum, raw: t.replace(/<\?xml[^>]*>|<\/?soap:[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 600) };
 }
 // Shopify'da siparişi "kargolandı" yapar ve takip numarasını müşteriye bildirir
 // Gerekli yetkiler: read_merchant_managed_fulfillment_orders, write_merchant_managed_fulfillment_orders
@@ -721,8 +722,8 @@ async function srTrackOne(env, row, cr, c) {
   // Önce bizim barkodumuz (Web Takip No), bulunamazsa sipariş numarası (Referans No) ile sorulur
   if (!tr) { let q = await srQuery(env, cr, row.ref); const alt = String(row.order_no || '').replace(/\D/g, '');
     if (!q.no && alt && /bulunamad|yok|kay[ıi]t/i.test(q.durum || q.raw)) { const q2 = await srQuery(env, cr, alt); if (q2.no || !/bulunamad/i.test(q2.durum || q2.raw)) q = q2; }
-    tr = q.no; msg = q.durum || q.raw; }
-  const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 200))];
+    tr = q.no; msg = q.no ? (q.durum || q.raw) : q.raw; }
+  const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 600))];
   let fulfilled = false, ferr = '';
   if (tr && !row.fulfilled_at && shConfigured(c)) { try { await shFulfill(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } }
   if (fulfilled) st.push(env.DB.prepare('UPDATE sr_ship SET fulfilled_at=?2, fulfill_err=NULL WHERE gid=?1').bind(row.gid, iso()));
