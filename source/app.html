@@ -800,7 +800,7 @@ function viewAddr(){
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
   { const pend = (A.data.ships || []).filter(x => x.mode !== 'api' && !x.exported_at).length;
-    h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px"><div class="small"><b>Sürat Excel</b> · ${pend ? `<b style="color:var(--orange)">${fmtN(pend)} gönderi Sürat'a yüklenmeyi bekliyor</b>` : 'Yüklenmeyi bekleyen gönderi yok'}<div class="muted">İndir → Sürat eKargo → Sanal Şube → Gönderi Girişi Excel → Dosya Seç → Kaydet</div></div><div class="row" style="gap:6px"><button class="btn sm primary" data-act="sr-xls" data-id="new">⬇ Sürat Excel indir</button><button class="btn sm ghost" data-act="sr-xls" data-id="all">Son 7 gün</button></div></div>`; }
+    h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px"><div class="small"><b>Sürat Excel</b> · ${pend ? `<b style="color:var(--orange)">${fmtN(pend)} gönderi Sürat'a yüklenmeyi bekliyor</b>` : 'Yüklenmeyi bekleyen gönderi yok'}<div class="muted">İndir → Sürat eKargo → Sanal Şube → Gönderi Girişi Excel → Dosya Seç → Kaydet</div></div><div class="row" style="gap:6px;flex-wrap:wrap">${(() => { const el = srBulkList(A); return `<button class="btn sm" data-act="sr-bulk" ${el.length && !A.bulk ? '' : 'disabled'}>${A.bulk ? `Oluşturuluyor… ${A.bulk}` : `📦 Tümüne barkod oluştur (${fmtN(el.length)})`}</button>`; })()}<button class="btn sm primary" data-act="sr-xls" data-id="new">⬇ Sürat Excel indir</button><button class="btn sm ghost" data-act="sr-xls" data-id="all">Son 7 gün</button></div></div>`; }
   const rows = A.data.orders.map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
   const nBad = rows.filter(r => r.issues.length).length;
   h += `<div class="small muted" style="margin:0 0 10px">${fmtN(rows.length)}${A.data.after ? '+' : ''} sipariş · <b style="color:${nBad ? 'var(--bad)' : 'var(--good)'}">${nBad ? fmtN(nBad) + ' tanesinde kontrol edilecek bir şey var' : 'hepsi düzgün görünüyor'}</b></div>`;
@@ -843,6 +843,9 @@ function suratXls(ships){
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sayfa1');
   XLSX.writeFile(wb, `surat-gonderi-${todayTR()}-${ships.length}.xls`, {bookType: 'biff8'});
 }
+// Toplu barkod: listede Sürat barkodu olmayan, kırmızı sorunu ve kaydedilmemiş değişikliği bulunmayan siparişler
+function srBulkList(A){ const has = new Set((A.data.ships || []).map(x => x.gid));
+  return A.data.orders.filter(o => !has.has(o.gid) && !A.edit[o.gid] && !addrIssues(addrForm(o.addr || {}), o).some(i => i[0] === 'bad')); }
 // Sürat Kargo: barkodu olan sipariş için etiket, olmayan için oluşturma
 function suratBlock(o, e, issues){
   const A = aS(), ships = (A.data.ships || []).filter(x => x.gid === o.gid), last = ships[ships.length - 1], g = esc(o.gid), busy = A.busy['sr' + o.gid], sr = S.surat || {};
@@ -3460,6 +3463,17 @@ document.addEventListener('click', async e => {
     case 'ad-fok': addrFieldCommit(); break;
     case 'sr-open': { const A = aS(); A.sr = id; if (!S.surat || S.surat.connected === undefined) suratCard(); render(); break; }
     case 'sr-close': aS().sr = null; render(); break;
+    case 'sr-bulk': { const A = aS(), list = srBulkList(A); if (!list.length) break;
+      const skipped = A.data.orders.length - list.length - new Set((A.data.ships || []).map(x => x.gid)).size;
+      if (!(await confirmBox(`${fmtN(list.length)} siparişe Sürat barkodu oluşturulsun mu? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi olur; etiketler tek PDF'te açılır.${skipped > 0 ? `<br><br><span class="small muted">${fmtN(skipped)} sipariş adres sorunu ya da kaydedilmemiş değişiklik yüzünden atlanacak.</span>` : ''}`, 'Oluştur'))) break;
+      const made = [], errs = []; let k = 0;
+      for (const o of list) { A.bulk = `${++k}/${list.length}`; render();
+        try { const r = await api('/api/surat/ship', {gid: o.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); (A.data.ships = A.data.ships || []).push(r.ship); made.push(r.ship); }
+        catch(err) { errs.push(`${o.name}: ${errText(err)}`); } }
+      A.bulk = null; render();
+      if (made.length) await suratPrint(made);
+      toast(`${fmtN(made.length)} barkod oluşturuldu${errs.length ? ` · ${fmtN(errs.length)} hata: ${errs.slice(0, 2).join(' · ')}` : ''}. Şimdi 'Sürat Excel indir'.`, !!errs.length);
+      break; }
     case 'sr-xls': await run(async () => { const r = await api('/api/surat/export', {all: id === 'all'}); if (!r.ships.length) { toast(id === 'all' ? 'Son 7 günde Sürat gönderisi yok.' : 'Yüklenmeyi bekleyen gönderi yok. Önceden indirilenler için "Son 7 gün".'); return; } suratXls(r.ships); const m = await api('/api/surat/exported', {refs: r.ships.map(x => x.ref)}); const A = aS(); for (const sh of (A.data && A.data.ships) || []) if (r.ships.some(x => x.ref === sh.ref) && !sh.exported_at) sh.exported_at = m.at; render(); toast(`${fmtN(r.ships.length)} gönderi Excel'e yazıldı. Sürat eKargo → Gönderi Girişi Excel'den yükle.`); }); break;
     case 'sr-edit': S.srEdit = id === '1'; renderSheet(false); break;
     case 'sr-diag': S.srDiag = {loading: true}; renderSheet(false); try { S.srDiag = await api('/api/surat/diag', {}); } catch(err) { S.srDiag = {err: errText(err)}; } renderSheet(false); break;
