@@ -2722,6 +2722,23 @@ ${catalog}` });
     await env.DB.prepare('UPDATE purchases SET cari_at=?2 WHERE id=?1').bind(id, body.on ? iso() : null).run();
     return json({ ok: true });
   }
+  if (path === '/api/costs/reset') {
+    // TÜM MALİYETLERİ SIFIRLA: önce yedek alınır (settings: cost_backup_<zaman>), sonra bütün ürünlerin maliyeti boşaltılır
+    const { results } = await env.DB.prepare('SELECT key, cost FROM products WHERE cost IS NOT NULL').all();
+    const at = iso(), k = 'cost_backup_' + at.replace(/[^0-9]/g, '').slice(0, 14);
+    await env.DB.batch([setStmt(env, k, JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })), setStmt(env, 'cost_backup_last', k)]);
+    await env.DB.batch([env.DB.prepare('UPDATE products SET cost=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]);
+    return json({ ok: true, n: results.length, at });
+  }
+  if (path === '/api/costs/restore') {
+    // Son yedekten geri yükle: SADECE maliyeti hâlâ boş olan ürünler doldurulur (fişle girilen yeni maliyetler korunur)
+    const k = await getSetting(env, 'cost_backup_last'); const raw = k ? await getSetting(env, k) : null;
+    if (!raw) return bad('Maliyet yedeği bulunamadı.');
+    const B = JSON.parse(raw), st = B.rows.map(([key, cost]) => env.DB.prepare('UPDATE products SET cost=?2 WHERE key=?1 AND cost IS NULL').bind(key, cost));
+    let n = 0; for (let i = 0; i < st.length; i += 90) { const rs = await env.DB.batch(st.slice(i, i + 90)); for (const r of rs) n += (r.meta && r.meta.changes) || 0; }
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true, n, at: B.at });
+  }
   if (path === '/api/cari/list') {
     // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç; ödeme şekline göre vadesi gelenler uyarı olarak döner
     const all = await cariLoad(env), today = trToday(), list = [], alerts = [];
