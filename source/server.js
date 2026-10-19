@@ -691,7 +691,7 @@ const SR_TRACK_URL = (no) => `https://suratkargo.com.tr/KargoTakip/?kargotakipno
 async function srQuery(env, creds, ref) {
   const sc = await srSchema(env, false); const q = sc.query; if (!q) throw new Error('Sürat web servisinde gönderi sorgulama bulunamadı.');
   const px = q.params.map(p => { const n = p.name;
-    const v = /cari|kullanici/i.test(n) ? creds.cari : /sifre|password|parola/i.test(n) ? (creds.web || creds.pass) : /siparis|referans|ozel|kod/i.test(n) ? ref : null;
+    const v = /cari|kullanici/i.test(n) ? creds.cari : /sifre|password|parola/i.test(n) ? (creds.pass || creds.web) : /siparis|referans|ozel|kod/i.test(n) ? ref : null;
     return v == null ? '' : `<${n}>${xmlEsc(v)}</${n}>`; }).join('');
   const body = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${q.method} xmlns="${sc.ns}">${px}</${q.method}></soap:Body></soap:Envelope>`;
   const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${q.method}"` }, body });
@@ -725,7 +725,8 @@ async function srList(env, cr, days) {
   const sc = await srSchema(env, false), ps = (sc.lists || {}).CariKoduveSifre; if (!ps) return null;
   const d0 = new Date(Date.now() - (days || 6) * 86400000), d1 = new Date(Date.now() + 86400000);
   const fmt = (d, p) => /date/i.test(p.type) ? d.toISOString().slice(0, 10) + 'T00:00:00' : `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${d.getUTCFullYear()}`;
-  const t = await srCall(env, 'CariKoduveSifre', ps, p => /cari|kullanici/i.test(p.name) ? cr.cari : /sifre|password|parola/i.test(p.name) ? (cr.web || cr.pass) : /bas|ilk|start|from/i.test(p.name) ? fmt(d0, p) : /bit|son|end|to$/i.test(p.name) ? fmt(d1, p) : null);
+  const call = (pw) => srCall(env, 'CariKoduveSifre', ps, p => /websiparis\w*olsun/i.test(p.name) ? 'true' : /cari|kullanici/i.test(p.name) ? cr.cari : /sifre|password|parola/i.test(p.name) ? pw : /bas|ilk|start|from/i.test(p.name) ? fmt(d0, p) : /bit|son|end|to$/i.test(p.name) ? fmt(d1, p) : null);
+  let t = await call(cr.pass); if (cr.web && cr.web !== cr.pass && /hatal/i.test((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '')) t = await call(cr.web);
   const rows = srRows(t), mesaj = ((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '').trim();
   return { rows, mesaj, text: rows.length ? '' : srText(t).slice(0, 300) };
 }
