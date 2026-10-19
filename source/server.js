@@ -77,6 +77,7 @@ async function init0(env) {
   try { const now = iso(); await env.DB.batch([
     env.DB.prepare(`INSERT INTO moves(t,pkey,sku,name,delta,after,type,channel,ref,note) SELECT ?1,key,sku,name,-qty,0,'count','manuel','','Set ürün: setin kendi stoğu sıfırlandı (stok içindeki ürünlerden hesaplanır)' FROM products WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now),
     env.DB.prepare(`UPDATE products SET qty=0, updated_at=?1 WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now)]); } catch (e) {}
+  try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN terms TEXT').run(); } catch (e) {} // cari ödeme şekli (vade)
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN mto INTEGER').run(); } catch (e) {} // stoksuz satış (sipariş üzerine)
   for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -205,6 +206,58 @@ async function setSetting(env, k, v) { await setStmt(env, k, v).run(); }
 const REV = (env) => env.DB.prepare(`UPDATE settings SET v=CAST(CAST(v AS INTEGER)+1 AS TEXT) WHERE k='rev'`);
 const guardStmt = (env, sql, ...b) => env.DB.prepare(`INSERT INTO guard(x) SELECT CASE WHEN ${sql} THEN 1 ELSE NULL END`).bind(...b);
 const unguard = (env) => env.DB.prepare('DELETE FROM guard');
+/* ---------- Cari: ödeme şekli (vade) ve ödeme planı ---------- */
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const trToday = () => iso(Date.now() + 3 * 3600000).slice(0, 10);
+function addDayStr(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+function addMonthStr(d, n) { const [y, m, dd] = d.split('-').map(Number), t = new Date(Date.UTC(y, m - 1 + n, 1, 12)); const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0, 12)).getUTCDate(); t.setUTCDate(Math.min(dd, last)); return t.toISOString().slice(0, 10); }
+function cariTerms(raw) {
+  let t = raw; if (typeof t === 'string') { try { t = JSON.parse(t); } catch (e) { t = null; } } t = t || {};
+  const kind = ['cash', 'days', 'split', 'pct'].includes(t.kind) ? t.kind : 'cash', I = (v, d, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || d));
+  return { kind, n: I(t.n, 30, 1, 720), unit: t.unit === 'ay' ? 'ay' : 'gün', parts: I(t.parts, 4, 2, 52), every: I(t.every, 7, 1, 120), first: I(t.first ?? t.every, 7, 0, 365), pct: I(t.pct, 25, 1, 100), wday: I(t.wday, 1, 1, 7), note: String(t.note || '').slice(0, 120) };
+}
+async function cariLoad(env, only) {
+  const w = only ? ' AND supplier=?1 COLLATE NOCASE' : '', B = (st) => only ? st.bind(only) : st;
+  const pur = (await B(env.DB.prepare(`SELECT id, supplier, doc_no, doc_date, t, total, units FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted'${w}`)).all()).results;
+  const pay = (await B(env.DB.prepare(`SELECT id, supplier, date, t, amount, method, note FROM sup_pay WHERE deleted=0${w}`)).all()).results;
+  const sups = (await env.DB.prepare('SELECT name, terms FROM suppliers').all()).results, K = (x) => String(x || '').toLocaleLowerCase('tr-TR'), sm = new Map(sups.map(x => [K(x.name), x]));
+  const m = new Map(), get = (n) => { const k = K(n); if (!m.has(k)) { const s0 = sm.get(k); m.set(k, { supplier: s0 ? s0.name : n, terms: cariTerms(s0 && s0.terms), buys: [], pays: [] }); } return m.get(k); };
+  for (const r of pur) get(r.supplier).buys.push({ id: r.id, doc_no: r.doc_no, units: r.units, date: r.doc_date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(r.total) });
+  for (const r of pay) get(r.supplier).pays.push({ id: r.id, method: r.method, note: r.note, date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(r.amount) });
+  return [...m.values()].map(c => { c.buy = r2(c.buys.reduce((a, x) => a + x.amount, 0)); c.paid = r2(c.pays.reduce((a, x) => a + x.amount, 0)); c.bal = r2(c.buy - c.paid);
+    c.last = [...c.buys, ...c.pays].reduce((a, x) => x.date > a ? x.date : a, ''); return c; });
+}
+// Ödeme planı: her taksitin vadesi, tutarı ve kalanı (ödemeler en eski vadeden başlayarak düşülür). Haftalık % şeklinde her hafta kalan borcun yüzdesi istenir.
+function cariSchedule(c, today) {
+  const T = c.terms, items = [];
+  if (T.kind === 'pct') {
+    // Her hafta (seçilen gün) o güne kadarki kalan borcun %'si istenir; ödemeler en eski haftadan başlayarak düşülür
+    const wdOf = (d) => { const x = new Date(d + 'T12:00:00Z').getUTCDay(); return x === 0 ? 7 : x; };
+    const b0 = c.buys.reduce((a, x) => !a || x.date < a ? x.date : a, '');
+    if (b0) { let D = addDayStr(b0, 1); while (wdOf(D) !== T.wday) D = addDayStr(D, 1);
+      const bs = c.buys.slice().sort((x, y) => x.date.localeCompare(y.date)); let R = 0, n = 0;
+      const inst = [];
+      while (n++ < 520) { const owed = r2(bs.filter(x => x.date <= D).reduce((a, x) => a + x.amount, 0)), amt = r2((owed - R) * T.pct / 100);
+        if (amt > 0.004) { inst.push({ due: D, amount: amt, label: `Haftalık %${T.pct} ödeme` }); R = r2(R + amt); }
+        if (D >= today) break; D = addDayStr(D, 7); }
+      let pool = c.paid; for (const x of inst) { const p = Math.min(pool, x.amount); pool = r2(pool - p); x.paid = r2(p); x.left = r2(Math.min(x.amount - p, Math.max(0, c.bal))); items.push(x); }
+    }
+  } else {
+    const inst = [];
+    for (const b of c.buys.slice().sort((x, y) => x.date.localeCompare(y.date) || x.t.localeCompare(y.t))) {
+      const tag = `Alış #${b.id}${b.doc_no ? ' · ' + b.doc_no : ''}`;
+      if (T.kind === 'split') { const per = r2(b.amount / T.parts); for (let i = 0; i < T.parts; i++) inst.push({ due: addDayStr(b.date, T.first + i * T.every), amount: i === T.parts - 1 ? r2(b.amount - per * (T.parts - 1)) : per, label: `${tag} · ${i + 1}/${T.parts}. taksit` }); }
+      else if (T.kind === 'days') inst.push({ due: T.unit === 'ay' ? addMonthStr(b.date, T.n) : addDayStr(b.date, T.n), amount: b.amount, label: `${tag} · ${T.n} ${T.unit} vade` });
+      else inst.push({ due: b.date, amount: b.amount, label: `${tag} · peşin` });
+    }
+    inst.sort((a, b) => a.due.localeCompare(b.due));
+    let pool = c.paid; for (const x of inst) { const p = Math.min(pool, x.amount); pool = r2(pool - p); x.paid = r2(p); x.left = r2(x.amount - p); items.push(x); }
+  }
+  const wk = addDayStr(today, 7), open = items.filter(x => x.left > 0.004);
+  for (const x of items) x.st = x.left <= 0.004 ? 'paid' : x.due < today ? 'late' : x.due === today ? 'today' : x.due <= wk ? 'week' : 'later';
+  const sum = (f) => r2(open.filter(f).reduce((a, x) => a + x.left, 0));
+  return { items, next: open[0] ? { due: open[0].due, amount: open[0].left, st: open[0].st } : null, overdue: sum(x => x.due < today), today: sum(x => x.due === today), week: sum(x => x.due > today && x.due <= wk) };
+}
 async function selectIn(env, sql, col, values, chunk = 80) {
   const out = [];
   for (let i = 0; i < values.length; i += chunk) {
@@ -2649,25 +2702,32 @@ ${catalog}` });
     return json({ ok: true });
   }
   if (path === '/api/cari/list') {
-    // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç
-    const pur = (await env.DB.prepare(`SELECT supplier, COUNT(*) n, SUM(total) tot, MAX(COALESCE(doc_date, substr(t,1,10))) last FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted' GROUP BY supplier COLLATE NOCASE`).all()).results;
-    const pay = (await env.DB.prepare(`SELECT supplier, COUNT(*) n, SUM(amount) tot, MAX(date) last FROM sup_pay WHERE deleted=0 GROUP BY supplier COLLATE NOCASE`).all()).results;
-    const m = new Map(), K = (x) => String(x || '').toLocaleLowerCase('tr-TR');
-    for (const r of pur) m.set(K(r.supplier), { supplier: r.supplier, buys: r.n, buy: Math.round((r.tot || 0) * 100) / 100, pays: 0, paid: 0, last: r.last || '' });
-    for (const r of pay) { const x = m.get(K(r.supplier)) || { supplier: r.supplier, buys: 0, buy: 0, pays: 0, paid: 0, last: '' }; x.pays = r.n; x.paid = Math.round((r.tot || 0) * 100) / 100; if ((r.last || '') > x.last) x.last = r.last; m.set(K(r.supplier), x); }
-    const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name), canon = new Map(sups.map(n => [K(n), n]));
-    const list = [...m.entries()].map(([k, x]) => ({ ...x, supplier: canon.get(k) || x.supplier, bal: Math.round((x.buy - x.paid) * 100) / 100 })).sort((a, b) => b.bal - a.bal || a.supplier.localeCompare(b.supplier, 'tr'));
-    return json({ ok: true, list, suppliers: sups });
+    // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç; ödeme şekline göre vadesi gelenler uyarı olarak döner
+    const all = await cariLoad(env), today = trToday(), list = [], alerts = [];
+    for (const c of all) { const sc = cariSchedule(c, today); list.push({ supplier: c.supplier, terms: c.terms, buys: c.buys.length, buy: c.buy, pays: c.pays.length, paid: c.paid, bal: c.bal, last: c.last, next: sc.next, overdue: sc.overdue, dueToday: sc.today, dueWeek: sc.week });
+      for (const x of sc.items) if (x.left > 0.004 && x.due <= addDayStr(today, 7)) alerts.push({ supplier: c.supplier, ...x }); }
+    list.sort((a, b) => (b.overdue + b.dueToday > 0.004) - (a.overdue + a.dueToday > 0.004) || b.bal - a.bal || a.supplier.localeCompare(b.supplier, 'tr'));
+    alerts.sort((a, b) => a.due.localeCompare(b.due) || b.left - a.left);
+    const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name);
+    return json({ ok: true, today, list, alerts, suppliers: sups });
   }
   if (path === '/api/cari/get') {
     const sup = String(body.supplier || '').trim(); if (!sup) return bad('Tedarikçi seç.');
-    const pur = (await env.DB.prepare(`SELECT id, doc_no, doc_date, t, total, units, status FROM purchases WHERE supplier=?1 COLLATE NOCASE AND cari_at IS NOT NULL AND status<>'deleted'`).bind(sup).all()).results;
-    const pay = (await env.DB.prepare(`SELECT id, date, t, amount, method, note FROM sup_pay WHERE supplier=?1 COLLATE NOCASE AND deleted=0`).bind(sup).all()).results;
-    const rows = [...pur.map(r => ({ kind: 'buy', id: r.id, date: r.doc_date || String(r.t || '').slice(0, 10), t: r.t || '', amount: Math.round((r.total || 0) * 100) / 100, text: `Alış #${r.id}${r.doc_no ? ' · ' + r.doc_no : ''} · ${r.units || 0} adet` })),
-      ...pay.map(r => ({ kind: 'pay', id: r.id, date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', amount: Math.round((r.amount || 0) * 100) / 100, text: [r.method || 'Ödeme', r.note].filter(Boolean).join(' · ') }))]
+    const c = (await cariLoad(env, sup))[0] || { supplier: sup, terms: cariTerms(null), buys: [], pays: [], buy: 0, paid: 0, bal: 0 };
+    const tr = await env.DB.prepare('SELECT name, terms FROM suppliers WHERE name=?1').bind(sup).first(); if (tr) { c.supplier = tr.name; c.terms = cariTerms(tr.terms); }
+    const rows = [...c.buys.map(r => ({ kind: 'buy', id: r.id, date: r.date, t: r.t, amount: r.amount, text: `Alış #${r.id}${r.doc_no ? ' · ' + r.doc_no : ''} · ${r.units || 0} adet` })),
+      ...c.pays.map(r => ({ kind: 'pay', id: r.id, date: r.date, t: r.t, amount: r.amount, text: [r.method || 'Ödeme', r.note].filter(Boolean).join(' · ') }))]
       .sort((a, b) => a.date.localeCompare(b.date) || a.t.localeCompare(b.t));
-    let bal = 0; for (const r of rows) { bal = Math.round((bal + (r.kind === 'buy' ? r.amount : -r.amount)) * 100) / 100; r.bal = bal; }
-    return json({ ok: true, supplier: sup, rows: rows.reverse(), bal });
+    let bal = 0; for (const r of rows) { bal = r2(bal + (r.kind === 'buy' ? r.amount : -r.amount)); r.bal = bal; }
+    const today = trToday(), sc = cariSchedule(c, today);
+    return json({ ok: true, supplier: c.supplier, terms: c.terms, rows: rows.reverse(), bal, today, plan: sc.items, next: sc.next });
+  }
+  if (path === '/api/cari/terms') {
+    const sup = String(body.supplier || '').trim().slice(0, 120); if (!sup) return bad('Tedarikçi seç.');
+    const t = cariTerms(body.terms || {});
+    await env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(sup, iso()).run();
+    await env.DB.prepare('UPDATE suppliers SET terms=?2 WHERE name=?1').bind(sup, JSON.stringify(t)).run();
+    return json({ ok: true, terms: t });
   }
   if (path === '/api/cari/pay') {
     const sup = String(body.supplier || '').trim().slice(0, 120); if (!sup) return bad('Tedarikçi seç.');

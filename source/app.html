@@ -961,40 +961,73 @@ async function addrSave(gid, e, before){
   toast(r.noProv ? 'Adres kaydedildi; il kodu Shopify\'da değiştirilemedi, il alanını Shopify panelinden kontrol et.' : r.noZip ? 'Adres Shopify\'da güncellendi. Posta kodu yeni ille uyuşmadığı için boş bırakıldı.' : 'Adres Shopify\'da güncellendi.', !!r.noProv);
   return true;
 }
-/* ============ Cariler (tedarikçi borç / ödeme) ============ */
+/* ============ Cariler (tedarikçi borç / ödeme / vade) ============ */
 const cDay = (d) => /^\d{4}-\d{2}-\d{2}/.test(d || '') ? `${d.slice(8,10)}.${d.slice(5,7)}.${d.slice(0,4)}` : (d || '');
-function cS(){ if (!S.cari) S.cari = {data: null, loading: false, open: '', det: null, detLoading: false}; return S.cari; }
-function loadCari(force){ const C = cS(); if ((C.data && !force) || C.loading) return; C.loading = true;
-  api('/api/cari/list', {}).then(d => { C.data = d; C.loading = false; if (S.tab === 'cari') render(); }).catch(e => { C.loading = false; C.data = {list: [], suppliers: []}; toast(errText(e), true); }); }
+const WDAYS = ['', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
+function cS(){ if (!S.cari) S.cari = {data: null, loading: false, at: 0, open: '', det: null, detLoading: false, pre: null, tk: null, terms: false}; return S.cari; }
+function loadCari(force){ const C = cS(); if (C.loading || (C.data && !force && Date.now() - C.at < 600000)) return; C.loading = true;
+  api('/api/cari/list', {}).then(d => { C.data = d; C.at = Date.now(); C.loading = false; render(); }).catch(e => { C.loading = false; C.at = Date.now(); if (!C.data) C.data = {list: [], alerts: [], suppliers: []}; if (S.tab === 'cari') toast(errText(e), true); }); }
 function loadCariDet(sup){ const C = cS(); C.detLoading = true; C.det = null;
   api('/api/cari/get', {supplier: sup}).then(d => { if (C.open === sup) { C.det = d; C.detLoading = false; if (S.tab === 'cari') render(); } }).catch(e => { C.detLoading = false; toast(errText(e), true); }); }
+function termsText(t){ if (!t) return 'Peşin'; return t.kind === 'days' ? `${t.n} ${t.unit} vade` : t.kind === 'split' ? `${t.parts} taksit · ${t.every} günde bir${t.first !== t.every ? ` · ilki ${t.first}. gün` : ''}` : t.kind === 'pct' ? `Her ${WDAYS[t.wday]} kalan borcun %${t.pct}'${t.pct === 25 ? 'i (dörtte biri)' : 'i'}` : 'Peşin (vade yok)'; }
+const ST = {late: ['Gecikmiş', 'p-bad'], today: ['Bugün', 'p-warn'], week: ['Bu hafta', 'p-brass'], later: ['İleride', 'p-mute'], paid: ['Ödendi', 'p-good']};
+function cariDueAlert(){ const C = S.cari, D = C && C.data; if (!D || !D.list) return null; const late = D.list.reduce((t, x) => t + (x.overdue || 0), 0), today = D.list.reduce((t, x) => t + (x.dueToday || 0), 0); return late + today > 0.004 ? {late, today, n: D.list.filter(x => x.overdue + x.dueToday > 0.004).length} : null; }
 function viewCari(){
   const C = cS(); loadCari(); const D = C.data;
-  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Cariler</h2><p class="lead small">Tedarikçi hesapları. Alış listelerinde <b>Cariye işle</b> dediğin faturalar borç olarak, buradan girdiğin ödemeler alacak olarak yazılır.</p></div>`;
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Cariler</h2><p class="lead small">Tedarikçi hesapları. Alış listelerinde <b>Cariye işle</b> dediğin faturalar borç, buradan girdiğin ödemeler alacak olarak yazılır. Her firmaya çalışma şeklini (vade) girersen ödeme günleri burada uyarılır.</p></div>`;
   if (!D) return h + loading();
-  const L = D.list || [], tb = L.reduce((t, x) => t + x.buy, 0), tp = L.reduce((t, x) => t + x.paid, 0);
-  h += `<div class="home-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:12px"><div class="kpi"><div class="k">Toplam alış</div><div class="v">${tl2(tb)}</div></div><div class="kpi"><div class="k">Ödenen</div><div class="v" style="color:var(--good)">${tl2(tp)}</div></div><div class="kpi"><div class="k">Kalan borç</div><div class="v" style="color:${tb - tp > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(tb - tp)}</div></div></div>`;
+  const L = D.list || [], A = D.alerts || [], tb = L.reduce((t, x) => t + x.buy, 0), tp = L.reduce((t, x) => t + x.paid, 0);
+  const sum = (f) => A.filter(f).reduce((t, x) => t + x.left, 0), late = sum(x => x.st === 'late'), tod = sum(x => x.st === 'today'), wk = sum(x => x.st === 'week');
+  h += `<div class="home-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:12px"><div class="kpi"><div class="k">Kalan borç</div><div class="v" style="color:${tb - tp > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(tb - tp)}</div></div><div class="kpi"><div class="k">Gecikmiş</div><div class="v" style="color:${late > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(late)}</div></div><div class="kpi"><div class="k">Bugün ödenecek</div><div class="v" style="color:${tod > 0.004 ? 'var(--warn, #b45309)' : 'inherit'}">${tl2(tod)}</div></div><div class="kpi"><div class="k">Önümüzdeki 7 gün</div><div class="v">${tl2(wk)}</div></div></div>`;
+  if (A.length) { h += `<div class="card" style="gap:6px;padding:12px;margin-bottom:12px;border-color:${late + tod > 0.004 ? 'var(--bad)' : 'var(--line)'}"><b>⏰ Ödeme takvimi · bugün ve bu hafta</b>`;
+    for (const k of ['late', 'today', 'week']) { const g = A.filter(x => x.st === k); if (!g.length) continue;
+      h += `<div class="small" style="margin-top:6px;font-weight:600;color:${k === 'late' ? 'var(--bad)' : 'inherit'}">${ST[k][0]} · ${tl2(g.reduce((t, x) => t + x.left, 0))}</div>` + g.map(x => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:6px 0;border-top:1px dashed var(--line)"><div style="min-width:0"><b style="overflow-wrap:anywhere">${esc(x.supplier)}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(cDay(x.due))} · ${esc(x.label)}${x.paid > 0.004 ? ` · ${tl2(x.paid)} ödendi` : ''}</div></div><b style="white-space:nowrap">${tl2(x.left)}</b><button class="btn sm primary" data-act="cari-pay" data-id="${esc(x.supplier)}" data-amt="${x.left}">Öde</button></div>`).join(''); }
+    h += `</div>`; }
   h += `<div class="row" style="justify-content:flex-end;margin-bottom:10px"><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button></div>`;
   if (C.open === '__new') h += cariPayForm('', D.suppliers || []);
   if (!L.length) return h + `<div class="panel empty"><h4>Henüz cari kaydı yok</h4><p>Stoklar → <b>Alış listeleri</b>'nde bir faturayı açıp <b>Cariye işle</b> de; tedarikçi burada borcuyla görünür.</p></div>`;
-  for (const x of L) { const op = C.open === x.supplier;
-    h += `<div class="card" style="gap:8px;padding:12px;${op ? 'border-color:var(--accent)' : ''}"><div class="spread" style="gap:10px;cursor:pointer" data-act="cari-open" data-id="${esc(x.supplier)}"><div style="min-width:0"><div style="font-weight:600;overflow-wrap:anywhere">${esc(x.supplier)}</div><div class="small muted">${fmtN(x.buys)} alış · ${fmtN(x.pays)} ödeme${x.last ? ' · son ' + esc(cDay(x.last)) : ''}</div></div>
+  for (const x of L) { const op = C.open === x.supplier, nx = x.next;
+    const pill = x.overdue > 0.004 ? `<span class="pill p-bad">Gecikmiş ${tl2(x.overdue)}</span>` : x.dueToday > 0.004 ? `<span class="pill p-warn">Bugün ${tl2(x.dueToday)}</span>` : nx ? `<span class="pill ${nx.st === 'week' ? 'p-brass' : 'p-mute'}">Sonraki ${esc(cDay(nx.due))} · ${tl2(nx.amount)}</span>` : '';
+    h += `<div class="card" style="gap:8px;padding:12px;${op ? 'border-color:var(--accent)' : x.overdue + x.dueToday > 0.004 ? 'border-color:var(--bad)' : ''}"><div class="spread" style="gap:10px;cursor:pointer;align-items:flex-start" data-act="cari-open" data-id="${esc(x.supplier)}"><div style="min-width:0"><div style="font-weight:600;overflow-wrap:anywhere">${esc(x.supplier)}</div><div class="small muted">${esc(termsText(x.terms))} · ${fmtN(x.buys)} alış · ${fmtN(x.pays)} ödeme</div>${pill ? `<div style="margin-top:4px">${pill}</div>` : ''}</div>
       <div style="text-align:right"><div class="small muted">Kalan borç</div><div style="font-weight:700;font-size:17px;color:${x.bal > 0.004 ? 'var(--bad)' : x.bal < -0.004 ? 'var(--good)' : 'inherit'}">${tl2(x.bal)}</div></div></div>`;
-    if (op) { h += `<div class="small muted">Alış ${tl2(x.buy)} − ödenen ${tl2(x.paid)}${x.bal < -0.004 ? ' · <b>fazla ödeme (alacaklısın)</b>' : ''}</div>` + cariPayForm(x.supplier, []);
-      const Dt = C.det;
-      if (!Dt || C.detLoading) h += loading();
-      else if (!Dt.rows.length) h += '<p class="muted small" style="margin:0">Hareket yok.</p>';
-      else h += `<div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? tl2(r.amount) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? tl2(r.amount) : ''}</td><td class="r"><b>${tl2(r.bal)}</b></td><td class="r">${r.kind === 'pay' ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="Ödemeyi sil">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`; }
+    if (op) h += cariDetail(x);
     h += `</div>`; }
   return h;
 }
+function cariDetail(x){
+  const C = cS(), Dt = C.det; let h = `<div class="small muted">Alış ${tl2(x.buy)} − ödenen ${tl2(x.paid)}${x.bal < -0.004 ? ' · <b>fazla ödeme (alacaklısın)</b>' : ''}</div>`;
+  if (!Dt || C.detLoading) return h + loading();
+  // çalışma şekli
+  h += `<div class="spread" style="gap:8px;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;padding:8px 10px"><div><span class="small muted">Çalışma şekli:</span> <b>${esc(termsText(Dt.terms))}</b></div><button class="btn sm" data-act="cari-terms">${C.terms ? 'Kapat' : 'Değiştir'}</button></div>`;
+  if (C.terms) h += cariTermsForm(Dt.supplier, C.tk || Dt.terms);
+  h += cariPayForm(x.supplier, []);
+  // ödeme planı
+  const open = Dt.plan.filter(r => r.st !== 'paid'), paid = Dt.plan.filter(r => r.st === 'paid').slice(-3);
+  if (Dt.plan.length) h += `<div class="small" style="font-weight:600;margin-top:4px">Ödeme planı</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Vade</th><th>Açıklama</th><th class="r">Tutar</th><th class="r">Kalan</th><th>Durum</th></tr></thead><tbody>${[...paid, ...open].map(r => `<tr${r.st === 'late' || r.st === 'today' ? ' style="background:var(--accent-soft)"' : ''}><td style="white-space:nowrap">${esc(cDay(r.due))}</td><td style="overflow-wrap:anywhere">${esc(r.label)}</td><td class="r">${tl2(r.amount)}</td><td class="r"><b>${tl2(r.left)}</b></td><td><span class="pill ${ST[r.st][1]}">${ST[r.st][0]}</span></td></tr>`).join('')}</tbody></table></div>`;
+  // ekstre
+  if (!Dt.rows.length) h += '<p class="muted small" style="margin:0">Hareket yok.</p>';
+  else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? tl2(r.amount) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? tl2(r.amount) : ''}</td><td class="r"><b>${tl2(r.bal)}</b></td><td class="r">${r.kind === 'pay' ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="Ödemeyi sil">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+  return h;
+}
+function cariTermsForm(sup, t){
+  const k = t.kind || 'cash', f = (lab, inner) => `<label class="f" style="margin:0"><span class="small">${lab}</span>${inner}</label>`, num = (id, v, ph) => `<input class="input num" id="${id}" value="${esc(String(v ?? ''))}" inputmode="numeric" placeholder="${ph || ''}">`;
+  let fields = '';
+  if (k === 'days') fields = f('Kaç', num('ct-n', t.n, '30')) + f('Birim', `<select class="input" id="ct-unit"><option value="gün"${t.unit !== 'ay' ? ' selected' : ''}>gün</option><option value="ay"${t.unit === 'ay' ? ' selected' : ''}>ay</option></select>`);
+  if (k === 'split') fields = f('Kaç parça', num('ct-parts', t.parts, '4')) + f('Kaç günde bir', num('ct-every', t.every, '7')) + f('İlk ödeme (faturadan kaç gün sonra)', num('ct-first', t.first, '7'));
+  if (k === 'pct') fields = f('Her hafta kalan borcun %', num('ct-pct', t.pct, '25')) + f('Ödeme günü', `<select class="input" id="ct-wday">${WDAYS.slice(1).map((d, i) => `<option value="${i + 1}"${t.wday === i + 1 ? ' selected' : ''}>${d}</option>`).join('')}</select>`);
+  const help = {cash: 'Fatura tarihinde ödenir.', days: 'Her fatura, fatura tarihinden bu kadar gün/ay sonra tek seferde ödenir.', split: 'Her fatura eşit parçalara bölünür; parçalar arka arkaya bu aralıkla ödenir (ör. 4 parça, 7 günde bir).', pct: 'Her hafta seçtiğin gün, o güne kadarki kalan borcun bu yüzdesi ödenir (%25 = dörtte biri).'}[k];
+  return `<form id="f-cariterms" data-sup="${esc(sup)}" class="card" style="gap:8px;padding:10px;background:var(--accent-soft)"><b class="small">${esc(sup)} · çalışma şekli</b>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">${f('Ödeme şekli', `<select class="input" id="ct-kind"><option value="cash"${k === 'cash' ? ' selected' : ''}>Peşin</option><option value="days"${k === 'days' ? ' selected' : ''}>X gün / ay sonra (vade)</option><option value="split"${k === 'split' ? ' selected' : ''}>Parçalı (taksit)</option><option value="pct"${k === 'pct' ? ' selected' : ''}>Her hafta kalan borcun %'si</option></select>`)}${fields}</div>
+    <p class="small muted" style="margin:0">${help} Tüm faturalarına (eskiler dahil) uygulanır; ödemeler en eski vadeden düşülür.</p>
+    <div class="row" style="justify-content:flex-end"><button class="btn sm primary" type="submit">Kaydet</button></div></form>`;
+}
 function cariPayForm(sup, sups){
-  const today = todayTR();
+  const C = cS(), pre = C.pre && C.pre.sup === sup ? C.pre.amt : '';
   return `<form id="f-caripay" class="card" style="gap:8px;padding:10px;background:var(--accent-soft)"><b class="small">Ödeme gir${sup ? ' · ' + esc(sup) : ''}</b>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px">
     ${sup ? `<input type="hidden" id="cp-sup" value="${esc(sup)}">` : `<label class="f" style="margin:0"><span class="small">Tedarikçi</span><input class="input" id="cp-sup" list="cp-sups" placeholder="Tedarikçi adı" required><datalist id="cp-sups">${sups.map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>`}
-    <label class="f" style="margin:0"><span class="small">Tutar (TL)</span><input class="input num" id="cp-amt" inputmode="decimal" placeholder="0,00" required></label>
-    <label class="f" style="margin:0"><span class="small">Tarih</span><input class="input" id="cp-date" type="date" value="${today}"></label>
+    <label class="f" style="margin:0"><span class="small">Tutar (TL)</span><input class="input num" id="cp-amt" inputmode="decimal" placeholder="0,00" value="${pre ? esc(String(pre).replace('.', ',')) : ''}" required></label>
+    <label class="f" style="margin:0"><span class="small">Tarih</span><input class="input" id="cp-date" type="date" value="${todayTR()}"></label>
     <label class="f" style="margin:0"><span class="small">Şekli</span><select class="input" id="cp-method"><option>Havale/EFT</option><option>Nakit</option><option>Kredi kartı</option><option>Çek</option><option>Senet</option><option>Diğer</option></select></label>
     <label class="f" style="margin:0"><span class="small">Not</span><input class="input" id="cp-note" placeholder="İsteğe bağlı"></label></div>
     <div class="row" style="justify-content:flex-end;gap:6px">${sup ? '' : '<button class="btn sm" type="button" data-act="cari-open" data-id="__new">Vazgeç</button>'}<button class="btn sm primary" type="submit">Ödemeyi kaydet</button></div></form>`;
@@ -1341,6 +1374,7 @@ function banners(){
   const st = tyState();
   if (st.cls === 'err') h += `<div class="banner bad"><div><b>Trendyol eşitlemesi hata verdi:</b> ${esc(st.err || '')}</div><button class="btn sm" data-act="open-import">Ayrıntı</button></div>`;
   else if (!(S.sync && S.sync.trendyol && S.sync.trendyol.configured)) h += `<div class="banner"><div><b>Trendyol bağlantısı kurulmadı.</b> Cloudflare'de Trendyol bilgileri girilince siparişler her 10 saniyede kendiliğinden gelir.</div></div>`;
+  if (S.tab !== 'cari') { loadCari(); const ca = cariDueAlert(); if (ca) h += `<div class="banner bad"><div><b>⏰ Tedarikçi ödemesi:</b> ${ca.today > 0.004 ? `bugün <b>${tl2(ca.today)}</b>` : ''}${ca.today > 0.004 && ca.late > 0.004 ? ', ' : ''}${ca.late > 0.004 ? `gecikmiş <b>${tl2(ca.late)}</b>` : ''} · ${fmtN(ca.n)} firma</div><button class="btn sm" data-act="go-cari">Carilere git</button></div>`; }
   return h;
 }
 function loading(){ return `<div class="list" aria-busy="true"><div class="skel" style="border-top:0"></div><div class="skel"></div><div class="skel"></div></div>`; }
@@ -3502,6 +3536,7 @@ document.addEventListener('keydown', e => { const t = e.target; if (!t || t.id !
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); A.field = null; render(); return; }
   if (e.key === 'Enter' && !(F.k === 'address1' && e.shiftKey)) { e.preventDefault(); const o = A.data.orders.find(x => x.gid === F.gid), sug = addrSuggest(F.k, F.v, A.edit[F.gid] || addrForm((o && o.addr) || {}));
     if (sug && sug.length && F.v.trim() && !sug.some(x => trFold(x.label) === trFold(F.v))) addrFieldCommit(sug[0].v); else if (sug && sug.length) addrFieldCommit((sug.find(x => trFold(x.label) === trFold(F.v)) || {}).v || undefined); else addrFieldCommit(); } }, true);
+document.addEventListener('change', e => { const t = e.target; if (!t || t.id !== 'ct-kind') return; const C = cS(), base = (C.det && C.det.terms) || {}; C.tk = {...base, ...(C.tk || {}), kind: t.value}; render(); });
 document.addEventListener('change', e => { const t = e.target; if (t && t.dataset && t.dataset.af && S.tab === 'addr') render();
   if (t && t.dataset && t.dataset.srsel) { const A = aS(); A.sel = A.sel || new Set(); if (t.checked) A.sel.add(t.dataset.srsel); else A.sel.delete(t.dataset.srsel); render(); } });
 document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.qid) qS().drafts[t.dataset.qid] = t.value;
@@ -3546,7 +3581,10 @@ document.addEventListener('click', async e => {
     case 'need-open': openSheet('need', {}); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'cari-paynew': { const C = cS(); C.open = C.open === '__new' ? '' : '__new'; C.det = null; render(); break; }
-    case 'cari-open': { const C = cS(); if (C.open === id) { C.open = ''; C.det = null; } else { C.open = id; if (id !== '__new') loadCariDet(id); } render(); break; }
+    case 'cari-open': { const C = cS(); C.terms = false; C.tk = null; C.pre = null; if (C.open === id) { C.open = ''; C.det = null; } else { C.open = id; if (id !== '__new') loadCariDet(id); } render(); break; }
+    case 'cari-pay': { const C = cS(); C.terms = false; C.tk = null; C.pre = {sup: id, amt: b.dataset.amt}; if (C.open !== id) { C.open = id; loadCariDet(id); } render(); setTimeout(() => { const el = $('#cp-amt'); if (el) { el.scrollIntoView({block: 'center'}); el.focus(); } }, 400); break; }
+    case 'cari-terms': { const C = cS(); C.terms = !C.terms; C.tk = null; render(); break; }
+    case 'go-cari': setTab('cari'); break;
     case 'cari-paydel': if (!(await confirmBox('Bu ödeme silinsin mi? Kalan borç tekrar artar.', 'Sil', true))) break;
       await run(async () => { await api('/api/cari/paydel', {id: Number(id)}); const C = cS(); toast('Ödeme silindi.'); loadCari(true); if (C.open && C.open !== '__new') loadCariDet(C.open); }); break;
     case 'insp-open': openSheet('insp', {}); break;
@@ -3835,8 +3873,11 @@ document.addEventListener('submit', async e => {
   if (e.target.classList && e.target.classList.contains('srman')) { const gid = e.target.dataset.gid, A = aS(); A.busy['sr' + gid] = 'track'; render();
     try { const r = (await api('/api/surat/track', {gid, number: ($('#sr-man') || {}).value || ''})).r; srApply(gid, r); A.srm = null; toast(r.fulfilled ? `Takip no ${r.tracking} Shopify'a işlendi; müşteriye bildirim gitti.` : `Takip no kaydedildi${r.err ? ' · Shopify: ' + r.err : ''}`, !!r.err); } catch(err) { toast(errText(err), true); }
     delete A.busy['sr' + gid]; render(); return; }
+  if (id === 'f-cariterms') { const sup = e.target.dataset.sup, v = (x) => ($('#' + x) || {}).value;
+    const t = {kind: v('ct-kind'), n: v('ct-n'), unit: v('ct-unit'), parts: v('ct-parts'), every: v('ct-every'), first: v('ct-first'), pct: v('ct-pct'), wday: v('ct-wday')};
+    await run(async () => { await api('/api/cari/terms', {supplier: sup, terms: t}); const C = cS(); C.terms = false; C.tk = null; toast(`${sup}: çalışma şekli kaydedildi.`); loadCari(true); loadCariDet(sup); }); return; }
   if (id === 'f-caripay') { const sup = ($('#cp-sup').value || '').trim(), amt = $('#cp-amt').value;
-    await run(async () => { await api('/api/cari/pay', {supplier: sup, amount: amt, date: $('#cp-date').value, method: $('#cp-method').value, note: $('#cp-note').value}); const C = cS(); toast(`Ödeme kaydedildi: ${sup}.`); if (C.open === '__new') C.open = sup; loadCari(true); loadCariDet(C.open); }); return; }
+    await run(async () => { await api('/api/cari/pay', {supplier: sup, amount: amt, date: $('#cp-date').value, method: $('#cp-method').value, note: $('#cp-note').value}); const C = cS(); toast(`Ödeme kaydedildi: ${sup}.`); C.pre = null; if (C.open === '__new') C.open = sup; loadCari(true); loadCariDet(C.open); }); return; }
   if (id === 'f-srweb') { await run(async () => { await api('/api/surat/settings', {desi: (S.surat || {}).desi || 2, web: $('#sr-web2').value}); S.surat = null; renderSheet(false); toast('Web servis şifresi kaydedildi.'); }); return; }
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
   if (id === 'f-srdesi') { await run(async () => { await api('/api/surat/settings', {desi: $('#sr-desi2').value}); S.surat = null; renderSheet(false); toast('Varsayılan desi kaydedildi.'); }); return; }
