@@ -2120,6 +2120,7 @@ class PdfCtx {
   beginPath(){ this._path = []; } moveTo(x, y){ this._path.push(`${this.X(x)} ${this.Y(y)} m`); } lineTo(x, y){ this._path.push(`${this.X(x)} ${this.Y(y)} l`); }
   bezierCurveTo(a, b, c2, d, e, f){ this._path.push(`${this.X(a)} ${this.Y(b)} ${this.X(c2)} ${this.Y(d)} ${this.X(e)} ${this.Y(f)} c`); } closePath(){ this._path.push('h'); }
   stroke(){ this.ops.push(`${(this.lineWidth * this.k).toFixed(2)} w ${this._path.join(' ')} S`); }
+  fill(){ this.ops.push(`${this._path.join(' ')} f`); }
   // Ürün fotoğrafı: yazıcının nokta ızgarasında (8 nokta/mm) noktalı siyah-beyaz (Floyd–Steinberg), oranı korunur
   drawPhoto(img, x, y, w, h){ const im = this.doc.photoFor(img, Math.max(8, Math.round(w)), Math.max(8, Math.round(h))); this.ops.push(`q ${(w * this.k).toFixed(2)} 0 0 ${(h * this.k).toFixed(2)} ${this.X(x)} ${this.Y(y + h)} cm /${im.name} Do Q`); }
   drawJpeg(img, x, y, w, h){ const im = this.doc.jpegFor(img, Math.max(16, Math.round(w * 2)), Math.max(16, Math.round(h * 2))); this.ops.push(`q ${(w * this.k).toFixed(2)} 0 0 ${(h * this.k).toFixed(2)} ${this.X(x)} ${this.Y(y + h)} cm /${im.name} Do Q`); }
@@ -2195,7 +2196,11 @@ function drawLabelPages(p, W, H, sid, mk){
     }
     y = tableHead(c, y); boxes(c, y, list);
     const fy = PH - m - mm(9);
-    if (chunks.length > 1) { font(c, 2.4, false); c.fillText(i === 0 ? `Sayfa 1/${chunks.length} · devamı ek sayfada` : `Ek sayfa ${i + 1}/${chunks.length}`, m, fy); }
+    if (chunks.length > 1) { font(c, 2.4, false); c.fillText(`Sayfa ${i + 1}/${chunks.length}`, m, fy); }
+    // Devamı var: alt sağda büyük ok + yazı (ürünler sonraki sayfada sürüyor)
+    if (i < chunks.length - 1) { const ah = mm(10), aw = mm(22), ax = PW - m - aw, ay = PH - m - ah - mm(0.5), sh = ah * 0.34;
+      c.beginPath(); c.moveTo(ax, ay + ah / 2 - sh / 2); c.lineTo(ax + aw - ah * 0.6, ay + ah / 2 - sh / 2); c.lineTo(ax + aw - ah * 0.6, ay); c.lineTo(ax + aw, ay + ah / 2); c.lineTo(ax + aw - ah * 0.6, ay + ah); c.lineTo(ax + aw - ah * 0.6, ay + ah / 2 + sh / 2); c.lineTo(ax, ay + ah / 2 + sh / 2); c.closePath(); c.fill();
+      font(c, 3.6, true); const t = `DEVAMI SAYFA ${i + 2}'DE`; c.fillText(t, ax - mm(2) - c.measureText(t).width, ay + ah / 2 - mm(1.8)); }
     if (i === chunks.length - 1) { font(c, 3.2, false); const t = 'TOPLAM TUTAR: ' + tl2(total); c.fillText(t, PW - m - c.measureText(t).width, fy); }
     if (pg.cv) lblMono(pg.cv);
     return pg.cv || pg.c;
