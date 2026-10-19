@@ -879,9 +879,10 @@ function drawSuratLabel(sh, W, H, mk){
   font(c, 2.6, false); const t2 = `Sipariş ${sh.order_no} · ${new Date(sh.at).toLocaleDateString('tr-TR')}`; c.fillText(t2, PW - m - c.measureText(t2).width, y + mm(5));
   y += Math.max(lgH, mm(8.5)) + mm(1.5);
   const bh = mm(tall ? 22 : 16), bw = Math.min(cw - mm(8), mm(80));
-  if (window.JsBarcode) { try { lblBarcode(c, sh.ref, (PW - bw) / 2, y, bw, bh); } catch(e) {} }
-  y += bh + mm(1); font(c, 4.4, true); c.fillText(sh.ref, (PW - c.measureText(sh.ref).width) / 2, y); y += mm(5.4);
-  font(c, 2.8, false); const k = `${sh.adet} koli · ${String(sh.desi).replace('.', ',')} desi · Ödeme: gönderici`; c.fillText(k, (PW - c.measureText(k).width) / 2, y); y += mm(3.8);
+  const code = sh.tracking || sh.ref; // Sürat barkodu varsa o basılır
+  if (window.JsBarcode) { try { lblBarcode(c, code, (PW - bw) / 2, y, bw, bh); } catch(e) {} }
+  y += bh + mm(1); font(c, 4.4, true); c.fillText(code, (PW - c.measureText(code).width) / 2, y); y += mm(5.4);
+  font(c, 2.8, false); const k = `${sh.adet} koli · ${String(sh.desi).replace('.', ',')} desi · Ödeme: gönderici${sh.tracking ? ' · Ref ' + sh.ref : ''}`; c.fillText(k, (PW - c.measureText(k).width) / 2, y); y += mm(3.8);
   rule(y, 0.45); y += mm(1.5);
   const a = sh.addr || {};
   font(c, 2.4, true); c.fillText('ALICI', m, y); y += mm(3.1);
@@ -3570,7 +3571,7 @@ document.addEventListener('click', async e => {
       const adet = parseInt(($('#sr-adet') || {}).value, 10) || 1, desi = String(($('#sr-d') || {}).value || '').replace(',', '.');
       A.busy['sr' + id] = 1; render();
       try { const r = await api('/api/surat/ship', {gid: id, adet, desi, again: !!b.dataset.again}); (A.data.ships = A.data.ships || []).push(r.ship); A.sr = null; S.surat = null;
-        toast(r.ship.mode === 'api' ? `Sürat'a bildirildi: ${r.ship.ref}${r.ship.msg ? ' · ' + r.ship.msg : ''}` : `Barkod ${r.ship.ref} oluşturuldu · 'Sürat Excel indir' ile Sürat'a yükle.`); delete A.busy['sr' + id]; render(); await suratPrint([r.ship]); }
+        toast(r.ship.mode === 'api' ? (r.ship.tracking ? `Sürat barkodu ${r.ship.tracking}${r.ship.fulfilled_at ? ' · Shopify\'a işlendi, müşteriye bildirildi' : r.ship.fulfill_err ? ' · Shopify: ' + r.ship.fulfill_err : ''}` : `Sürat'a bildirildi: ${r.ship.ref}${r.ship.msg ? ' · ' + r.ship.msg : ''}`) : `Barkod ${r.ship.ref} oluşturuldu · 'Sürat Excel indir' ile Sürat'a yükle.`); delete A.busy['sr' + id]; render(); await suratPrint([r.ship]); }
       catch(err) { toast(errText(err), true); delete A.busy['sr' + id]; render(); }
       break; }
     case 'ad-fcancel': aS().field = null; render(); break;
