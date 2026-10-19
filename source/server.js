@@ -665,7 +665,7 @@ function srValue(f, g) {
 }
 function srEnvelope(sc, creds, g) {
   const gx = sc.gonderi.fields.map(f => { const v = srValue(f, g); return v === undefined ? '' : `<${f.name}>${xmlEsc(v)}</${f.name}>`; }).join('');
-  const px = sc.params.map(p => p.tns ? `<${p.name}>${gx}</${p.name}>` : /kullanici|carikod/i.test(p.name) ? `<${p.name}>${xmlEsc(creds.cari)}</${p.name}>` : /sifre|password/i.test(p.name) ? `<${p.name}>${xmlEsc(creds.pass)}</${p.name}>` : '').join('');
+  const px = sc.params.map(p => p.tns ? `<${p.name}>${gx}</${p.name}>` : /kullanici/i.test(p.name) ? `<${p.name}>${xmlEsc(creds.user || creds.cari)}</${p.name}>` : /cari/i.test(p.name) ? `<${p.name}>${xmlEsc(creds.cari)}</${p.name}>` : /sifre|password/i.test(p.name) ? `<${p.name}>${xmlEsc(creds.pass)}</${p.name}>` : '').join('');
   return `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${sc.method} xmlns="${sc.ns}">${px}</${sc.method}></soap:Body></soap:Envelope>`;
 }
 const SR_FAIL = /hata|error|exception|ge[cç]ersiz|hatal|yetki|bulunamad|ba[sş]ar[iı]s[iı]z|zorunlu|eksik|invalid|fault|tan[iı]ml[iı] de[gğ]il|kay[iı]tl[iı]/i;
@@ -731,7 +731,7 @@ async function srTrackPending(env) {
   const out = []; for (const r of results) { try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); break; } }
   return { checked: out.length, fulfilled: out.filter(x => x.fulfilled).length };
 }
-async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_pass', 'sr_web', 'sr_desi']); return { cari: env.SURAT_CARI_KODU || s.sr_cari || '', pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
+async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_user', 'sr_pass', 'sr_web', 'sr_desi']); const cari = env.SURAT_CARI_KODU || s.sr_cari || ''; return { cari, user: env.SURAT_KULLANICI || s.sr_user || cari, pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
 const SR_ORDER_Q = `query($id:ID!){order(id:$id){id name email phone cancelledAt displayFulfillmentStatus shippingAddress{${'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone'}} totalPriceSet{shopMoney{amount}}
   lineItems(first:50){nodes{name sku quantity unfulfilledQuantity variant{id} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} image{url}}}}}`;
 function shAddrErr(e) {
@@ -2685,13 +2685,14 @@ ${catalog}` });
   if (path === '/api/surat/status') {
     const c = await srCreds(env), s = await getSettings(env, ['sr_err', 'sr_ok']);
     const tk = await getSettings(env, ['sr_track_err']);
-    return json({ connected: !!(c.cari && c.pass), cari: c.cari ? c.cari.slice(0, 2) + '•••' + c.cari.slice(-2) : '', web: !!c.web, desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
+    const mask = (x) => x ? x.slice(0, 2) + '•••' + x.slice(-2) : '';
+    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
   }
   if (path === '/api/surat/connect') {
-    const cari = String(body.cari || '').trim(), pass = String(body.pass || '').trim(), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2));
-    if (!cari || !pass) return bad('Cari kodu ve şifre gerekli.');
+    const user = String(body.user || '').trim(), cari = String(body.cari || '').trim() || user, pass = String(body.pass || '').trim(), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2));
+    if (!user || !pass) return bad('Kullanıcı adı ve şifre gerekli.');
     try { await srSchema(env, true); } catch (e) { return bad(String(e.message || e)); }
-    await env.DB.batch([setStmt(env, 'sr_cari', cari), setStmt(env, 'sr_pass', pass), setStmt(env, 'sr_web', String(body.web || '').trim()), setStmt(env, 'sr_desi', String(desi)), setStmt(env, 'sr_err', '')]);
+    await env.DB.batch([setStmt(env, 'sr_cari', cari), setStmt(env, 'sr_user', user), setStmt(env, 'sr_pass', pass), setStmt(env, 'sr_web', String(body.web || '').trim()), setStmt(env, 'sr_desi', String(desi)), setStmt(env, 'sr_err', '')]);
     return json({ ok: true });
   }
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
@@ -2701,10 +2702,10 @@ ${catalog}` });
     if (body.number !== undefined) { const n = String(body.number || '').replace(/\D/g, ''); if (n.length < 6) return bad('Takip numarası geçersiz.'); row.tracking = n; row.track_msg = 'Elle girildi'; }
     try { return json({ ok: true, r: await srTrackOne(env, row, cr, await shCreds(env)) }); } catch (e) { return bad(String(e.message || e)); }
   }
-  if (path === '/api/surat/disconnect') { await env.DB.batch([setStmt(env, 'sr_cari', ''), setStmt(env, 'sr_pass', '')]); return json({ ok: true }); }
+  if (path === '/api/surat/disconnect') { await env.DB.batch([setStmt(env, 'sr_cari', ''), setStmt(env, 'sr_user', ''), setStmt(env, 'sr_pass', ''), setStmt(env, 'sr_web', '')]); return json({ ok: true }); }
   if (path === '/api/surat/schema') { try { const sc = await srSchema(env, true); return json({ ok: true, method: sc.method, fields: sc.gonderi.fields.map(f => f.name + (f.min ? '*' : '')) }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/ship') {
-    const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil. Bağlantılar bölümünden cari kodu ve şifreyi gir.');
+    const cr = await srCreds(env); if (!cr.user || !cr.pass) return bad('Sürat Kargo bağlı değil. Bağlantılar bölümünden kullanıcı adı ve şifreyi gir.');
     const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
     const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
     const adet = Math.max(1, Math.min(50, parseInt(body.adet, 10) || 1)), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || cr.desi).replace(',', '.')) || cr.desi));
