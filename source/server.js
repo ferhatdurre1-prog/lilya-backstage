@@ -638,12 +638,13 @@ const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&'
 const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1]] = m[2]; return o; };
 async function srSchema(env, force) {
   const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
-  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 3) return c; } catch (e) {} }
+  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 4) return c; } catch (e) {} }
   const r = await fetch(SR_URL + '?WSDL', { headers: { 'user-agent': 'LilyaBackstage/1.0' } });
   if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
   const w = await r.text();
   const ns = (/targetNamespace="([^"]+)"/.exec(w) || [])[1] || 'http://tempuri.org/';
-  const elBlock = (name) => { const re = new RegExp(`<(?:\\w+:)?element[^>]*name="${name}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?element>`); const m = re.exec(w); return m ? m[1] : null; };
+  // Yalnız kendi kapanış etiketi olan (işlem tanımı) eleman aranır; aynı ada sahip tek satırlık alan tanımları (<element name="X" ... />) atlanır
+  const elBlock = (name) => { const re = new RegExp(`<(?:\\w+:)?element\\b[^>/]*\\bname="${name}"[^>/]*>([\\s\\S]*?)</(?:\\w+:)?element>`); const m = re.exec(w); return m ? m[1] : null; };
   const fields = (block) => [...block.matchAll(/<(?:\w+:)?element\b[^>]*\/?>/g)].map(m => xmlAttrs(m[0])).filter(a => a.name).map(a => ({ name: a.name, type: String(a.type || '').replace(/^\w+:/, ''), tns: /^tns:/.test(a.type || ''), min: a.minOccurs == null ? 1 : Number(a.minOccurs) }));
   let method = null, params = null; const alts = [];
   for (const m of SR_METHODS) { const b = elBlock(m); if (b) { const ps = fields(b); alts.push({ method: m, params: ps }); if (!method) { method = m; params = ps; } } }
@@ -653,7 +654,7 @@ async function srSchema(env, force) {
   const ct = new RegExp(`<(?:\\w+:)?complexType[^>]*name="${gp.type}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?complexType>`).exec(w);
   if (!ct) throw new Error('Sürat gönderi alanları okunamadı.');
   let query = null; for (const m of ['WebSiparisKodu', 'WebSiparisKoduToplu']) { const b = elBlock(m); if (b) { query = { method: m, params: fields(b) }; break; } }
-  const sc = { v: 3, ns, method, params, alts, ops, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
+  const sc = { v: 4, ns, method, params, alts, ops, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
   await env.DB.batch([setStmt(env, 'sr_schema', JSON.stringify(sc)), setStmt(env, 'sr_schema_at', String(Date.now()))]);
   return sc;
 }

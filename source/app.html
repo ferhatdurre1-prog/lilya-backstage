@@ -3053,6 +3053,7 @@ function srDiagHtml(d){
     <div>Kullanıcı adı: <span class="mono">${esc((c.user || {}).mask || '')}</span> (${ci(c.user)}) · Cari kodu: <span class="mono">${esc((c.cari || {}).mask || '')}</span> (${ci(c.cari)})</div>
     <div>Kayıtlı şifre: ${ci(c.pass)} · Web servis şifresi: ${ci(c.web)}</div>
     ${(d.tests || []).map(t => `<div>• ${esc(t.label)} → Sürat: <b>${esc(t.msg)}</b></div>`).join('')}
+    ${d.schema && !d.schema.err ? `<div>Gönderi: <span class="mono">${esc((d.schema.create || []).join(' · '))}</span></div><div>Sorgu: <span class="mono">${esc(d.schema.query || '—')}</span></div>` : ''}
     ${d.schema ? `<details><summary>Teknik ayrıntı</summary><div class="mono" style="font-size:11px;overflow-wrap:anywhere">${esc(JSON.stringify(d.schema))}</div></details>` : ''}
     <div class="muted">Bu ekranın fotoğrafını Claude'a gönder.</div></div>`;
 }
