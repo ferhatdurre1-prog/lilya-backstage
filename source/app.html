@@ -741,7 +741,7 @@ function addrIssues(a, o){
   const out = [], bad = m => out.push(['bad', m]), warn = m => out.push(['warn', m]);
   if (!a) { bad('Teslimat adresi yok'); return out; }
   const name = `${a.firstName} ${a.lastName}`.trim();
-  if (!name) bad('Ad soyad yok'); else { if (!a.lastName.trim() && !/\s/.test(name)) warn('Soyad yok'); if (oddCase(name)) warn('Ad soyad hep büyük/küçük harf'); }
+  if (!name) bad('Ad soyad yok'); else { if (!a.lastName.trim() && !/\s/.test(name)) warn('Soyad yok'); }
   if (!a.phone.trim() && !(o && o.phone)) bad('Telefon yok'); else if (a.phone.trim() && !phoneFix(a.phone)) bad('Telefon geçersiz');
   if ((a.countryCode || 'TR') !== 'TR') warn('Ülke Türkiye değil: ' + a.countryCode);
   const il = ilFind(a.province), cityIl = ilFind(a.city);
@@ -762,7 +762,6 @@ function addrFix(a){
   const b = {...a};
   for (const k of ['firstName','lastName','city','address1','address2','company']) b[k] = String(b[k] || '').replace(/\s+/g, ' ').trim();
   if (b.firstName && !b.lastName && /\s/.test(b.firstName)) { const p = b.firstName.split(' '); b.lastName = p.pop(); b.firstName = p.join(' '); }
-  if (oddCase(`${b.firstName}${b.lastName}`)) { b.firstName = trTitle(b.firstName); b.lastName = trTitle(b.lastName); }
   let il = ilFind(b.province); const cityIl = ilFind(b.city);
   if (il == null && cityIl != null) { il = cityIl; b.province = TR_IL[cityIl]; } // il boş/yanlış, ilçeye il yazılmış
   if (il != null) b.province = TR_IL[il];
