@@ -623,8 +623,8 @@ const SH_API = '2026-07';
 // Adres düzeltme: kargolanmamış siparişlerin teslimat adresi okunur ve orderUpdate ile düzeltilir.
 // Gerekli: write_orders yetkisi + korunan müşteri verisi (ad, adres, telefon, e-posta) izni.
 const SH_ADDR_F = 'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone';
-const SH_ADDR_Q = `query($q:String!){orders(first:60,sortKey:CREATED_AT,reverse:true,query:$q){nodes{id name createdAt cancelledAt test displayFulfillmentStatus note email phone
-  totalPriceSet{shopMoney{amount}} lineItems(first:10){nodes{name quantity}} shippingAddress{${SH_ADDR_F}}}}}`;
+const SH_ADDR_Q = `query($q:String,$after:String){orders(first:50,after:$after,sortKey:CREATED_AT,reverse:true,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt cancelledAt test displayFulfillmentStatus note email phone
+  totalPriceSet{shopMoney{amount}} lineItems(first:5){nodes{name quantity}} shippingAddress{${SH_ADDR_F}}}}}`;
 function shAddrErr(e) {
   const m = String((e && e.message) || e);
   if (/write_orders|access denied.*order|required access/i.test(m)) return 'Shopify uygulamasında adres değiştirme izni yok. Dev Dashboard → Lilya Backstage → yeni sürüm (Version) → Access scopes\'a write_orders ekle → Release, sonra mağazada uygulamayı güncelle. Ayrıntı: ' + m.slice(0, 160);
@@ -2550,17 +2550,22 @@ ${catalog}` });
   // ---------- Shopify adres düzeltme ----------
   if (path === '/api/shaddr/list') {
     const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil. Önce Bağlantılar bölümünden Shopify\'ı bağla.');
-    const days = body.filter === 'all' ? 60 : 30, term = String(body.q || '').trim().replace(/['"\\]/g, '').slice(0, 60);
-    let q = `created_at:>='${iso(Date.now() - days * 86400000)}' -status:cancelled`;
-    if (term) q = /^#?\d+$/.test(term) ? `name:#${term.replace('#', '')}` : term;
+    // Sadece kargolanmamış (iptal edilmemiş) siparişler, tarih sınırı yok; sayfa sayfa (istek başına en çok 200, devamı "Daha fazla yükle" ile)
+    const term = String(body.q || '').trim().replace(/['"\\]/g, '').slice(0, 60);
+    let q = '-fulfillment_status:shipped -status:cancelled';
+    if (term) q += ' ' + (/^#?\d+$/.test(term) ? `name:#${term.replace('#', '')}` : term);
     try {
-      const d = await shGql(env, c, SH_ADDR_Q, { q });
-      const orders = d.orders.nodes.filter(o => !o.test && !o.cancelledAt && (term || body.filter === 'all' || o.displayFulfillmentStatus !== 'FULFILLED')).map(o => ({
-        gid: o.id, name: o.name, createdAt: o.createdAt, fulfill: o.displayFulfillmentStatus, note: o.note || '', email: o.email || '', phone: o.phone || '',
+      let after = body.after || null, nodes = [], more = false;
+      for (let page = 0; page < 4; page++) {
+        const d = await shGql(env, c, SH_ADDR_Q, { q, after }); nodes.push(...d.orders.nodes);
+        more = d.orders.pageInfo.hasNextPage; after = d.orders.pageInfo.endCursor; if (!more) break;
+      }
+      const orders = nodes.filter(o => !o.test && !o.cancelledAt && !['FULFILLED', 'RESTOCKED'].includes(o.displayFulfillmentStatus)).map(o => ({
+        gid: o.id, name: o.name, createdAt: o.createdAt, cancelled: !!o.cancelledAt, fulfill: o.displayFulfillmentStatus, note: o.note || '', email: o.email || '', phone: o.phone || '',
         total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).map(l => `${l.quantity}× ${l.name}`),
         addr: o.shippingAddress || null }));
-      const log = (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
-      return json({ ok: true, orders, log });
+      const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
+      return json({ ok: true, orders, log, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   if (path === '/api/shaddr/save') {

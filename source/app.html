@@ -754,22 +754,28 @@ async function loadAddr(force){
   A.loading = true; try { const d = await api('/api/shaddr/list', {filter: A.filter, q: A.q.trim()}); A.data = d; A.at = Date.now(); A.err = ''; addrLearnCodes(d.orders); } catch(e) { A.err = errText(e); A.data = null; }
   A.loading = false; if (S.tab === 'addr') render();
 }
+async function loadAddrMore(){
+  const A = aS(); if (A.loading || !A.data || !A.data.after) return;
+  A.loading = true; render();
+  try { const d = await api('/api/shaddr/list', {filter: A.filter, q: A.q.trim(), after: A.data.after}); const seen = new Set(A.data.orders.map(o => o.gid)); A.data.orders.push(...d.orders.filter(o => !seen.has(o.gid))); A.data.after = d.after; A.at = Date.now(); addrLearnCodes(d.orders); } catch(e) { toast(errText(e), true); }
+  A.loading = false; if (S.tab === 'addr') render();
+}
 const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(' / '), a.zip].filter(Boolean).map(esc).join(' · ') : '<span class="muted">Adres yok</span>';
 function viewAddr(){
   const A = aS(); loadAddr(false);
-  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
-  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips"><button class="chip" data-act="ad-filter" data-id="open" aria-pressed="${A.filter==='open'}">Kargolanmamış</button><button class="chip" data-act="ad-filter" data-id="all" aria-pressed="${A.filter==='all'}">Son 60 gün, tümü</button><button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button></div>
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Kargolanmamış bütün Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
+  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips"><button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button></div>
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
   const rows = A.data.orders.map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
   const nBad = rows.filter(r => r.issues.length).length;
-  h += `<div class="small muted" style="margin:0 0 10px">${fmtN(rows.length)} sipariş · <b style="color:${nBad ? 'var(--bad)' : 'var(--good)'}">${nBad ? fmtN(nBad) + ' tanesinde kontrol edilecek bir şey var' : 'hepsi düzgün görünüyor'}</b></div>`;
+  h += `<div class="small muted" style="margin:0 0 10px">${fmtN(rows.length)}${A.data.after ? '+' : ''} sipariş · <b style="color:${nBad ? 'var(--bad)' : 'var(--good)'}">${nBad ? fmtN(nBad) + ' tanesinde kontrol edilecek bir şey var' : 'hepsi düzgün görünüyor'}</b></div>`;
   const list = rows.filter(r => !A.only || r.issues.length || r.e).sort((x, y) => (y.issues.some(i => i[0]==='bad') - x.issues.some(i => i[0]==='bad')) || (y.issues.length > 0) - (x.issues.length > 0));
-  if (!list.length) h += `<div class="panel empty"><h4>${rows.length ? 'Sorunlu adres yok' : 'Sipariş yok'}</h4><p>${rows.length ? '"Sadece sorunlular" filtresini kapatıp hepsini görebilirsin.' : A.q ? 'Aramayla eşleşen sipariş bulunamadı.' : 'Bu aralıkta kargolanmamış Shopify siparişi yok.'}</p></div>`;
+  if (!list.length) h += `<div class="panel empty"><h4>${rows.length ? 'Sorunlu adres yok' : 'Sipariş yok'}</h4><p>${rows.length ? '"Sadece sorunlular" filtresini kapatıp hepsini görebilirsin.' : A.q ? 'Aramayla eşleşen sipariş bulunamadı.' : 'Kargolanmamış Shopify siparişi yok.'}</p></div>`;
   for (const {o, e, issues} of list) {
     const g = esc(o.gid), busy = A.busy[o.gid];
-    h += `<div class="card" style="gap:8px"><div class="spread" style="gap:8px;align-items:flex-start"><div style="min-width:0"><b>${esc(o.name)}</b> <span class="muted small">${esc(fmtDate(o.createdAt))}</span> ${o.fulfill === 'FULFILLED' ? '<span class="pill p-mute">Kargolandı</span>' : '<span class="pill p-brass">Kargolanmadı</span>'}
+    h += `<div class="card" style="gap:8px"><div class="spread" style="gap:8px;align-items:flex-start"><div style="min-width:0"><b>${esc(o.name)}</b> <span class="muted small">${esc(fmtDate(o.createdAt))}</span> ${o.fulfill === 'PARTIALLY_FULFILLED' ? '<span class="pill p-warn">Kısmen kargolandı</span>' : '<span class="pill p-brass">Kargolanmadı</span>'}
       <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.items.join(', '))}</div></div>${e ? '' : `<button class="btn sm${issues.length ? ' primary' : ''}" data-act="ad-edit" data-id="${g}">Düzenle</button>`}</div>`;
     if (issues.length) h += `<div class="row" style="gap:5px;flex-wrap:wrap">${issues.map(([l, m]) => `<span class="pill ${l === 'bad' ? 'p-bad' : 'p-warn'}">${esc(m)}</span>`).join('')}</div>`;
     else if (!e) h += `<div class="row" style="gap:5px"><span class="pill p-good">Adres düzgün görünüyor</span></div>`;
@@ -786,6 +792,7 @@ function viewAddr(){
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px"><button class="btn" data-act="ad-fix" data-id="${g}" ${busy?'disabled':''}>✨ Otomatik düzelt</button><button class="btn ghost" data-act="ad-cancel" data-id="${g}" ${busy?'disabled':''}>Vazgeç</button><button class="btn primary" data-act="ad-save" data-id="${g}" ${busy?'disabled':''}>${busy ? 'Kaydediliyor…' : "Shopify'a kaydet"}</button></div>
       <div class="small muted">Şu anki: ${addrLine(o.addr)}</div></div>`;
   }
+  if (A.data.after) h += `<button class="btn" style="width:100%;margin-bottom:12px" data-act="ad-more" ${A.loading ? 'disabled' : ''}>${A.loading ? 'Yükleniyor…' : 'Daha eski kargolanmamış siparişleri yükle'}</button>`;
   const log = A.data.log || [];
   if (log.length) h += `<details class="card" style="gap:8px"><summary style="cursor:pointer;font-weight:700">Son düzeltmeler (${fmtN(log.length)})</summary>${log.map(l => { let b = null, a = null; try { b = JSON.parse(l.before); a = JSON.parse(l.after); } catch(e) {}
     return `<div style="border-top:1px solid var(--line);padding-top:8px;display:grid;gap:3px"><div class="spread"><span><b>${esc(l.order_no)}</b> <span class="muted small">${esc(fmtDate(l.at))}</span></span>${b ? `<button class="btn sm ghost" data-act="ad-undo" data-id="${esc(String(l.id))}">Geri al</button>` : ''}</div><div class="small muted"><s>${addrLine(b)}</s></div><div class="small">${addrLine(a)}</div></div>`; }).join('')}</details>`;
@@ -3283,6 +3290,7 @@ document.addEventListener('click', async e => {
     case 'q-tab': qS().tab = id; qS().data = null; render(); break;
     case 'ad-filter': aS().filter = id; aS().data = null; render(); break;
     case 'ad-only': aS().only = !aS().only; render(); break;
+    case 'ad-more': loadAddrMore(); break;
     case 'ad-clear': aS().q = ''; aS().data = null; render(); break;
     case 'ad-sync': aS().at = 0; aS().data = null; render(); break;
     case 'ad-edit': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (o) { A.edit[id] = addrForm(o.addr || {}); render(); } break; }
@@ -3292,7 +3300,7 @@ document.addEventListener('click', async e => {
       const left = addrIssues(e, o).filter(i => i[0] === 'bad');
       if (!(await confirmBox(`${esc(o.name)} siparişinin teslimat adresi Shopify'da değiştirilsin mi?<br><br><span class="small">${esc(`${e.firstName} ${e.lastName}`)} · ${esc(phoneShow(phoneFix(e.phone) || e.phone))}<br>${esc([e.address1, e.address2, e.city + ' / ' + e.province, e.zip].filter(Boolean).join(' · '))}</span>${left.length ? `<br><br><span class="small" style="color:var(--bad)">Hâlâ: ${esc(left.map(i => i[1]).join(', '))}</span>` : ''}`, 'Kaydet'))) break;
       A.busy[id] = 1; render();
-      try { if (await addrSave(id, e, o.addr)) { delete A.edit[id]; A.at = 0; loadAddr(true); } } catch(err) { toast(errText(err), true); }
+      try { if (await addrSave(id, e, o.addr)) { delete A.edit[id]; A.at = Date.now(); } } catch(err) { toast(errText(err), true); }
       delete A.busy[id]; render(); break; }
     case 'ad-undo': { const A = aS(), l = (A.data && A.data.log || []).find(x => String(x.id) === id); if (!l) break; let b = null; try { b = JSON.parse(l.before); } catch(err) {} if (!b) break;
       if (!(await confirmBox(`${esc(l.order_no)} siparişinin adresi eski haline döndürülsün mü?<br><br><span class="small">${addrLine(b)}</span>`, 'Geri al'))) break;
