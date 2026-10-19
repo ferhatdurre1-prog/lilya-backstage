@@ -1760,6 +1760,12 @@ async function purRead(files){
   try {
     const out = [];
     for (const f of [...files].slice(0, 10)) {
+      if (/\.(xlsx|xlsm|xls|ods|csv)$/i.test(f.name) || /spreadsheet|ms-excel|text\/csv/.test(f.type || '')) { if (f.size > 15e6) throw new Error('Excel çok büyük (en fazla 15 MB).');
+        const wb = XLSX.read(await f.arrayBuffer(), {type: 'array', cellDates: true});
+        const txt = wb.SheetNames.map(n => { const t = XLSX.utils.sheet_to_csv(wb.Sheets[n], {FS: '\t', blankrows: false, dateNF: 'yyyy-mm-dd'}).split('\n').filter(l => l.replace(/\t/g, '').trim()).join('\n'); return t ? `--- Sayfa: ${n} ---\n${t}` : ''; }).filter(Boolean).join('\n\n');
+        if (!txt) throw new Error('Excel boş görünüyor: ' + f.name);
+        if (txt.length > 400000) throw new Error('Excel çok uzun; satırları birkaç dosyaya böl (' + f.name + ').');
+        out.push({type: 'text/plain', name: f.name, data: txt}); continue; }
       if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) { if (f.size > 25e6) throw new Error('PDF çok büyük (en fazla 25 MB).'); const d = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = no; r.readAsDataURL(f); }); out.push({type: 'application/pdf', data: d}); continue; }
       const url = URL.createObjectURL(f); const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('Fotoğraf açılamadı: ' + f.name)); i.src = url; });
       const sc = Math.min(1, 2000 / Math.max(im.naturalWidth, im.naturalHeight)), cv = document.createElement('canvas'); cv.width = Math.round(im.naturalWidth * sc); cv.height = Math.round(im.naturalHeight * sc);
@@ -1774,9 +1780,9 @@ async function purRead(files){
 function sheetPurchase(){
   const sh = S.sheet;
   if (sh.step === 'upload') return {title: 'Alış faturası yükle', body: `<div class="card" style="gap:10px">
-      <p class="muted small" style="margin:0">Tedarikçi faturasının, irsaliyesinin ya da alış listesinin <b>fotoğrafını</b> çek veya <b>PDF</b>'ini seç. Birden fazla sayfa varsa hepsini birlikte seç. Yapay zekâ satırları okur, ürünlerinle eşleştirir; kaydetmeden önce her satırı kontrol edersin.</p>
-      <input type="file" id="pur-in" accept="image/*,application/pdf" multiple style="display:none">
-      <button class="btn primary" type="button" data-act="pur-file" style="width:100%">📄 Fotoğraf çek / dosya seç</button>
+      <p class="muted small" style="margin:0">Tedarikçi faturasının, irsaliyesinin ya da alış listesinin <b>fotoğrafını</b> çek ya da <b>PDF</b> veya <b>Excel</b> dosyasını seç. Birden fazla sayfa varsa hepsini birlikte seç. Yapay zekâ satırları okur, ürünlerinle eşleştirir; kaydetmeden önce her satırı kontrol edersin.</p>
+      <input type="file" id="pur-in" accept="image/*,application/pdf,.xlsx,.xls,.xlsm,.ods,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" multiple style="display:none">
+      <button class="btn primary" type="button" data-act="pur-file" style="width:100%">📄 Fotoğraf çek / dosya seç (fotoğraf, PDF, Excel)</button>
       <p class="muted small" style="margin:0">Fiyatlara KDV eklenmez, belgede yazan birim fiyat alınır. Hiçbir şey kendiliğinden yapılmaz: eşleşmeleri sen onaylarsın, listeyi kaydedersin; <b>stoğa ekleme</b> ve <b>cariye işleme</b> Alış listeleri'nden ayrı ayrı senin onayınla olur.</p></div>`};
   if (sh.step === 'reading') return {title: 'Alış faturası yükle', body: `<div class="card"><p style="margin:0"><b>Belge okunuyor…</b></p><p class="muted small" style="margin:4px 0 0">Satırlar okunup ürünlerinle eşleştiriliyor. Uzun faturalarda 30–60 saniye sürebilir; bu ekranı kapatma.</p></div>` + loading()};
   const D = sh.data;

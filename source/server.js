@@ -2587,13 +2587,13 @@ async function api(req, env, path, ctx) {
     return json({ ok: true, lists: results.map(r => ({ ...r, items: JSON.parse(r.items || '[]') })) });
   }
   if (path === '/api/purchase/read') {
-    // Alış faturası / listesi (fotoğraf ya da PDF) yapay zekâyla okunur; satırlar ürün kataloğuyla eşleştirilir (önce daha önce onaylanan eşleşmeler)
+    // Alış faturası / listesi (fotoğraf, PDF ya da Excel) yapay zekâyla okunur; satırlar ürün kataloğuyla eşleştirilir (önce daha önce onaylanan eşleşmeler)
     if (!env.ANTHROPIC_API_KEY) return bad('Yapay zekâ anahtarı (ANTHROPIC_API_KEY) Cloudflare\'e eklenmemiş.');
-    const files = (Array.isArray(body.files) ? body.files : []).slice(0, 10).filter(f => f && typeof f.data === 'string' && /^(image\/(jpeg|png|webp)|application\/pdf)$/.test(f.type || ''));
-    if (!files.length) return bad('Fotoğraf ya da PDF seç.');
+    const files = (Array.isArray(body.files) ? body.files : []).slice(0, 10).filter(f => f && typeof f.data === 'string' && /^(image\/(jpeg|png|webp)|application\/pdf|text\/plain)$/.test(f.type || ''));
+    if (!files.length) return bad('Fotoğraf, PDF ya da Excel seç.');
     const prods = (await env.DB.prepare(`SELECT key, code, name FROM products WHERE merged_into IS NULL AND code IS NOT NULL AND code<>'' ORDER BY code`).all()).results;
     const catalog = prods.map(p => `${p.code}\t${p.name}`).join('\n');
-    const content = files.map(f => f.type === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.data } } : { type: 'image', source: { type: 'base64', media_type: f.type, data: f.data } });
+    const content = files.map(f => f.type === 'text/plain' ? { type: 'text', text: `EXCEL ALIŞ LİSTESİ (${String(f.name || 'dosya').slice(0, 80)}) — hücreler TAB ile ayrılmış:\n${f.data.slice(0, 400000)}` } : f.type === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.data } } : { type: 'image', source: { type: 'base64', media_type: f.type, data: f.data } });
     content.push({ type: 'text', text: `Bu bir tedarikçi alış faturası / irsaliyesi / alış listesi (birden fazla sayfa olabilir). Her ürün satırını oku ve aşağıdaki ürün kataloğumuzla eşleştir.
 
 KURALLAR:
