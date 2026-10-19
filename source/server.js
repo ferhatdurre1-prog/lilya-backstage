@@ -21,6 +21,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS bundles(pkey TEXT NOT NULL, comp TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(pkey, comp))`,
   `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sup_pay(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier TEXT NOT NULL COLLATE NOCASE, date TEXT, amount REAL NOT NULL, method TEXT, note TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS sup_map(supplier TEXT NOT NULL, k TEXT NOT NULL, pkey TEXT NOT NULL, PRIMARY KEY(supplier, k))`,
   `CREATE TABLE IF NOT EXISTS out_lists(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, reason TEXT, note TEXT, markup REAL, disc REAL, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`,
@@ -2645,6 +2646,41 @@ ${catalog}` });
     // CARİYE İŞLE / ÇIKAR (kullanıcı onayıyla); cari hesap sekmesi bu işaretli alışları kullanacak
     const id = intOr(body.id, 0); const r = await env.DB.prepare('SELECT status FROM purchases WHERE id=?1').bind(id).first(); if (!r || r.status === 'deleted') return bad('Alış bulunamadı.', 404);
     await env.DB.prepare('UPDATE purchases SET cari_at=?2 WHERE id=?1').bind(id, body.on ? iso() : null).run();
+    return json({ ok: true });
+  }
+  if (path === '/api/cari/list') {
+    // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç
+    const pur = (await env.DB.prepare(`SELECT supplier, COUNT(*) n, SUM(total) tot, MAX(COALESCE(doc_date, substr(t,1,10))) last FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted' GROUP BY supplier COLLATE NOCASE`).all()).results;
+    const pay = (await env.DB.prepare(`SELECT supplier, COUNT(*) n, SUM(amount) tot, MAX(date) last FROM sup_pay WHERE deleted=0 GROUP BY supplier COLLATE NOCASE`).all()).results;
+    const m = new Map(), K = (x) => String(x || '').toLocaleLowerCase('tr-TR');
+    for (const r of pur) m.set(K(r.supplier), { supplier: r.supplier, buys: r.n, buy: Math.round((r.tot || 0) * 100) / 100, pays: 0, paid: 0, last: r.last || '' });
+    for (const r of pay) { const x = m.get(K(r.supplier)) || { supplier: r.supplier, buys: 0, buy: 0, pays: 0, paid: 0, last: '' }; x.pays = r.n; x.paid = Math.round((r.tot || 0) * 100) / 100; if ((r.last || '') > x.last) x.last = r.last; m.set(K(r.supplier), x); }
+    const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name), canon = new Map(sups.map(n => [K(n), n]));
+    const list = [...m.entries()].map(([k, x]) => ({ ...x, supplier: canon.get(k) || x.supplier, bal: Math.round((x.buy - x.paid) * 100) / 100 })).sort((a, b) => b.bal - a.bal || a.supplier.localeCompare(b.supplier, 'tr'));
+    return json({ ok: true, list, suppliers: sups });
+  }
+  if (path === '/api/cari/get') {
+    const sup = String(body.supplier || '').trim(); if (!sup) return bad('Tedarikçi seç.');
+    const pur = (await env.DB.prepare(`SELECT id, doc_no, doc_date, t, total, units, status FROM purchases WHERE supplier=?1 COLLATE NOCASE AND cari_at IS NOT NULL AND status<>'deleted'`).bind(sup).all()).results;
+    const pay = (await env.DB.prepare(`SELECT id, date, t, amount, method, note FROM sup_pay WHERE supplier=?1 COLLATE NOCASE AND deleted=0`).bind(sup).all()).results;
+    const rows = [...pur.map(r => ({ kind: 'buy', id: r.id, date: r.doc_date || String(r.t || '').slice(0, 10), t: r.t || '', amount: Math.round((r.total || 0) * 100) / 100, text: `Alış #${r.id}${r.doc_no ? ' · ' + r.doc_no : ''} · ${r.units || 0} adet` })),
+      ...pay.map(r => ({ kind: 'pay', id: r.id, date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', amount: Math.round((r.amount || 0) * 100) / 100, text: [r.method || 'Ödeme', r.note].filter(Boolean).join(' · ') }))]
+      .sort((a, b) => a.date.localeCompare(b.date) || a.t.localeCompare(b.t));
+    let bal = 0; for (const r of rows) { bal = Math.round((bal + (r.kind === 'buy' ? r.amount : -r.amount)) * 100) / 100; r.bal = bal; }
+    return json({ ok: true, supplier: sup, rows: rows.reverse(), bal });
+  }
+  if (path === '/api/cari/pay') {
+    const sup = String(body.supplier || '').trim().slice(0, 120); if (!sup) return bad('Tedarikçi seç.');
+    const a0 = String(body.amount ?? '').trim(), amount = Math.round((Number(a0.includes(',') ? a0.replace(/\./g, '').replace(',', '.') : a0) || 0) * 100) / 100;
+    if (!(amount > 0)) return bad('Ödeme tutarını yaz.');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : iso().slice(0, 10);
+    await env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(sup, iso()).run();
+    const r = await env.DB.prepare('SELECT name FROM suppliers WHERE name=?1').bind(sup).first();
+    await env.DB.prepare('INSERT INTO sup_pay(t, supplier, date, amount, method, note) VALUES(?1,?2,?3,?4,?5,?6)').bind(iso(), r ? r.name : sup, date, amount, String(body.method || '').slice(0, 40), String(body.note || '').slice(0, 160)).run();
+    return json({ ok: true });
+  }
+  if (path === '/api/cari/paydel') {
+    await env.DB.prepare('UPDATE sup_pay SET deleted=1 WHERE id=?1').bind(intOr(body.id, 0)).run();
     return json({ ok: true });
   }
   if (path === '/api/purchase/delete') {
