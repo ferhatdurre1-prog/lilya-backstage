@@ -2701,14 +2701,14 @@ function periodRange(id, cf, ct){
 function profS(){ if (!S.prof) { let p = 'month'; try { p = localStorage.getItem('lb-period') || 'month'; } catch(e){} if (!PERIODS.some(x => x[0] === p)) p = 'month'; S.prof = {period:p, sub:'products', sort:'profit', data:null, key:'', loading:false, cf:'', ct:''}; } return S.prof; }
 async function loadProfit(force){
   const P = profS(); const [f, t] = periodRange(P.period, P.cf, P.ct);
-  const ck = f.toISOString() + '|' + t.toISOString(), key = ck + '|' + S.rev;
+  const ck = f.toISOString() + '|' + t.toISOString() + '|' + (P.ch || ''), key = ck + '|' + S.rev;
   if (!force && (P.loading || P.key === key)) return;
   // Yeni sipariş/değişiklik gelince (rev değişir) hemen yeniden hesaplanır; aynı dönem için en fazla 10 sn'de bir
   if (!force && P.key && P.key.startsWith(ck + '|') && Date.now() - (P.at || 0) < 10000) return;
   P.cache = P.cache || {};
   if (P.cache[ck] && P.data !== P.cache[ck]) { P.data = P.cache[ck]; P.err = ''; if (S.tab === 'profit') setTimeout(render, 0); }
   P.loading = true; P.key = key; P.err = '';
-  try { P.data = await api('/api/profit', {from:f.toISOString(), to:t.toISOString()}); P.cache[ck] = P.data; P.at = Date.now(); }
+  try { P.data = await api('/api/profit', {from:f.toISOString(), to:t.toISOString(), channel: P.ch || ''}); P.cache[ck] = P.data; P.at = Date.now(); }
   catch(e) { P.err = errText(e); }
   P.loading = false; if (S.tab === 'profit') render(); if (S.sheet && S.sheet.type === 'order') renderSheet(false);
 }
@@ -2721,6 +2721,7 @@ function viewProfit(){
   const fees = (S.settings && S.settings.fees) || {cargoT1:46.49, cargoT2:84.49, cargoT3:98.35, desiMode:true, desiTables:{tex:[],ptt:[]}, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
   let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti − ceza ve kesintiler. İadesi onaylanan ürünler siparişin verildiği günden düşülür.</p></div></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
+  <div class="filters" style="margin-top:8px"><div class="chips">${[['','Tüm kanallar'],['trendyol','Trendyol'],['shopify','Shopify']].map(([id,l]) => `<button class="chip" data-act="pch" data-id="${id}" aria-pressed="${(P.ch||'')===id}">${l}</button>`).join('')}</div>${P.ch ? '<span class="small muted">Kanal seçiliyken elle girilen genel giderler ve günlük sabit giderler düşülmez.</span>' : ''}</div>
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
   if (P.err) return h + `<div class="banner bad"><div>${esc(P.err)}</div></div>`;
   if (!D) return h + loading();
@@ -3599,6 +3600,7 @@ document.addEventListener('click', async e => {
       if (!(await confirmBox(txt, clear ? 'Set olmaktan çıkar' : 'Seti kaydet'))) break;
       await run(async () => { await api('/api/products/bundle', {key: sh.id, items}); await refresh(true); toast(clear ? 'Set kaldırıldı.' : 'Set kaydedildi. Trendyol stoğu birkaç saniye içinde güncellenir.'); openSheet('product', {id: sh.id}); }); break; }
     case 'need-open': openSheet('need', {}); break;
+    case 'pch': { const P = profS(); P.ch = id || ''; P.key = ''; render(); loadProfit(true); break; }
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'cari-paynew': { const C = cS(); C.open = C.open === '__new' ? '' : '__new'; C.det = null; render(); break; }
     case 'cari-open': { const C = cS(); C.terms = false; C.tk = null; C.pre = null; if (C.open === id) { C.open = ''; C.det = null; } else { C.open = id; if (id !== '__new') loadCariDet(id); } render(); break; }

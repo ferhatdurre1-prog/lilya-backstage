@@ -2075,7 +2075,7 @@ async function loadFees(env) {
   if (merged.length && manual.length && manual[manual.length - 1].extra && merged[merged.length - 1] !== manual[manual.length - 1]) merged[merged.length - 1] = { ...merged[merged.length - 1], extra: manual[manual.length - 1].extra };
   return { packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: merged, desiManual: manual, desiLearned: learned, packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) };
 }
-async function computeProfit(env, from, to) {
+async function computeProfit(env, from, to, ch0) {
   const T0 = Date.now(), TM = {}; const mark = (k) => { TM[k] = Date.now() - T0; };
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
@@ -2093,6 +2093,8 @@ async function computeProfit(env, from, to) {
     env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT no, fee, cod_fee, handler FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10))])]);
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
+  // Kanal seçiliyse sadece o kanalın siparişleri; Trendyol fatura kesintileri yalnız Trendyol'da, genel giderler kanal seçilince düşülmez
+  if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); expR.results = []; }
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
@@ -2253,6 +2255,7 @@ async function computeProfit(env, from, to) {
   // Günlük sabit gider / gelir: dönemdeki her güne (başlangıç–bitiş arası) yazılır
   let recurring = [];
   try {
+    if (ch0) throw 0; // kanal seçiliyken günlük sabit giderler yazılmaz
     const { results: rr } = await env.DB.prepare('SELECT * FROM recurring WHERE start_day <= ?2 AND (end_day IS NULL OR end_day >= ?1) ORDER BY id').bind(dayFrom, dayTo).all();
     for (const x of rr) { const a = x.start_day > dayFrom ? x.start_day : dayFrom, b = x.end_day && x.end_day < dayTo ? x.end_day : dayTo;
       const days = Math.max(0, Math.round((dayStartTR(b) - dayStartTR(a)) / 86400000) + 1); if (!days) continue;
@@ -2267,7 +2270,7 @@ async function computeProfit(env, from, to) {
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
   mark('cpu'); PERF_LAST = { ...TM, orders: o.results.length };
-  return { from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, recurring, missingCostSkus: [...missingCostSkus].slice(0, 30) };
+  return { channel: ch0 || '', from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, recurring, missingCostSkus: [...missingCostSkus].slice(0, 30) };
 }
 
 async function computePricing(env) {
@@ -3508,7 +3511,8 @@ ${catalog}` });
     if (!from || !to || to <= from || to - from > 400 * 86400000) return bad('Tarih aralığı geçersiz.');
     // Hız ölçümü: veritabanı bekleme süresi (ping) ve toplam süre Bağlantılar'da görünür
     const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-    const out = await computeProfit(env, iso(from), iso(to)); const ms = Date.now() - t0;
+    const ch = ['trendyol', 'shopify'].includes(body.channel) ? body.channel : '';
+    const out = await computeProfit(env, iso(from), iso(to), ch); const ms = Date.now() - t0;
     try { await setSetting(env, 'perf_profit', JSON.stringify({ at: iso(), days: Math.round((to - from) / 86400000), orders: out.orders.length, ms, ping, ph: PERF_LAST, cold: COLD_MS })); } catch (e) {}
     return json(out);
   }
