@@ -300,12 +300,18 @@ async function bkSync(env) {
     for (const o of L) { const x = bkRow(o); if (x.no) rows.push(x); }
     pages = r.pages || (L.length === 100 ? page + 2 : page + 1); page++;
   }
-  const st = rows.map(x => env.DB.prepare(`INSERT INTO bk_ship(no, bk_id, created, handler, status, fee, cod, cod_type, cod_amount, cod_fee, cod_status, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+  // Aynı siparişin birden fazla gönderisi (iade, tekrar gönderim) varsa iptal/taslak olmayanların ücreti toplanır
+  const DEAD = /CANCEL|IPTAL|İPTAL|DRAFT|TASLAK|DELETED/i, grp = new Map();
+  for (const x of rows) { const g = grp.get(x.no); if (!g) { grp.set(x.no, { ...x, n: 1, live: DEAD.test(x.status) ? 0 : 1, fee: DEAD.test(x.status) ? null : x.fee }); continue; }
+    g.n++; const dead = DEAD.test(x.status); if (!dead) { g.live++; g.fee = r2((g.fee || 0) + (x.fee || 0)); if (x.cod) { g.cod = 1; g.id = x.id; g.hcode = x.hcode; g.handler = x.handler; g.codType = x.codType; g.codAmount = x.codAmount; g.codFee = x.codFee ?? g.codFee; g.codStatus = x.codStatus; } if (x.created < g.created) g.created = x.created; } }
+  for (const g of grp.values()) if (g.live === 0) g.fee = null; // hepsi iptal: sabit ücret kullanılır
+  const uniq = [...grp.values()];
+  const st = uniq.map(x => env.DB.prepare(`INSERT INTO bk_ship(no, bk_id, created, handler, status, fee, cod, cod_type, cod_amount, cod_fee, cod_status, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
     ON CONFLICT(no) DO UPDATE SET bk_id=excluded.bk_id, created=excluded.created, handler=excluded.handler, status=excluded.status, fee=excluded.fee, cod=excluded.cod, cod_type=excluded.cod_type, cod_amount=excluded.cod_amount, cod_fee=COALESCE(excluded.cod_fee, bk_ship.cod_fee), cod_status=excluded.cod_status, at=excluded.at`)
     .bind(x.no, x.id, x.created, x.handler, x.status, x.fee, x.cod, x.codType, x.codAmount, x.codFee, x.codStatus, iso()));
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   // Kapıda ödeme bedeli siparişte yazmıyorsa, gönderen kargo firmasının ücret listesinden alınır
-  const hc = new Map(rows.map(x => [x.no, x.hcode]));
+  const hc = new Map(uniq.map(x => [x.no, x.hcode]));
   const need = (await env.DB.prepare('SELECT no, bk_id, handler FROM bk_ship WHERE cod=1 AND cod_fee IS NULL LIMIT 120').all()).results; let filled = 0;
   for (let i = 0; i < need.length && Date.now() - T0 < 26000; i += 6) {
     const part = need.slice(i, i + 6), res = await Promise.all(part.map(x => bkCall(env, 'GET', `/v2/order/${encodeURIComponent(x.bk_id)}/fee`).then(r => r.list).catch(() => null)));
@@ -315,7 +321,7 @@ async function bkSync(env) {
     if (up.length) await env.DB.batch(up);
   }
   const left = (await env.DB.prepare('SELECT COUNT(*) n FROM bk_ship WHERE cod=1 AND cod_fee IS NULL').first()).n;
-  const msg = `${rows.length} gönderi okundu${page < pages ? ` (${page}/${pages} sayfa, devam için tekrar eşitle)` : ''} · ${filled} kapıda ödeme bedeli eklendi${left ? ` · ${left} kapıda ödeme bedeli bekliyor` : ''}`;
+  const msg = `${rows.length} gönderi okundu (${uniq.length} sipariş${rows.length > uniq.length ? `; ${rows.length - uniq.length} ek gönderi ücreti siparişine eklendi` : ''})${page < pages ? ` (${page}/${pages} sayfa, devam için tekrar eşitle)` : ''} · ${filled} kapıda ödeme bedeli eklendi${left ? ` · ${left} kapıda ödeme bedeli bekliyor` : ''}`;
   const first = rows.reduce((a, x) => !a || (x.created && x.created < a) ? x.created : a, '');
   await env.DB.batch([setStmt(env, 'bk_sync_at', iso()), setStmt(env, 'bk_sync_msg', msg), ...(first ? [env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(first)] : []), setStmt(env, 'home_cache', ''), REV(env)]);
   return { n: rows.length, filled, left, more: page < pages, msg };
