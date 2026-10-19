@@ -119,6 +119,8 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS match_skip(a TEXT, b TEXT, PRIMARY KEY(a, b))').run();
   // Shopify siparişlerinde henüz kargolanmamış adetler (varyant → adet); sayımda raftaki ama satılmış ürünü ayırmak için
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sh_unf(order_no TEXT PRIMARY KEY, data TEXT, updated_at TEXT)').run();
+  // Shopify adres düzeltmeleri: eski / yeni adres saklanır (geri alma için)
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS sh_addr_log(id INTEGER PRIMARY KEY AUTOINCREMENT, gid TEXT, order_no TEXT, before TEXT, after TEXT, at TEXT)').run();
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_listing1'`).first())) {
@@ -618,6 +620,17 @@ async function ensureTyWebhook(env, force) {
    Kimlik: Shopify Dev Dashboard uygulamasının Client ID / Client secret'ı (mağazayla aynı organizasyonda); 24 saatlik erişim anahtarı
    client_credentials ile alınıp saklanır. Siparişler GraphQL Admin API'den güncellenme saatine göre okunur; bildirim (webhook) gelince hemen. */
 const SH_API = '2026-07';
+// Adres düzeltme: kargolanmamış siparişlerin teslimat adresi okunur ve orderUpdate ile düzeltilir.
+// Gerekli: write_orders yetkisi + korunan müşteri verisi (ad, adres, telefon, e-posta) izni.
+const SH_ADDR_F = 'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone';
+const SH_ADDR_Q = `query($q:String!){orders(first:60,sortKey:CREATED_AT,reverse:true,query:$q){nodes{id name createdAt cancelledAt test displayFulfillmentStatus note email phone
+  totalPriceSet{shopMoney{amount}} lineItems(first:10){nodes{name quantity}} shippingAddress{${SH_ADDR_F}}}}}`;
+function shAddrErr(e) {
+  const m = String((e && e.message) || e);
+  if (/write_orders|access denied.*order|required access/i.test(m)) return 'Shopify uygulamasında adres değiştirme izni yok. Dev Dashboard → Lilya Backstage → yeni sürüm (Version) → Access scopes\'a write_orders ekle → Release, sonra mağazada uygulamayı güncelle. Ayrıntı: ' + m.slice(0, 160);
+  if (/protected customer data|not approved to access|customer data/i.test(m)) return 'Shopify, müşteri adres bilgisini bu uygulamaya henüz açmıyor. Dev Dashboard → Lilya Backstage → API access / Protected customer data bölümünde Ad, Adres, Telefon ve E-posta alanlarını seçip kaydet. Ayrıntı: ' + m.slice(0, 160);
+  return m;
+}
 async function shCreds(env) {
   const s = await getSettings(env, ['sh_shop', 'sh_cid', 'sh_secret', 'sh_token', 'sh_token_exp']);
   const shop = String(env.SHOPIFY_SHOP || s.sh_shop || '').trim().replace(/^https?:\/\//, '').replace(/\.myshopify\.com.*$/, '').replace(/\/.*$/, '');
@@ -2533,6 +2546,44 @@ ${catalog}` });
   }
   if (path === '/api/shopify/products') {
     try { return json({ ok: true, r: await syncShopifyProducts(env, true) }); } catch (e) { return bad(String(e.message || e)); }
+  }
+  // ---------- Shopify adres düzeltme ----------
+  if (path === '/api/shaddr/list') {
+    const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil. Önce Bağlantılar bölümünden Shopify\'ı bağla.');
+    const days = body.filter === 'all' ? 60 : 30, term = String(body.q || '').trim().replace(/['"\\]/g, '').slice(0, 60);
+    let q = `created_at:>='${iso(Date.now() - days * 86400000)}' -status:cancelled`;
+    if (term) q = /^#?\d+$/.test(term) ? `name:#${term.replace('#', '')}` : term;
+    try {
+      const d = await shGql(env, c, SH_ADDR_Q, { q });
+      const orders = d.orders.nodes.filter(o => !o.test && !o.cancelledAt && (term || body.filter === 'all' || o.displayFulfillmentStatus !== 'FULFILLED')).map(o => ({
+        gid: o.id, name: o.name, createdAt: o.createdAt, fulfill: o.displayFulfillmentStatus, note: o.note || '', email: o.email || '', phone: o.phone || '',
+        total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).map(l => `${l.quantity}× ${l.name}`),
+        addr: o.shippingAddress || null }));
+      const log = (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
+      return json({ ok: true, orders, log });
+    } catch (e) { return bad(shAddrErr(e)); }
+  }
+  if (path === '/api/shaddr/save') {
+    const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
+    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    const a = body.addr || {}, F = ['firstName', 'lastName', 'company', 'address1', 'address2', 'city', 'provinceCode', 'zip', 'countryCode', 'phone'], input = {};
+    for (const f of F) { const v = String(a[f] == null ? '' : a[f]).replace(/\s+/g, ' ').trim().slice(0, 255); if (v || f === 'address2' || f === 'company') input[f] = v; }
+    if (!input.firstName && !input.lastName) return bad('Ad soyad boş olamaz.');
+    if (!input.address1) return bad('Adres boş olamaz.');
+    if (!input.city) return bad('İlçe boş olamaz.');
+    if (!input.countryCode) input.countryCode = 'TR';
+    if (input.phone && !/^\+\d{8,15}$/.test(input.phone)) return bad('Telefon +905xxxxxxxxx biçiminde olmalı.');
+    try {
+      const run = (inp) => shGql(env, c, `mutation($input:OrderInput!){orderUpdate(input:$input){order{id name shippingAddress{${SH_ADDR_F}}}userErrors{field message}}}`, { input: { id: gid, shippingAddress: inp } });
+      let r = await run(input), ue = r.orderUpdate.userErrors || [];
+      // İl kodu Shopify'ın beklediği biçimde değilse il kodu olmadan bir kez daha denenir (il, mevcut haliyle kalır)
+      if (ue.length && input.provinceCode && /province|zone|il\b/i.test(ue.map(e => (e.field || []).join('.') + ' ' + e.message).join(' '))) { const { provinceCode, ...rest } = input; r = await run(rest); ue = r.orderUpdate.userErrors || []; if (!ue.length) r._noProv = true; }
+      if (ue.length) return bad('Shopify kabul etmedi: ' + ue.map(e => e.message).join(' · '));
+      const o = r.orderUpdate.order;
+      await env.DB.prepare('INSERT INTO sh_addr_log(gid, order_no, before, after, at) VALUES(?1,?2,?3,?4,?5)').bind(gid, o.name, JSON.stringify(body.before || null), JSON.stringify(o.shippingAddress || null), iso()).run();
+      await env.DB.prepare('DELETE FROM sh_addr_log WHERE id NOT IN (SELECT id FROM sh_addr_log ORDER BY id DESC LIMIT 300)').run();
+      return json({ ok: true, addr: o.shippingAddress, noProv: !!r._noProv });
+    } catch (e) { return bad(shAddrErr(e)); }
   }
   if (path === '/api/shopify/status') {
     const s = await getSettings(env, ['sh_shop', 'sh_name', 'sh_cid', 'sh_start', 'sh_ok', 'sh_err', 'sh_hook_ok', 'sh_hook_at', 'sh_hook_err', 'sh_prod', 'sh_paused', 'sh_push', 'sh_push_at', 'sh_push_count', 'sh_push_err']);

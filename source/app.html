@@ -391,12 +391,13 @@ const ICONS = {
   home:'<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
   link:'<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
   reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  addr:'<path d="M12 21s-7-6.2-7-11.5A7 7 0 0119 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   questions:'<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1.1-4.6A8 8 0 1121 12z"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.5-1.5 1-1.5 2"/><path d="M12 16.5h.01"/>',
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
-const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
+const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
 const NAV_MAIN = ['stock','orders','profit']; // alt çubukta görünenler; diğerleri sol menüde
-const TAB_SHORT = {questions:'Soru', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
+const TAB_SHORT = {questions:'Soru', addr:'Adres', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
 
 /* ============ Durum ============ */
 const S = {
@@ -669,7 +670,7 @@ function render(){
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
-  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions}[S.tab])();
+  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr}[S.tab])();
   enhanceTables(v);
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
@@ -690,6 +691,114 @@ function renderDrawer(){
     <button class="di" data-act="security"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Güvenlik & Face ID</button>
     <button class="di" data-act="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.out}</svg>Çıkış</button>
   </nav>`;
+}
+/* ============ Shopify adres düzeltme ============ */
+// 81 il (plaka sırasıyla); posta kodunun ilk iki hanesi plakayla aynıdır
+const TR_IL = ['Adana','Adıyaman','Afyonkarahisar','Ağrı','Amasya','Ankara','Antalya','Artvin','Aydın','Balıkesir','Bilecik','Bingöl','Bitlis','Bolu','Burdur','Bursa','Çanakkale','Çankırı','Çorum','Denizli','Diyarbakır','Edirne','Elazığ','Erzincan','Erzurum','Eskişehir','Gaziantep','Giresun','Gümüşhane','Hakkari','Hatay','Isparta','Mersin','İstanbul','İzmir','Kars','Kastamonu','Kayseri','Kırklareli','Kırşehir','Kocaeli','Konya','Kütahya','Malatya','Manisa','Kahramanmaraş','Mardin','Muğla','Muş','Nevşehir','Niğde','Ordu','Rize','Sakarya','Samsun','Siirt','Sinop','Sivas','Tekirdağ','Tokat','Trabzon','Tunceli','Şanlıurfa','Uşak','Van','Yozgat','Zonguldak','Aksaray','Bayburt','Karaman','Kırıkkale','Batman','Şırnak','Bartın','Ardahan','Iğdır','Yalova','Karabük','Kilis','Osmaniye','Düzce'];
+const IL_ALIAS = {afyon:'Afyonkarahisar', maras:'Kahramanmaraş', kmaras:'Kahramanmaraş', antep:'Gaziantep', urfa:'Şanlıurfa', icel:'Mersin', izmit:'Kocaeli', adapazari:'Sakarya', hakari:'Hakkari', igdir:'Iğdır'};
+const trFold = s => String(s || '').toLocaleLowerCase('tr').replace(/ç/g,'c').replace(/ğ/g,'g').replace(/ı/g,'i').replace(/i̇/g,'i').replace(/ö/g,'o').replace(/ş/g,'s').replace(/ü/g,'u').replace(/[^a-z0-9]/g,'');
+const trTitle = s => String(s || '').replace(/\s+/g,' ').trim().toLocaleLowerCase('tr').replace(/(^|[\s.\/(-])(\p{L})/gu, (m, a, b) => a + b.toLocaleUpperCase('tr'));
+const oddCase = s => { const t = String(s || '').replace(/[^\p{L}]/gu, ''); return t.length > 2 && (t === t.toLocaleUpperCase('tr') || t === t.toLocaleLowerCase('tr')); };
+function lev(a, b){ const m = a.length, n = b.length; if (Math.abs(m - n) > 2) return 9; let p = Array.from({length:n+1}, (_, j) => j); for (let i = 1; i <= m; i++) { const c = [i]; for (let j = 1; j <= n; j++) c[j] = Math.min(p[j] + 1, c[j-1] + 1, p[j-1] + (a[i-1] === b[j-1] ? 0 : 1)); p = c; } return p[n]; }
+function ilFind(s){ const f = trFold(s); if (!f) return null;
+  let i = TR_IL.findIndex(x => trFold(x) === f); if (i >= 0) return i;
+  if (IL_ALIAS[f]) return TR_IL.indexOf(IL_ALIAS[f]);
+  i = TR_IL.findIndex(x => f.startsWith(trFold(x)) && trFold(x).length >= 4); if (i >= 0) return i; // "İstanbul Avrupa", "Ankara Merkez"
+  let best = -1, bd = 9; TR_IL.forEach((x, k) => { const d = lev(f, trFold(x)); if (d < bd) { bd = d; best = k; } }); return bd <= (f.length > 6 ? 2 : 1) ? best : null; }
+function phoneFix(p){ let d = String(p || '').replace(/\D/g, ''); if (d.startsWith('90') && d.length === 12) d = d.slice(2); if (d.startsWith('0') && d.length === 11) d = d.slice(1); return /^5\d{9}$/.test(d) ? '+90' + d : null; }
+const phoneShow = p => { const m = /^\+90(\d{3})(\d{3})(\d{2})(\d{2})$/.exec(p || ''); return m ? `0${m[1]} ${m[2]} ${m[3]} ${m[4]}` : (p || ''); };
+function aS(){ if (!S.addr) S.addr = {filter:'open', q:'', only:false, data:null, at:0, loading:false, edit:{}, busy:{}, codes:{}}; return S.addr; }
+// Shopify adresi → düzenleme formu (il, ad olarak tutulur; kaydederken il koduna çevrilir)
+const addrForm = a => ({firstName:a.firstName||'', lastName:a.lastName||'', phone:a.phone||'', province:a.province||'', city:a.city||'', address1:a.address1||'', address2:a.address2||'', zip:a.zip||'', company:a.company||'', countryCode:a.countryCodeV2||a.countryCode||'TR', provinceCode:a.provinceCode||''});
+function addrIssues(a, o){
+  const out = [], bad = m => out.push(['bad', m]), warn = m => out.push(['warn', m]);
+  if (!a) { bad('Teslimat adresi yok'); return out; }
+  const name = `${a.firstName} ${a.lastName}`.trim();
+  if (!name) bad('Ad soyad yok'); else { if (!a.lastName.trim() && !/\s/.test(name)) warn('Soyad yok'); if (oddCase(name)) warn('Ad soyad hep büyük/küçük harf'); }
+  if (!a.phone.trim() && !(o && o.phone)) bad('Telefon yok'); else if (a.phone.trim() && !phoneFix(a.phone)) bad('Telefon geçersiz');
+  if ((a.countryCode || 'TR') !== 'TR') warn('Ülke Türkiye değil: ' + a.countryCode);
+  const il = ilFind(a.province), cityIl = ilFind(a.city);
+  if (!a.province.trim()) bad('İl yok'); else if (il == null) bad('İl tanınmadı: ' + a.province); else if (TR_IL[il] !== a.province.trim()) warn('İl yazımı düzeltilebilir → ' + TR_IL[il]);
+  if (!a.city.trim()) bad('İlçe yok');
+  else if (il != null && trFold(a.city) === trFold(TR_IL[il])) warn('İlçe yerine il yazılmış olabilir');
+  else if (cityIl != null && trFold(a.city) === trFold(TR_IL[cityIl]) && cityIl !== il) warn('İl ile ilçe karışmış olabilir');
+  else if (oddCase(a.city)) warn('İlçe hep büyük/küçük harf');
+  const ad = `${a.address1} ${a.address2}`.trim();
+  if (ad.length < 12) bad('Adres çok kısa'); else { if (!/\d/.test(ad)) warn('Bina / kapı no görünmüyor'); if (!/(mah|mh|mahalle|köy|koy|sit|site|bulvar|blv|cad|cd|sok|sk|sokak)/i.test(trFold(ad).length ? ad.toLocaleLowerCase('tr') : ad)) warn('Mahalle / cadde / sokak görünmüyor'); }
+  if (/(\+?90|0)?\s?5\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}/.test(ad)) warn('Adresin içinde telefon var');
+  if (a.zip.trim()) { if (!/^\d{5}$/.test(a.zip.trim())) warn('Posta kodu 5 hane olmalı'); else if (il != null && Number(a.zip.slice(0, 2)) !== il + 1) warn('Posta kodu ile il uyuşmuyor'); }
+  return out;
+}
+function addrFix(a){
+  const b = {...a};
+  for (const k of ['firstName','lastName','city','address1','address2','company']) b[k] = String(b[k] || '').replace(/\s+/g, ' ').trim();
+  if (b.firstName && !b.lastName && /\s/.test(b.firstName)) { const p = b.firstName.split(' '); b.lastName = p.pop(); b.firstName = p.join(' '); }
+  if (oddCase(`${b.firstName}${b.lastName}`)) { b.firstName = trTitle(b.firstName); b.lastName = trTitle(b.lastName); }
+  let il = ilFind(b.province); const cityIl = ilFind(b.city);
+  if (il == null && cityIl != null) { il = cityIl; b.province = TR_IL[cityIl]; } // il boş/yanlış, ilçeye il yazılmış
+  if (il != null) b.province = TR_IL[il];
+  if (oddCase(b.city)) b.city = trTitle(b.city);
+  for (const k of ['address1','address2']) if (oddCase(b[k])) b[k] = trTitle(b[k]);
+  const ph = phoneFix(b.phone); if (ph) b.phone = ph;
+  b.zip = String(b.zip || '').replace(/\D/g, '').slice(0, 5);
+  if (!b.countryCode) b.countryCode = 'TR';
+  return b;
+}
+// İl adı → Shopify il kodu: önce mağazadaki diğer siparişlerde görülen kod, yoksa aynı biçimle plakadan üretilir (ör. TR-34)
+function ilCode(name){ const A = aS(), f = trFold(name); if (A.codes[f]) return A.codes[f]; const i = ilFind(name); if (i == null) return '';
+  const fmt = A.codeFmt; return fmt ? fmt.pre + String(i + 1).padStart(fmt.w, '0') : ''; }
+function addrLearnCodes(orders){ const A = aS(); for (const o of orders) { const a = o.addr; if (!a || !a.province || !a.provinceCode) continue; A.codes[trFold(a.province)] = a.provinceCode;
+  const i = ilFind(a.province), m = /^(\D*)(\d+)$/.exec(a.provinceCode); if (i != null && m && Number(m[2]) === i + 1) A.codeFmt = {pre: m[1], w: m[2].length}; } }
+async function loadAddr(force){
+  const A = aS(); if (A.loading || (!force && A.data && Date.now() - A.at < 30000)) return;
+  A.loading = true; try { const d = await api('/api/shaddr/list', {filter: A.filter, q: A.q.trim()}); A.data = d; A.at = Date.now(); A.err = ''; addrLearnCodes(d.orders); } catch(e) { A.err = errText(e); A.data = null; }
+  A.loading = false; if (S.tab === 'addr') render();
+}
+const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(' / '), a.zip].filter(Boolean).map(esc).join(' · ') : '<span class="muted">Adres yok</span>';
+function viewAddr(){
+  const A = aS(); loadAddr(false);
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
+  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips"><button class="chip" data-act="ad-filter" data-id="open" aria-pressed="${A.filter==='open'}">Kargolanmamış</button><button class="chip" data-act="ad-filter" data-id="all" aria-pressed="${A.filter==='all'}">Son 60 gün, tümü</button><button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button></div>
+    <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
+  if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
+  if (!A.data) return h + loading();
+  const rows = A.data.orders.map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
+  const nBad = rows.filter(r => r.issues.length).length;
+  h += `<div class="small muted" style="margin:0 0 10px">${fmtN(rows.length)} sipariş · <b style="color:${nBad ? 'var(--bad)' : 'var(--good)'}">${nBad ? fmtN(nBad) + ' tanesinde kontrol edilecek bir şey var' : 'hepsi düzgün görünüyor'}</b></div>`;
+  const list = rows.filter(r => !A.only || r.issues.length || r.e).sort((x, y) => (y.issues.some(i => i[0]==='bad') - x.issues.some(i => i[0]==='bad')) || (y.issues.length > 0) - (x.issues.length > 0));
+  if (!list.length) h += `<div class="panel empty"><h4>${rows.length ? 'Sorunlu adres yok' : 'Sipariş yok'}</h4><p>${rows.length ? '"Sadece sorunlular" filtresini kapatıp hepsini görebilirsin.' : A.q ? 'Aramayla eşleşen sipariş bulunamadı.' : 'Bu aralıkta kargolanmamış Shopify siparişi yok.'}</p></div>`;
+  for (const {o, e, issues} of list) {
+    const g = esc(o.gid), busy = A.busy[o.gid];
+    h += `<div class="card" style="gap:8px"><div class="spread" style="gap:8px;align-items:flex-start"><div style="min-width:0"><b>${esc(o.name)}</b> <span class="muted small">${esc(fmtDate(o.createdAt))}</span> ${o.fulfill === 'FULFILLED' ? '<span class="pill p-mute">Kargolandı</span>' : '<span class="pill p-brass">Kargolanmadı</span>'}
+      <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.items.join(', '))}</div></div>${e ? '' : `<button class="btn sm${issues.length ? ' primary' : ''}" data-act="ad-edit" data-id="${g}">Düzenle</button>`}</div>`;
+    if (issues.length) h += `<div class="row" style="gap:5px;flex-wrap:wrap">${issues.map(([l, m]) => `<span class="pill ${l === 'bad' ? 'p-bad' : 'p-warn'}">${esc(m)}</span>`).join('')}</div>`;
+    else if (!e) h += `<div class="row" style="gap:5px"><span class="pill p-good">Adres düzgün görünüyor</span></div>`;
+    if (o.note) h += `<div class="banner" style="margin:0;background:var(--accent-soft)"><div><b>Müşteri notu:</b> ${esc(o.note)}</div></div>`;
+    if (!e) { const a = o.addr; h += `<div class="small"><b>${esc(a ? `${a.firstName || ''} ${a.lastName || ''}`.trim() : '')}</b>${a && a.phone ? ' · ' + esc(phoneShow(a.phone)) : o.phone ? ' · ' + esc(phoneShow(o.phone)) + ' <span class="muted">(siparişte)</span>' : ''}<div>${addrLine(a)}</div></div></div>`; continue; }
+    const f = (k, label, ex = '') => `<label class="f">${label}<input class="input" data-af="${g}" data-k="${k}" value="${esc(e[k])}" autocomplete="off" ${ex}></label>`;
+    const ilOk = ilFind(e.province) != null && TR_IL[ilFind(e.province)] === e.province;
+    h += `<div class="grid2">${f('firstName', 'Ad')}${f('lastName', 'Soyad')}
+      <label class="f">Telefon<input class="input mono" data-af="${g}" data-k="phone" value="${esc(phoneFix(e.phone) ? phoneShow(phoneFix(e.phone)) : e.phone)}" inputmode="tel" placeholder="05xx xxx xx xx" autocomplete="off"></label>
+      <label class="f">İl<select class="input" data-af="${g}" data-k="province">${ilOk ? '' : `<option value="${esc(e.province)}" selected>${esc(e.province || '— seç —')}${e.province ? ' (tanınmadı)' : ''}</option>`}${TR_IL.map(x => `<option ${x === e.province ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+      ${f('city', 'İlçe')}${f('zip', 'Posta kodu', 'inputmode="numeric" maxlength="5"')}</div>
+      <label class="f">Adres (mahalle, cadde/sokak, bina no)<textarea class="input" rows="2" data-af="${g}" data-k="address1">${esc(e.address1)}</textarea></label>
+      <div class="grid2">${f('address2', 'Apartman / daire (isteğe bağlı)')}${f('company', 'Firma (isteğe bağlı)')}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px"><button class="btn" data-act="ad-fix" data-id="${g}" ${busy?'disabled':''}>✨ Otomatik düzelt</button><button class="btn ghost" data-act="ad-cancel" data-id="${g}" ${busy?'disabled':''}>Vazgeç</button><button class="btn primary" data-act="ad-save" data-id="${g}" ${busy?'disabled':''}>${busy ? 'Kaydediliyor…' : "Shopify'a kaydet"}</button></div>
+      <div class="small muted">Şu anki: ${addrLine(o.addr)}</div></div>`;
+  }
+  const log = A.data.log || [];
+  if (log.length) h += `<details class="card" style="gap:8px"><summary style="cursor:pointer;font-weight:700">Son düzeltmeler (${fmtN(log.length)})</summary>${log.map(l => { let b = null, a = null; try { b = JSON.parse(l.before); a = JSON.parse(l.after); } catch(e) {}
+    return `<div style="border-top:1px solid var(--line);padding-top:8px;display:grid;gap:3px"><div class="spread"><span><b>${esc(l.order_no)}</b> <span class="muted small">${esc(fmtDate(l.at))}</span></span>${b ? `<button class="btn sm ghost" data-act="ad-undo" data-id="${esc(String(l.id))}">Geri al</button>` : ''}</div><div class="small muted"><s>${addrLine(b)}</s></div><div class="small">${addrLine(a)}</div></div>`; }).join('')}</details>`;
+  return h;
+}
+function addrPayload(e){ const ph = phoneFix(e.phone); return {firstName:e.firstName, lastName:e.lastName, company:e.company, address1:e.address1, address2:e.address2, city:e.city, zip:e.zip, countryCode:e.countryCode || 'TR', phone: ph || (String(e.phone || '').trim() ? e.phone : ''), provinceCode: ilCode(e.province) || e.provinceCode || ''}; }
+async function addrSave(gid, e, before){
+  const A = aS(), ph = String(e.phone || '').trim();
+  if (ph && !phoneFix(ph)) { toast('Telefon geçersiz. 05xx xxx xx xx biçiminde yaz.', true); return false; }
+  const r = await api('/api/shaddr/save', {gid, addr: addrPayload(e), before});
+  const o = A.data.orders.find(x => x.gid === gid); if (o && r.addr) o.addr = r.addr;
+  toast(r.noProv ? 'Adres kaydedildi; il kodu Shopify\'da değiştirilemedi, il alanını Shopify panelinden kontrol et.' : 'Adres Shopify\'da güncellendi.', !!r.noProv);
+  return true;
 }
 /* ============ Müşteri soruları ============ */
 function qS(){ if (!S.qna) S.qna = {tab:'waiting', data:null, at:0, loading:false, drafts:{}, open:{}, busy:{}}; return S.qna; }
@@ -2810,7 +2919,7 @@ function shopifyCard(){
     <details class="small"><summary><b>Client ID ve Client secret nasıl alınır?</b></summary><ol style="margin:6px 0 0 18px;padding:0;display:grid;gap:4px">
       <li>Shopify mağaza sahibi hesabıyla <b>dev.shopify.com/dashboard</b> adresine gir (mağazanın bağlı olduğu organizasyon seçili olsun).</li>
       <li><b>Apps → Create app</b>; adı <i>Lilya Backstage</i> yaz.</li>
-      <li>Sürüm (Version) ayarlarında <b>Access scopes</b>: <span class="mono">read_orders</span>, <span class="mono">read_products</span> seç; <b>App URL</b> boşsa <span class="mono">${esc(location.origin)}</span> yaz; <b>Release</b> ile yayımla.</li>
+      <li>Sürüm (Version) ayarlarında <b>Access scopes</b>: <span class="mono">read_orders</span>, <span class="mono">write_orders</span>, <span class="mono">read_products</span> seç (adres düzeltme için <b>Protected customer data</b> bölümünde ad, adres, telefon, e-posta da işaretli olsun); <b>App URL</b> boşsa <span class="mono">${esc(location.origin)}</span> yaz; <b>Release</b> ile yayımla.</li>
       <li>Uygulama sayfasında <b>Install app</b> ile kendi mağazana kur.</li>
       <li><b>Settings</b> sekmesinden <b>Client ID</b> ve <b>Client secret</b>'ı kopyala, aşağıya yapıştır.</li></ol></details>
     <form id="f-shop" class="grid2">
@@ -3011,6 +3120,8 @@ document.addEventListener('input', e => { const t = e.target; if (!t || !t.datas
   if (t.dataset.pu !== undefined) { const x = D.items[Number(t.dataset.pu)]; if (x) { x.unit = Math.max(0, Number(t.value) || 0); purTotals(); } }
   if (t.dataset.ps !== undefined) purSearch(t);
   if (t.id === 'pur-sup') D.supplier = t.value; if (t.id === 'pur-doc') D.doc_no = t.value; if (t.id === 'pur-date') D.date = t.value; });
+document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.af) { const E = aS().edit[t.dataset.af]; if (E) E[t.dataset.k] = t.value; } });
+document.addEventListener('change', e => { const t = e.target; if (t && t.dataset && t.dataset.af && S.tab === 'addr') render(); });
 document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.qid) qS().drafts[t.dataset.qid] = t.value;
   if (t && t.id === 'mq' && S.sheet && S.sheet.type === 'merge') { S.sheet.q = t.value; const box = $('#mlist'); if (box) { const tmp = document.createElement('div'); tmp.innerHTML = sheetMerge().body; const nl = tmp.querySelector('#mlist'); if (nl) box.innerHTML = nl.innerHTML; } } });
 document.addEventListener('click', async e => {
@@ -3170,6 +3281,22 @@ document.addEventListener('click', async e => {
     case 'rep-year': repS().year = Number(id); render(); break;
     case 'rep-gran': repS().gran = id; try { localStorage.setItem('lb_rgran', id); } catch(e) {} render(); break;
     case 'q-tab': qS().tab = id; qS().data = null; render(); break;
+    case 'ad-filter': aS().filter = id; aS().data = null; render(); break;
+    case 'ad-only': aS().only = !aS().only; render(); break;
+    case 'ad-clear': aS().q = ''; aS().data = null; render(); break;
+    case 'ad-sync': aS().at = 0; aS().data = null; render(); break;
+    case 'ad-edit': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (o) { A.edit[id] = addrForm(o.addr || {}); render(); } break; }
+    case 'ad-cancel': delete aS().edit[id]; render(); break;
+    case 'ad-fix': { const A = aS(); if (A.edit[id]) { A.edit[id] = addrFix(A.edit[id]); render(); toast('Önerilen düzeltmeler forma uygulandı; kontrol edip kaydet.'); } break; }
+    case 'ad-save': { const A = aS(), e = A.edit[id], o = A.data && A.data.orders.find(x => x.gid === id); if (!e || !o) break;
+      const left = addrIssues(e, o).filter(i => i[0] === 'bad');
+      if (!(await confirmBox(`${esc(o.name)} siparişinin teslimat adresi Shopify'da değiştirilsin mi?<br><br><span class="small">${esc(`${e.firstName} ${e.lastName}`)} · ${esc(phoneShow(phoneFix(e.phone) || e.phone))}<br>${esc([e.address1, e.address2, e.city + ' / ' + e.province, e.zip].filter(Boolean).join(' · '))}</span>${left.length ? `<br><br><span class="small" style="color:var(--bad)">Hâlâ: ${esc(left.map(i => i[1]).join(', '))}</span>` : ''}`, 'Kaydet'))) break;
+      A.busy[id] = 1; render();
+      try { if (await addrSave(id, e, o.addr)) { delete A.edit[id]; A.at = 0; loadAddr(true); } } catch(err) { toast(errText(err), true); }
+      delete A.busy[id]; render(); break; }
+    case 'ad-undo': { const A = aS(), l = (A.data && A.data.log || []).find(x => String(x.id) === id); if (!l) break; let b = null; try { b = JSON.parse(l.before); } catch(err) {} if (!b) break;
+      if (!(await confirmBox(`${esc(l.order_no)} siparişinin adresi eski haline döndürülsün mü?<br><br><span class="small">${addrLine(b)}</span>`, 'Geri al'))) break;
+      await run(async () => { let cur = null; try { cur = JSON.parse(l.after); } catch(err) {} await addrSave(l.gid, addrForm(b), cur); A.at = 0; await loadAddr(true); }); break; }
     case 'q-sync': await run(async () => { await api('/api/qna/sync', {}); await refresh(true); qS().at = 0; await loadQna(true); toast('Sorular yenilendi.'); }); break;
     case 'q-gen-toggle': qS().genOpen = !qS().genOpen; break;
     case 'q-gen-save': await run(async () => { await api('/api/qna/general', {text: $('#q-general').value}); qS().data.general = $('#q-general').value; toast('Genel bilgiler kaydedildi.'); }); break;
@@ -3225,6 +3352,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('submit', async e => {
   e.preventDefault();
   const id = e.target.id;
+  if (id === 'f-adq') { const A = aS(); A.q = ($('#ad-q') || {}).value || ''; A.data = null; render(); return; }
   if (id === 'f-login') {
     const btn = e.target.querySelector('button'); btn.disabled = true;
     try { if (S.logoutP) await S.logoutP; await api('/api/login', {username:$('#lg-user').value, password:$('#lg-pass').value}); S.authInfo = null; await afterLogin(); }

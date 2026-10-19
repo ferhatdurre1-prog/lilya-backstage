@@ -5,6 +5,7 @@ Lilya Home için stok, sipariş ve envanter yönetimi.
 - Trendyol ve Shopify'da aynı stok koduna sahip ürünler **tek ortak depo stoğunu** kullanır.
 - Trendyol siparişleri **her 10 saniyede** otomatik çekilir; uygulama kapalıyken de çalışır.
 - İptal edilen siparişlerin stoğu geri eklenir. İade talebi stoğu değiştirmez; ürün depoya ulaşıp kabul edilince stok artar.
+- **Adres düzeltme**: kargolanmamış Shopify siparişlerinin hatalı teslimat adresleri işaretlenir, düzeltilip doğrudan Shopify'a kaydedilir (Shopify uygulamasında `write_orders` yetkisi ve korunan müşteri verisi izni gerekir). Her düzeltme geri alınabilir.
 - Alış fiyatıyla ürün bazında ve depo toplamında stok değeri gösterilir.
 
 ## Kurulum
