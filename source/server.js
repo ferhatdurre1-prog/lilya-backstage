@@ -121,6 +121,9 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sh_unf(order_no TEXT PRIMARY KEY, data TEXT, updated_at TEXT)').run();
   // Shopify adres düzeltmeleri: eski / yeni adres saklanır (geri alma için)
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sh_addr_log(id INTEGER PRIMARY KEY AUTOINCREMENT, gid TEXT, order_no TEXT, before TEXT, after TEXT, at TEXT)').run();
+  // Sürat Kargo gönderileri: kendi barkodumuz (OzelKargoTakipNo) ve Sürat'a bildirilen adres
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ship(ref TEXT PRIMARY KEY, gid TEXT, order_no TEXT, adet INTEGER, desi REAL, addr TEXT, lines TEXT, msg TEXT, at TEXT)').run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS sr_ship_gid ON sr_ship(gid)').run();
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_listing1'`).first())) {
@@ -625,6 +628,61 @@ const SH_API = '2026-07';
 const SH_ADDR_F = 'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone';
 const SH_ADDR_Q = `query($q:String,$after:String){orders(first:25,after:$after,sortKey:CREATED_AT,reverse:true,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt cancelledAt closed test displayFulfillmentStatus note email phone
   totalPriceSet{shopMoney{amount}} lineItems(first:20){pageInfo{hasNextPage}nodes{name quantity unfulfilledQuantity}} shippingAddress{${SH_ADDR_F}}}}}`;
+/* ---------- Sürat Kargo: ön kabul (kendi barkodumuzla gönderi bildirimi) ----------
+   Gönderi, cari kodu + şifreyle web servisine OzelKargoTakipNo (bizim barkodumuz) ile kaydedilir; şube barkodu okutunca adres Sürat'ta çıkar.
+   İstek, Sürat'ın kendi WSDL tanımından okunan alan adı ve sırasıyla kurulur (ASMX alan sırasına duyarlı). */
+const SR_URL = 'https://webservices.suratkargo.com.tr/services.asmx';
+const SR_METHODS = ['GonderiyiKargoyaGonderYeni', 'GonderiyiKargoyaGonder'];
+const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1]] = m[2]; return o; };
+async function srSchema(env, force) {
+  const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
+  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { return JSON.parse(s.sr_schema); } catch (e) {} }
+  const r = await fetch(SR_URL + '?WSDL', { headers: { 'user-agent': 'LilyaBackstage/1.0' } });
+  if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
+  const w = await r.text();
+  const ns = (/targetNamespace="([^"]+)"/.exec(w) || [])[1] || 'http://tempuri.org/';
+  const elBlock = (name) => { const re = new RegExp(`<(?:\\w+:)?element[^>]*name="${name}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?element>`); const m = re.exec(w); return m ? m[1] : null; };
+  const fields = (block) => [...block.matchAll(/<(?:\w+:)?element\b[^>]*\/?>/g)].map(m => xmlAttrs(m[0])).filter(a => a.name).map(a => ({ name: a.name, type: String(a.type || '').replace(/^\w+:/, ''), tns: /^tns:/.test(a.type || ''), min: a.minOccurs == null ? 1 : Number(a.minOccurs) }));
+  let method = null, params = null;
+  for (const m of SR_METHODS) { const b = elBlock(m); if (b) { method = m; params = fields(b); break; } }
+  if (!method) throw new Error('Sürat web servisinde gönderi kaydetme işlemi bulunamadı.');
+  const gp = params.find(p => p.tns); if (!gp) throw new Error('Sürat gönderi tanımı okunamadı.');
+  const ct = new RegExp(`<(?:\\w+:)?complexType[^>]*name="${gp.type}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?complexType>`).exec(w);
+  if (!ct) throw new Error('Sürat gönderi alanları okunamadı.');
+  const sc = { ns, method, params, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, at: iso() };
+  await env.DB.batch([setStmt(env, 'sr_schema', JSON.stringify(sc)), setStmt(env, 'sr_schema_at', String(Date.now()))]);
+  return sc;
+}
+// Alan değeri: bilinen alanlara siparişten, bilinmeyen zorunlu alanlara türüne göre boş/0
+function srValue(f, g) {
+  const k = f.name.toLowerCase();
+  if (k in g) return g[k];
+  if (f.min === 0) return undefined; // isteğe bağlı bilinmeyen alan gönderilmez
+  return /int|short|long|byte|decimal|double|float/i.test(f.type) ? 0 : /boolean/i.test(f.type) ? 'false' : '';
+}
+function srEnvelope(sc, creds, g) {
+  const gx = sc.gonderi.fields.map(f => { const v = srValue(f, g); return v === undefined ? '' : `<${f.name}>${xmlEsc(v)}</${f.name}>`; }).join('');
+  const px = sc.params.map(p => p.tns ? `<${p.name}>${gx}</${p.name}>` : /kullanici|carikod/i.test(p.name) ? `<${p.name}>${xmlEsc(creds.cari)}</${p.name}>` : /sifre|password/i.test(p.name) ? `<${p.name}>${xmlEsc(creds.pass)}</${p.name}>` : '').join('');
+  return `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${sc.method} xmlns="${sc.ns}">${px}</${sc.method}></soap:Body></soap:Envelope>`;
+}
+const SR_FAIL = /hata|error|exception|ge[cç]ersiz|hatal|yetki|bulunamad|ba[sş]ar[iı]s[iı]z|zorunlu|eksik|invalid|fault|tan[iı]ml[iı] de[gğ]il|kay[iı]tl[iı]/i;
+async function srSend(env, creds, g) {
+  const sc = await srSchema(env, false);
+  const body = srEnvelope(sc, creds, g);
+  const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${sc.method}"` }, body });
+  const t = await r.text();
+  const fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(t);
+  if (fault) throw new Error('Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 300));
+  const res = new RegExp(`<${sc.method}Result>([\\s\\S]*?)</${sc.method}Result>`).exec(t);
+  const msg = (res ? res[1] : t.replace(/<[^>]+>/g, ' ')).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim().slice(0, 300);
+  if (!r.ok) throw new Error(`Sürat ${r.status}: ${msg || 'cevap okunamadı'}`);
+  if (!res || SR_FAIL.test(msg)) throw new Error('Sürat kabul etmedi: ' + (msg || 'boş cevap'));
+  return { msg, method: sc.method };
+}
+async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_pass', 'sr_desi']); return { cari: env.SURAT_CARI_KODU || s.sr_cari || '', pass: env.SURAT_SIFRE || s.sr_pass || '', desi: Number(s.sr_desi) || 2 }; }
+const SR_ORDER_Q = `query($id:ID!){order(id:$id){id name email phone cancelledAt displayFulfillmentStatus shippingAddress{${'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone'}} totalPriceSet{shopMoney{amount}}
+  lineItems(first:50){nodes{name sku quantity unfulfilledQuantity variant{id} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} image{url}}}}}`;
 function shAddrErr(e) {
   const m = String((e && e.message) || e);
   if (/write_orders|access denied.*order|required access/i.test(m)) return 'Shopify uygulamasında adres değiştirme izni yok. Dev Dashboard → Lilya Backstage → yeni sürüm (Version) → Access scopes\'a write_orders ekle → Release, sonra mağazada uygulamayı güncelle. Ayrıntı: ' + m.slice(0, 160);
@@ -2566,8 +2624,53 @@ ${catalog}` });
         total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0).map(l => `${l.unfulfilledQuantity}× ${l.name}`),
         addr: o.shippingAddress || null }));
       const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
-      return json({ ok: true, orders, log, after: more ? after : null });
+      const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
+      return json({ ok: true, orders, log, ships, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
+  }
+  // ---------- Sürat Kargo ----------
+  if (path === '/api/surat/status') {
+    const c = await srCreds(env), s = await getSettings(env, ['sr_err', 'sr_ok']);
+    return json({ connected: !!(c.cari && c.pass), cari: c.cari ? c.cari.slice(0, 2) + '•••' + c.cari.slice(-2) : '', desi: c.desi, err: s.sr_err || '', ok: s.sr_ok || '' });
+  }
+  if (path === '/api/surat/connect') {
+    const cari = String(body.cari || '').trim(), pass = String(body.pass || '').trim(), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2));
+    if (!cari || !pass) return bad('Cari kodu ve şifre gerekli.');
+    try { await srSchema(env, true); } catch (e) { return bad(String(e.message || e)); }
+    await env.DB.batch([setStmt(env, 'sr_cari', cari), setStmt(env, 'sr_pass', pass), setStmt(env, 'sr_desi', String(desi)), setStmt(env, 'sr_err', '')]);
+    return json({ ok: true });
+  }
+  if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi))]); return json({ ok: true }); }
+  if (path === '/api/surat/disconnect') { await env.DB.batch([setStmt(env, 'sr_cari', ''), setStmt(env, 'sr_pass', '')]); return json({ ok: true }); }
+  if (path === '/api/surat/schema') { try { const sc = await srSchema(env, true); return json({ ok: true, method: sc.method, fields: sc.gonderi.fields.map(f => f.name + (f.min ? '*' : '')) }); } catch (e) { return bad(String(e.message || e)); } }
+  if (path === '/api/surat/ship') {
+    const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil. Bağlantılar bölümünden cari kodu ve şifreyi gir.');
+    const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
+    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    const adet = Math.max(1, Math.min(50, parseInt(body.adet, 10) || 1)), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || cr.desi).replace(',', '.')) || cr.desi));
+    let o; try { o = (await shGql(env, c, SR_ORDER_Q, { id: gid })).order; } catch (e) { return bad(shAddrErr(e)); }
+    if (!o) return bad('Sipariş Shopify\'da bulunamadı.'); if (o.cancelledAt) return bad('Sipariş iptal edilmiş.');
+    const a = o.shippingAddress || {};
+    const name = `${a.firstName || ''} ${a.lastName || ''}`.replace(/\s+/g, ' ').trim() || (a.company || '');
+    const tel = (() => { let d = String(a.phone || o.phone || '').replace(/\D/g, ''); if (d.startsWith('90') && d.length === 12) d = d.slice(2); if (d.startsWith('0') && d.length === 11) d = d.slice(1); return d; })();
+    const adres = [a.address1, a.address2].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    const miss = [!name && 'ad soyad', !adres && 'adres', !a.city && 'ilçe', !a.province && 'il', !/^5\d{9}$/.test(tel) && 'cep telefonu'].filter(Boolean);
+    if (miss.length) return bad('Adreste eksik var: ' + miss.join(', ') + '. Önce adresi düzeltip Shopify\'a kaydet.');
+    // Kendi barkodumuz: LH + sipariş no (aynı sipariş için yeniden oluşturulursa sonuna B, C… eklenir)
+    const base = 'LH' + String(o.name || '').replace(/\D/g, '');
+    const prev = (await env.DB.prepare('SELECT ref FROM sr_ship WHERE gid=?1').bind(gid).all()).results.map(r => r.ref);
+    if (prev.length && !body.again) return bad('Bu siparişin Sürat barkodu zaten var: ' + prev[prev.length - 1]);
+    let ref = base; for (let k = 0; prev.includes(ref) && k < 25; k++) ref = base + String.fromCharCode(66 + k);
+    const lines = ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0);
+    const lm = await listingMap(env, 'shopify', lines.map(l => shId(l.variant && l.variant.id)).filter(Boolean));
+    const codes = new Map((await selectIn(env, 'SELECT key, code FROM products', 'key', [...new Set([...lm.values()].map(v => v.pkey).filter(Boolean))])).map(r => [r.key, r.code]));
+    const L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
+    const icerik = L.map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ').slice(0, 100);
+    const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: 0, kapidanodemetutari: 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: '', irsaliyesirano: '' };
+    let res; try { res = await srSend(env, cr, g); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
+    const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel };
+    await env.DB.batch([env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso()), setStmt(env, 'sr_ok', iso()), setStmt(env, 'sr_err', '')]);
+    return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
   }
   if (path === '/api/shaddr/save') {
     const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');

@@ -359,6 +359,8 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 .afo:first-child{border-top:0}
 .afo:hover,.afo:focus{background:var(--accent-soft)}
 #af-in{min-width:0;width:100%}
+.srb{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px dashed var(--line);padding-top:8px}
+.srf{display:grid;gap:6px;background:var(--surface-2);border-radius:12px;padding:10px}
 .afb{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.afb .btn{white-space:normal;min-width:0;padding-inline:8px}
 @media (max-width:560px){.afr,.afr.open{grid-template-columns:minmax(0,1fr) auto}.afr .afk{grid-column:1/-1}.afr.open .afe{grid-column:1/-1}}
 </style>
@@ -819,6 +821,7 @@ function viewAddr(){
       const num = (/(\d+)\s*$/.exec(o.gid) || [])[1], shop = String((S.shop && S.shop.shop) || '').replace(/\.myshopify\.com.*$/, '');
       h += `<div class="row" style="gap:6px;flex-wrap:wrap">${shop && num ? `<a class="btn sm" href="https://admin.shopify.com/store/${encodeURIComponent(shop)}/orders/${num}" target="_blank" rel="noopener">Shopify'da aç</a>` : ''}</div>`; }
     if (e) h += `<div class="afb"><button class="btn ghost" data-act="ad-cancel" data-id="${g}" ${busy?'disabled':''}>Değişiklikleri at</button><button class="btn primary" data-act="ad-save" data-id="${g}" ${busy?'disabled':''}>${busy ? 'Kaydediliyor…' : "Shopify'a kaydet"}</button></div>`;
+    h += suratBlock(o, e, issues);
     h += `</div>`;
   }
   if (A.data.after) h += `<button class="btn" style="width:100%;margin-bottom:12px" data-act="ad-more" ${A.loading ? 'disabled' : ''}>${A.loading ? 'Yükleniyor…' : 'Daha eski kargolanmamış siparişleri yükle'}</button>`;
@@ -826,6 +829,63 @@ function viewAddr(){
   if (log.length) h += `<details class="card" style="gap:8px"><summary style="cursor:pointer;font-weight:700">Son düzeltmeler (${fmtN(log.length)})</summary>${log.map(l => { let b = null, a = null; try { b = JSON.parse(l.before); a = JSON.parse(l.after); } catch(e) {}
     return `<div style="border-top:1px solid var(--line);padding-top:8px;display:grid;gap:3px"><div class="spread"><span><b>${esc(l.order_no)}</b> <span class="muted small">${esc(fmtDate(l.at))}</span></span>${b ? `<button class="btn sm ghost" data-act="ad-undo" data-id="${esc(String(l.id))}">Geri al</button>` : ''}</div><div class="small muted"><s>${addrLine(b)}</s></div><div class="small">${addrLine(a)}</div></div>`; }).join('')}</details>`;
   return h;
+}
+// Sürat Kargo: barkodu olan sipariş için etiket, olmayan için oluşturma
+function suratBlock(o, e, issues){
+  const A = aS(), ships = (A.data.ships || []).filter(x => x.gid === o.gid), last = ships[ships.length - 1], g = esc(o.gid), busy = A.busy['sr' + o.gid], sr = S.surat || {};
+  if (last) return `<div class="srb"><div style="min-width:0"><span class="pill p-good">Sürat barkodu</span> <b class="mono">${esc(last.ref)}</b> <span class="small muted">${esc(fmtDate(last.at))} · ${fmtN(last.adet)} koli · ${esc(String(last.desi).replace('.', ','))} desi</span></div>
+    <div class="row" style="gap:6px"><button class="btn sm primary" data-act="sr-print" data-id="${esc(last.ref)}">🖨 Etiketi yazdır</button><button class="btn sm ghost" data-act="sr-open" data-id="${g}" ${busy ? 'disabled' : ''}>Yeni barkod</button></div></div>${A.sr === o.gid ? suratForm(o, true) : ''}`;
+  if (A.sr === o.gid) return suratForm(o, false);
+  const blocked = e ? "Önce değişiklikleri Shopify'a kaydet" : issues.some(i => i[0] === 'bad') ? 'Önce kırmızı işaretli sorunları düzelt' : '';
+  return `<div class="srb"><span class="small muted">${blocked ? esc(blocked) : sr.connected === false ? 'Sürat Kargo bağlı değil' : 'Sürat barkodu yok'}</span><button class="btn sm" data-act="sr-open" data-id="${g}" ${blocked || busy ? 'disabled' : ''}>📦 Sürat barkodu oluştur</button></div>`;
+}
+function suratForm(o, again){
+  const A = aS(), g = esc(o.gid), busy = A.busy['sr' + o.gid], sr = S.surat || {};
+  if (sr.connected === false) return `<div class="banner" style="margin:0;background:var(--warn-soft)"><div>Sürat Kargo bağlı değil. <button class="btn sm" data-act="sr-conn">Bağlantılar'ı aç</button></div></div>`;
+  return `<div class="srf"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end"><label class="f" style="width:90px">Koli adedi<input class="input num" id="sr-adet" inputmode="numeric" value="1"></label><label class="f" style="width:90px">Desi<input class="input num" id="sr-d" inputmode="decimal" value="${esc(String(sr.desi || 2).replace('.', ','))}"></label>
+    <button class="btn primary" data-act="sr-ship" data-id="${g}" ${again ? 'data-again="1"' : ''} ${busy ? 'disabled' : ''}>${busy ? "Sürat'a gönderiliyor…" : again ? 'Yeni barkod oluştur ve yazdır' : 'Oluştur ve etiketi yazdır'}</button><button class="btn ghost" data-act="sr-close" ${busy ? 'disabled' : ''}>Vazgeç</button></div>
+    <p class="small muted" style="margin:0">${again ? "Eski barkod Sürat'ta kayıtlı kalır; şubeye yalnız yeni etiketli paketi ver." : "Adres Sürat'a bildirilir, ardından etiket PDF'i açılır (ölçü: kargo etiketlerinde seçtiğin 100×100 / 100×150)."}</p></div>`;
+}
+// Sürat etiketi: üstte kendi barkodumuz, altında alıcı adresi (şube okutamazsa elle de girebilsin), gönderici ve ürünler
+function drawSuratLabel(sh, W, H, mk){
+  const tall = H / W >= 1.4, D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
+  const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
+  const pg = mk(), c = pg.c; let y = m;
+  const rule = (yy, w) => { c.lineWidth = mm(w || 0.3); c.beginPath(); c.moveTo(m, yy); c.lineTo(PW - m, yy); c.stroke(); };
+  const lgW = mm(24), lgH = lgW * 352 / 900;
+  if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, y, lgW, lgH);
+  font(c, 4.2, true); const t1 = 'SÜRAT KARGO'; c.fillText(t1, PW - m - c.measureText(t1).width, y);
+  font(c, 2.6, false); const t2 = `Sipariş ${sh.order_no} · ${new Date(sh.at).toLocaleDateString('tr-TR')}`; c.fillText(t2, PW - m - c.measureText(t2).width, y + mm(5));
+  y += Math.max(lgH, mm(8.5)) + mm(1.5);
+  const bh = mm(tall ? 22 : 16), bw = Math.min(cw - mm(8), mm(80));
+  if (window.JsBarcode) { try { lblBarcode(c, sh.ref, (PW - bw) / 2, y, bw, bh); } catch(e) {} }
+  y += bh + mm(1); font(c, 4.4, true); c.fillText(sh.ref, (PW - c.measureText(sh.ref).width) / 2, y); y += mm(5.4);
+  font(c, 2.8, false); const k = `${sh.adet} koli · ${String(sh.desi).replace('.', ',')} desi · Ödeme: gönderici`; c.fillText(k, (PW - c.measureText(k).width) / 2, y); y += mm(3.8);
+  rule(y, 0.45); y += mm(1.5);
+  const a = sh.addr || {};
+  font(c, 2.4, true); c.fillText('ALICI', m, y); y += mm(3.1);
+  const nz = tall ? 4.4 : 3.6; font(c, nz, true); for (const t of wrapText(c, String(a.name || '').toLocaleUpperCase('tr-TR'), cw).slice(0, 2)) { c.fillText(t, m, y); y += mm(nz * 1.15); }
+  const az = tall ? 3.4 : 2.9; font(c, az, false); for (const t of wrapText(c, a.adres || '', cw).slice(0, tall ? 5 : 3)) { c.fillText(t, m, y); y += mm(az * 1.2); }
+  const iz = tall ? 4 : 3.4; font(c, iz, true); const ii = `${a.ilce || ''} / ${a.il || ''}`.toLocaleUpperCase('tr-TR') + (a.zip ? '  ' + a.zip : ''); c.fillText(ii, m, y); y += mm(iz * 1.2);
+  if (/^5\d{9}$/.test(a.tel || '')) { font(c, 2.9, false); c.fillText(`Tel: 0${a.tel.slice(0,3)} ${a.tel.slice(3,6)} ${a.tel.slice(6,8)} ${a.tel.slice(8)}`, m, y); y += mm(3.6); }
+  rule(y + mm(0.3)); y += mm(1.6);
+  font(c, 2.4, false); c.fillText('GÖNDERİCİ: LİLYA HOME · lilyahome.com.tr', m, y); y += mm(3.3);
+  const L = sh.lines || []; font(c, 2.5, false);
+  for (let i = 0; i < L.length; i++) { const l = L[i], ws = wrapText(c, `${l.qty} × ${l.code ? l.code + ' · ' : ''}${l.name}`, cw);
+    if (y + mm(3.1) > PH - m) { c.fillText(`+${L.length - i} ürün daha`, m, y - mm(3.1)); break; }
+    c.fillText(ws[0] + (ws.length > 1 ? '…' : ''), m, y); y += mm(3.1); }
+  if (pg.cv) lblMono(pg.cv);
+  return pg.cv || c;
+}
+async function suratPrint(list){
+  const {w, h} = lblSize();
+  await run(async () => {
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
+    if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
+    const doc = new MiniPdf(w, h), mk = () => ({cv: null, c: doc.addPage()});
+    for (const sh of list) for (let i = 0; i < Math.max(1, sh.adet || 1); i++) drawSuratLabel(sh, w, h, mk); // her koliye bir etiket
+    await deliverPdf(doc.output(), `surat-etiket-${list.length === 1 ? list[0].ref : list.length + '-gonderi'}-${todayTR()}.pdf`, list.reduce((t, x) => t + Math.max(1, x.adet || 1), 0));
+  });
 }
 const ADDR_FIELDS = [['firstName','Ad'],['lastName','Soyad'],['phone','Telefon'],['province','İl'],['city','İlçe'],['address1','Adres'],['address2','Apartman / daire'],['zip','Posta kodu'],['company','Firma']];
 const addrSugHtml = sug => sug.length ? sug.map((x, i) => `<button type="button" class="afo" data-act="ad-pick" data-i="${i}">${esc(x.label)}${x.sub ? ` <span class="muted small">${esc(x.sub)}</span>` : ''}</button>`).join('') : '<div class="small muted" style="padding:6px 8px">Eşleşen yok; yazdığın haliyle kaydedebilirsin.</div>';
@@ -2956,6 +3016,26 @@ function usageCard(){
       <li>Belirteci buraya yazma. Eklendikten sonra en geç 1 saat içinde gerçek rakamlar burada görünür.</li></ol></details>` : (U.cfErr ? `<p class="small" style="margin:0;color:var(--bad)">Cloudflare kullanım verisi alınamadı: ${esc(String(U.cfErr).slice(27))}</p>` : `<p class="small muted" style="margin:0">Rakamlar Cloudflare'in kendi ölçümünden (saatte bir güncellenir)${U.cf ? ' · ' + esc(fmtDate(U.cf.at)) : ''}.</p>`)}
     <p class="small muted" style="margin:0">Cloudflare'de ayrıca <b>Notifications → Add → Usage Based Billing</b> uyarısı kurarsan, ek ücret ihtimalinde e-posta da gelir.</p></div>`;
 }
+// Sürat Kargo bağlantısı: Shopify siparişleri kendi barkodumuzla Sürat'a bildirilir (ön kabul)
+function suratCard(){
+  const H = S.surat;
+  if (!H || (H.loadedAt && Date.now() - H.loadedAt > 30000 && !H.loading)) { if (!H || !H.loading) { S.surat = {...(H || {}), loading: true}; api('/api/surat/status', {}).then(d => { S.surat = {...d, loadedAt: Date.now()}; if (S.sheet) renderSheet(false); if (S.tab === 'addr') render(); }).catch(e => { S.surat = {err: errText(e), loadedAt: Date.now()}; }); } }
+  const d = S.surat || {}, badge = '<span class="pill p-brass">Sürat Kargo</span>';
+  if (d.loading && d.connected === undefined) return `<div class="card"><h3>${badge}</h3>${loading()}</div>`;
+  if (!d.connected) return `<div class="card"><h3 style="margin:0">${badge} Bağlan</h3>
+    <p class="muted small" style="margin:0">Shopify siparişleri için kendi barkodumuz (LH + sipariş no) oluşturulur ve adresle birlikte Sürat'a bildirilir. Şube barkodu okutunca adres Sürat'ın sisteminde çıkar.</p>
+    <form id="f-surat" class="grid2">
+      <label class="f">Cari kodu<input class="input mono" id="sr-cari" required autocomplete="off"></label>
+      <label class="f">Şifre<input class="input mono" id="sr-pass" type="password" required autocomplete="off"></label>
+      <label class="f">Varsayılan desi<input class="input num" id="sr-desi" inputmode="decimal" value="2"></label>
+      <div class="row" style="align-items:flex-end"><button class="btn primary" type="submit">Bağlan</button></div>
+    </form>${d.err ? `<div class="banner bad" style="margin:0"><div>${esc(d.err)}</div></div>` : ''}</div>`;
+  return `<div class="card"><div class="spread"><h3 style="margin:0">${badge} Bağlı</h3><button class="btn sm ghost" data-act="sr-disconnect">Kaldır</button></div>
+    <dl class="kv"><dt>Cari kodu</dt><dd class="mono">${esc(d.cari)}</dd><dt>Varsayılan desi</dt><dd><form id="f-srdesi" class="row" style="gap:6px"><input class="input num" id="sr-desi2" inputmode="decimal" value="${esc(String(d.desi).replace('.', ','))}" style="width:80px"><button class="btn sm" type="submit">Kaydet</button></form></dd>
+    <dt>Son gönderi</dt><dd>${d.ok ? esc(ago(d.ok)) : 'Henüz yok'}</dd></dl>
+    <p class="muted small" style="margin:0">Barkodlar <b>Adres düzeltme</b> sekmesinden oluşturulur.</p>
+    ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Son hata:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}</div>`;
+}
 // Shopify bağlantısı: siparişler ortak stoktan düşer (iptal / stoğa iade geri ekler)
 function shopifyCard(){
   const H = S.shop;
@@ -3008,6 +3088,7 @@ function sheetImport(){
     <div class="row"><button class="btn sm ghost" data-act="resync-products">Ürün listesini şimdi yeniden tara</button></div>
   </div>
   ${shopifyCard()}
+  ${suratCard()}
   <div class="card"><h3>Dosyadan aktar</h3>
     <p class="muted small" style="margin:0">Diğer kanalların sipariş/ürün dosyasını (CSV, Excel) ya da eski uygulamanın yedeğini buraya yükleyebilirsin. Aynı dosyayı tekrar yüklemek stoğu iki kez düşürmez.</p>
     ${stage}
@@ -3344,6 +3425,18 @@ document.addEventListener('click', async e => {
     case 'ad-fedit': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (!o) break; const k = b.dataset.k, E = A.edit[id] || addrForm(o.addr || {});
       A.field = {gid: id, k, v: k === 'phone' ? phoneShow(phoneFix(E.phone) || E.phone) : String(E[k] || '')}; render(); addrFocus(); break; }
     case 'ad-fok': addrFieldCommit(); break;
+    case 'sr-open': { const A = aS(); A.sr = id; if (!S.surat || S.surat.connected === undefined) suratCard(); render(); break; }
+    case 'sr-close': aS().sr = null; render(); break;
+    case 'sr-conn': aS().sr = null; S.imp = null; openSheet('import'); break;
+    case 'sr-disconnect': if (!(await confirmBox('Sürat Kargo bağlantısı kaldırılsın mı? Oluşturulan barkodlar silinmez.', 'Kaldır', true))) break; await run(async () => { await api('/api/surat/disconnect', {}); S.surat = null; renderSheet(false); toast('Sürat Kargo bağlantısı kaldırıldı.'); }); break;
+    case 'sr-print': { const sh = (aS().data.ships || []).find(x => x.ref === id); if (sh) suratPrint([sh]); break; }
+    case 'sr-ship': { const A = aS(), o = A.data.orders.find(x => x.gid === id); if (!o) break;
+      const adet = parseInt(($('#sr-adet') || {}).value, 10) || 1, desi = String(($('#sr-d') || {}).value || '').replace(',', '.');
+      A.busy['sr' + id] = 1; render();
+      try { const r = await api('/api/surat/ship', {gid: id, adet, desi, again: !!b.dataset.again}); (A.data.ships = A.data.ships || []).push(r.ship); A.sr = null; S.surat = null;
+        toast(`Sürat'a bildirildi: ${r.ship.ref}${r.ship.msg ? ' · ' + r.ship.msg : ''}`); delete A.busy['sr' + id]; render(); await suratPrint([r.ship]); }
+      catch(err) { toast(errText(err), true); delete A.busy['sr' + id]; render(); }
+      break; }
     case 'ad-fcancel': aS().field = null; render(); break;
     case 'ad-pick': { const A = aS(), F = A.field; if (!F) break; const o = A.data.orders.find(x => x.gid === F.gid); const sug = addrSuggest(F.k, F.v, A.edit[F.gid] || addrForm((o && o.addr) || {})); const x = sug && sug[Number(b.dataset.i)]; if (x) addrFieldCommit(x.v); break; }
     case 'ad-fix': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (!o) break; const base = A.edit[id] || addrForm(o.addr || {}), fx = addrFix(base); if (JSON.stringify(fx) === JSON.stringify(addrForm(o.addr || {}))) { toast('Otomatik düzeltilecek bir şey bulunamadı; alanları tek tek düzenleyebilirsin.'); break; } A.edit[id] = fx; A.field = null; render(); toast('Önerilen düzeltmeler uygulandı (mavi satırlar); kontrol edip kaydet.'); break; }
@@ -3411,6 +3504,8 @@ document.addEventListener('click', async e => {
 document.addEventListener('submit', async e => {
   e.preventDefault();
   const id = e.target.id;
+  if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {cari: $('#sr-cari').value, pass: $('#sr-pass').value, desi: $('#sr-desi').value}); S.surat = null; renderSheet(false); toast('Sürat Kargo bağlandı.'); }); return; }
+  if (id === 'f-srdesi') { await run(async () => { await api('/api/surat/settings', {desi: $('#sr-desi2').value}); S.surat = null; renderSheet(false); toast('Varsayılan desi kaydedildi.'); }); return; }
   if (id === 'f-adq') { const A = aS(); A.q = ($('#ad-q') || {}).value || ''; A.data = null; render(); return; }
   if (id === 'f-login') {
     const btn = e.target.querySelector('button'); btn.disabled = true;
