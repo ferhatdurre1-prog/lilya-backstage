@@ -718,7 +718,10 @@ async function shFulfill(env, c, gid, number) {
 // Bir gönderinin takip numarasını sor; geldiyse Shopify'a işle
 async function srTrackOne(env, row, cr, c) {
   let tr = row.tracking || '', msg = row.track_msg || '';
-  if (!tr) { const q = await srQuery(env, cr, row.ref); tr = q.no; msg = q.durum || q.raw; }
+  // Önce bizim barkodumuz (Web Takip No), bulunamazsa sipariş numarası (Referans No) ile sorulur
+  if (!tr) { let q = await srQuery(env, cr, row.ref); const alt = String(row.order_no || '').replace(/\D/g, '');
+    if (!q.no && alt && /bulunamad|yok|kay[ıi]t/i.test(q.durum || q.raw)) { const q2 = await srQuery(env, cr, alt); if (q2.no || !/bulunamad/i.test(q2.durum || q2.raw)) q = q2; }
+    tr = q.no; msg = q.durum || q.raw; }
   const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 200))];
   let fulfilled = false, ferr = '';
   if (tr && !row.fulfilled_at && shConfigured(c)) { try { await shFulfill(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } }
@@ -727,12 +730,12 @@ async function srTrackOne(env, row, cr, c) {
   await env.DB.batch(st);
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
 }
-async function srTrackPending(env) {
+async function srTrackPending(env, limit) {
   const cr = await srCreds(env); if (!cr.cari || !cr.pass) return null;
   const c = await shCreds(env);
-  const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT 15`).bind(iso(Date.now() - 21 * 86400000)).all();
+  const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
   const out = []; for (const r of results) { try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); break; } }
-  return { checked: out.length, fulfilled: out.filter(x => x.fulfilled).length };
+  return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
 async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_user', 'sr_pass', 'sr_web', 'sr_desi']); const cari = env.SURAT_CARI_KODU || s.sr_cari || ''; return { cari, user: env.SURAT_KULLANICI || s.sr_user || cari, pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
 const SR_ORDER_Q = `query($id:ID!){order(id:$id){id name email phone cancelledAt displayFulfillmentStatus shippingAddress{${'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone'}} totalPriceSet{shopMoney{amount}}
@@ -2710,6 +2713,7 @@ ${catalog}` });
     for (const [label, c] of tries) { try { const q = await srQuery(env, c, 'LH0'); out.tests.push({ label, msg: q.durum || q.raw || '(boş cevap)' }); } catch (e) { out.tests.push({ label, msg: String(e.message || e) }); } }
     return json(out);
   }
+  if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/track') {
     const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
     const row = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(); if (!row) return bad('Bu siparişin Sürat barkodu yok.');
