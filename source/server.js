@@ -772,11 +772,12 @@ async function srTrackOne(env, row, cr, c) {
 }
 async function srTrackPending(env, limit) {
   const cr = await srCreds(env); if (!cr.cari || !cr.pass) return null;
+  if (!limit && Date.now() < (Number(await getSetting(env, 'sr_block_until')) || 0)) return { checked: 0, tracked: 0, fulfilled: 0, items: [], paused: true };
   const c = await shCreds(env);
   const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
   let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
-  const out = []; for (const r of results) { try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); break; } }
+  const out = []; for (const r of results) { try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 6 * 3600000)); break; } }
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
 async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_user', 'sr_pass', 'sr_web', 'sr_desi']); const cari = env.SURAT_CARI_KODU || s.sr_cari || ''; return { cari, user: env.SURAT_KULLANICI || s.sr_user || cari, pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
@@ -2755,6 +2756,19 @@ ${catalog}` });
     try { const L = await srList(env, cr, 2); out.list = L ? { count: L.rows.length, mesaj: L.mesaj, text: L.text, sample: L.rows[0] || null, keys: L.rows[0] ? Object.keys(L.rows[0]) : [] } : { err: 'Listeleme işlemi yok' }; } catch (e) { out.list = { err: String(e.message || e) }; }
     for (const [label, c] of tries) { try { const q = await srQuery(env, c, 'LH0'); out.tests.push({ label, msg: q.durum || q.raw || '(boş cevap)' }); } catch (e) { out.tests.push({ label, msg: String(e.message || e) }); } }
     return json(out);
+  }
+  // Sürat eKargo "Gönderi Raporu → Excel'e aktar" dosyasındaki satırlarla eşleştir; takip no Shopify'a işlenir
+  if (path === '/api/surat/report') {
+    const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 3000).filter(r => r && typeof r === 'object');
+    if (!rows.length) return bad('Dosyada satır bulunamadı.');
+    const cr = await srCreds(env), c = await shCreds(env);
+    const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
+    const out = [], miss = [];
+    for (const r of results) { const m = srMatch(rows, r), tn = m && srRowTrack(m);
+      if (!tn) { miss.push(r.order_no); continue; }
+      r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat raporundan';
+      try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
+    return json({ ok: true, rows: rows.length, pending: results.length, tracked: out.length, fulfilled: out.filter(x => x.fulfilled).length, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
   }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/track') {
