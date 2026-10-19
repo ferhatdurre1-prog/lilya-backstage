@@ -1993,6 +1993,7 @@ function retCard(g){
       ${r.cnote ? `<div class="meta"><span>Müşteri notu: ${esc(r.cnote)}</span></div>` : ''}
       ${note ? `<div class="meta">${esc(note)}</div>` : ''}
       ${r.kept ? '<div class="meta"><span class="pill p-warn">Ürün müşteride kaldı · stoğa eklenmedi</span></div>' : ''}
+      ${!r.kept && /eksik ürün|eksik gönderil|ürün eksik|eksik geldi|ürün gelmedi|paketten çıkmadı|pakette yok/.test(`${r.reason || ''} ${r.cnote || ''}`.toLocaleLowerCase('tr-TR')) ? `<div class="meta"><span class="pill p-mute">Eksik gönderilmiş · ürün depoda, ${r.status === 'accepted' ? 'stoğa eklendi' : 'kabul edilince stoğa eklenir'}</span></div>` : ''}
       ${r.cargo || r.retDesi || r.outDesi ? `<div class="meta"><span>İade kargosu: ${r.cargo ? (r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)) : ''}</span>${r.retDesi ? `<span class="pill p-mute">${esc(String(r.retDesi).replace('.', ','))} desi</span>` : r.outDesi ? `<span class="pill p-mute" title="Trendyol iade desisini kargo faturasıyla bildirir; o zamana kadar gönderim desisi gösterilir">~${esc(String(r.outDesi).replace('.', ','))} desi (gönderim)</span>` : ''}${r.retCargo ? `<span class="pill p-mute">Kargo ${fmtTL(r.retCargo)}</span>` : ''}</div>` : ''}</div>
       <div class="end"><div class="qty" style="font-size:18px">${fmtN(g.qty)}<small>adet</small></div><span class="pill ${st[1]}">${esc(st[0])}</span>${btns ? `<div class="row" style="justify-content:flex-end">${btns}</div>` : ''}</div></div>
   </div>`;
