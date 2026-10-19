@@ -2588,6 +2588,16 @@ ${catalog}` });
       // İl kodu Shopify'ın beklediği biçimde değilse il kodu olmadan bir kez daha denenir (il, mevcut haliyle kalır)
       if (ue.length && input.provinceCode && /province|zone|il\b/i.test(ue.map(e => (e.field || []).join('.') + ' ' + e.message).join(' '))) { const { provinceCode, ...rest } = input; r = await run(rest); ue = r.orderUpdate.userErrors || []; if (!ue.length) r._noProv = true; }
       if (ue.length) return bad('Shopify kabul etmedi: ' + ue.map(e => e.message).join(' · '));
+      // İl gerçekten değişti mi? Shopify kodu tanımazsa sessizce eski ili bırakabiliyor: başka kod biçimleri denenir
+      const plate = intOr(body.plate, 0), want = String(body.provinceName || ''), fold = (t) => String(t || '').toLocaleLowerCase('tr').replace(/ç/g,'c').replace(/ğ/g,'g').replace(/ı/g,'i').replace(/i̇/g,'i').replace(/ö/g,'o').replace(/ş/g,'s').replace(/ü/g,'u').replace(/[^a-z0-9]/g,'');
+      const okProv = (sa) => sa && ((plate && Number((/(\d+)\s*$/.exec(sa.provinceCode || '') || [])[1]) === plate) || (want && fold(sa.province) === fold(want)));
+      if (plate && !okProv(r.orderUpdate.order && r.orderUpdate.order.shippingAddress)) {
+        const pp = String(plate).padStart(2, '0'), tried = [input.provinceCode];
+        for (const code of ['TR-' + pp, pp, 'TR' + pp, String(plate)]) { if (tried.includes(code)) continue; tried.push(code);
+          const r2 = await run({ ...input, provinceCode: code }); if ((r2.orderUpdate.userErrors || []).length) continue; r = r2; if (okProv(r2.orderUpdate.order.shippingAddress)) break; }
+        const sa = r.orderUpdate.order && r.orderUpdate.order.shippingAddress;
+        if (!okProv(sa)) return bad(`Shopify ili değiştirmedi: ${want} istendi, Shopify'da hâlâ ${(sa && sa.province) || '?'} (${(sa && sa.provinceCode) || '?'}). Denenen kodlar: ${tried.filter(Boolean).join(', ')}. Bu siparişin ilini Shopify panelinden değiştir; kodu bana söylersen uygulamayı ona göre ayarlarım.`);
+      }
       const o = r.orderUpdate.order;
       await env.DB.prepare('INSERT INTO sh_addr_log(gid, order_no, before, after, at) VALUES(?1,?2,?3,?4,?5)').bind(gid, o.name, JSON.stringify(body.before || null), JSON.stringify(o.shippingAddress || null), iso()).run();
       await env.DB.prepare('DELETE FROM sh_addr_log WHERE id NOT IN (SELECT id FROM sh_addr_log ORDER BY id DESC LIMIT 300)').run();

@@ -843,7 +843,7 @@ function addrPayload(e){ const ph = phoneFix(e.phone), il = ilFind(e.province); 
 async function addrSave(gid, e, before){
   const A = aS(), ph = String(e.phone || '').trim();
   if (ph && !phoneFix(ph)) { toast('Telefon geçersiz. 05xx xxx xx xx biçiminde yaz.', true); return false; }
-  const r = await api('/api/shaddr/save', {gid, addr: addrPayload(e), before});
+  const il = ilFind(e.province); const r = await api('/api/shaddr/save', {gid, addr: addrPayload(e), before, plate: il == null ? 0 : il + 1, provinceName: il == null ? '' : TR_IL[il]});
   const o = A.data.orders.find(x => x.gid === gid); if (o && r.addr) o.addr = r.addr;
   toast(r.noProv ? 'Adres kaydedildi; il kodu Shopify\'da değiştirilemedi, il alanını Shopify panelinden kontrol et.' : r.noZip ? 'Adres Shopify\'da güncellendi. Posta kodu yeni ille uyuşmadığı için boş bırakıldı.' : 'Adres Shopify\'da güncellendi.', !!r.noProv);
   return true;
