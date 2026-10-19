@@ -3562,7 +3562,7 @@ document.addEventListener('click', async e => {
     case 'sr-diag': S.srDiag = {loading: true}; renderSheet(false); try { S.srDiag = await api('/api/surat/diag', {}); } catch(err) { S.srDiag = {err: errText(err)}; } renderSheet(false); break;
     case 'sr-man': aS().srm = id || null; render(); setTimeout(() => { const i = $('#sr-man'); if (i) i.focus(); }, 20); break;
     case 'sr-track': { const A = aS(); A.busy['sr' + id] = 'track'; render();
-      try { const r = (await api('/api/surat/track', {gid: id})).r; srApply(id, r); toast(r.fulfilled ? `Takip no ${r.tracking} Shopify'a işlendi; müşteriye bildirim gitti.` : r.tracking ? `Takip no: ${r.tracking}${r.err ? ' · Shopify: ' + r.err : ''}` : `Henüz takip no yok${r.msg ? ' · Sürat: ' + r.msg : ''}. Paket şubede okutulunca gelir.`, !!r.err); }
+      try { const rr = await api('/api/surat/track', {gid: id}), r = rr.r; srApply(id, r); if (rr.barcodeLog) { const sh = (A.data.ships || []).filter(x => x.gid === id).pop(); if (sh) sh.msg = String(sh.msg || '').slice(0, 300) + ' ‖ Barkod sorgusu: ' + rr.barcodeLog.join(' / '); } toast(r.fulfilled ? `Takip no ${r.tracking} Shopify'a işlendi; müşteriye bildirim gitti.` : r.tracking ? `Takip no: ${r.tracking}${r.err ? ' · Shopify: ' + r.err : ''}` : `Henüz takip no yok${r.msg ? ' · Sürat: ' + r.msg : ''}. Paket şubede okutulunca gelir.`, !!r.err); }
       catch(err) { toast(errText(err), true); }
       delete A.busy['sr' + id]; render(); break; }
     case 'sr-conn': aS().sr = null; S.imp = null; openSheet('import'); break;
