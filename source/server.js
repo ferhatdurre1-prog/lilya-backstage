@@ -1464,6 +1464,7 @@ const AUTO_ACC_NOTE = 'Trendyol otomatik onayladı; ürün depoya ulaşınca sto
 const INSPECT_RE = /kusurlu|hasarl[ıi]|defolu|ay[ıi]pl[ıi]|bozuk|k[ıi]r[ıi]k|[çc]al[ıi][şs]m[ıi]yor|çizik|yırtık|eksik parça|parça eksik/;
 const needsInspect = (...t) => INSPECT_RE.test(t.filter(Boolean).join(' ').toLocaleLowerCase('tr-TR'));
 function retStock(env, id, key, qty, defect, m) {
+  defect = false; // iadeler sebep ne olursa olsun stoğa girer; kusurlu ürün 'Kusurlu ürün düş' panelinden düşülür
   if (defect) return [env.DB.prepare(`UPDATE returns SET inspect='pending', insp_ok=NULL, insp_at=NULL WHERE id=?1`).bind(id)];
   return changeQty(env, key, qty, m);
 }
@@ -2701,7 +2702,6 @@ ${catalog}` });
     }
     const st = []; let inspectN = 0;
     for (const r of rows) {
-      if (body.accept && !r.kept && (body.defect === undefined ? needsInspect(r.reason, r.cnote, r.note) : !!body.defect)) inspectN += Number(r.qty) || 1;
       st.push(guardStmt(env, `(SELECT status FROM returns WHERE id=?1)='requested'`, r.id),
         env.DB.prepare(`UPDATE returns SET status=?1, decided_at=?2${tyApproved && r.ext_status === 'WaitingInAction' ? ", ext_status='WaitingFraudCheck', ext_at=?2" : ''} WHERE id=?3`).bind(body.accept ? 'accepted' : 'rejected', now, r.id));
       if (body.accept && !r.kept) st.push(...ensureProduct(env, r.pkey, { sku: r.sku, name: r.name }, null), ...retStock(env, r.id, r.pkey, r.qty, body.defect === undefined ? needsInspect(r.reason, r.cnote, r.note) : !!body.defect, { type: 'ret', channel: r.channel, ref: r.order_no, note: tyApproved ? 'Depoya ulaştı, Trendyol\'da onaylandı' : 'Depoya ulaştı, kabul edildi' }));

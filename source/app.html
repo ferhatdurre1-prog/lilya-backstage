@@ -705,6 +705,7 @@ function renderDrawer(){
     ${TABS.map(([id, label]) => item(id, label, id, id === 'returns' ? pending : id === 'questions' ? ((S.sync.trendyol || {}).qnaWaiting || 0) : 0)).join('')}
     <div class="sep"></div>
     <button class="di" data-act="dnav" data-id="__conn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg>Bağlantılar & yedek</button>
+    <button class="di" data-act="ws-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>Kusurlu ürün düş</button>
     <button class="di" data-act="add-expense"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/></svg>Gider / gelir ekle</button>
     <button class="di" data-act="security"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Güvenlik & Face ID</button>
     <button class="di" data-act="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.out}</svg>Çıkış</button>
@@ -1381,7 +1382,7 @@ function viewStock(){
   const total = ps.filter(p => !p.set).reduce((n,p) => n + Math.max(0,p.qty), 0); // setler fiziksel stok değil, içindekiler sayılır
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0 && !p.mto && !p.set).length, need = ps.filter(p => p.mto && p.qty < 0);
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
-    <div class="row"><button class="btn" data-act="need-open">Alınacaklar${need.length ? ` <span class="pill p-warn">${fmtN(need.length)}</span>` : ''}</button><button class="btn" data-act="psel-mode">${S.psel ? 'Seçimi kapat' : 'Toplu seç'}</button><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
+    <div class="row"><button class="btn" data-act="ws-open">Kusurlu ürün düş</button><button class="btn" data-act="need-open">Alınacaklar${need.length ? ` <span class="pill p-warn">${fmtN(need.length)}</span>` : ''}</button><button class="btn" data-act="psel-mode">${S.psel ? 'Seçimi kapat' : 'Toplu seç'}</button><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1992,7 +1993,6 @@ function retCard(g){
       ${r.cnote ? `<div class="meta"><span>Müşteri notu: ${esc(r.cnote)}</span></div>` : ''}
       ${note ? `<div class="meta">${esc(note)}</div>` : ''}
       ${r.kept ? '<div class="meta"><span class="pill p-warn">Ürün müşteride kaldı · stoğa eklenmedi</span></div>' : ''}
-      ${r.inspect === 'pending' ? '<div class="meta"><span class="pill p-warn">Kusurlu iade · sağlam/kırık kontrolü bekliyor</span> <button class="btn sm" data-act="insp-open">Kontrol et</button></div>' : r.inspect === 'done' ? `<div class="meta"><span class="pill ${Number(r.inspOk) >= Number(r.qty) ? 'p-good' : 'p-bad'}">Kontrol edildi: ${fmtN(r.inspOk || 0)} sağlam${Number(r.qty) - Number(r.inspOk || 0) ? ' · ' + fmtN(Number(r.qty) - Number(r.inspOk || 0)) + ' kırık (ziyan)' : ''}</span></div>` : r.status === 'accepted' && !r.kept ? `<div class="meta"><button class="btn sm ghost" data-act="insp-add" data-id="${esc(r.id)}">Kırık/kusurlu geldi · kontrole al</button></div>` : ''}
       ${r.cargo || r.retDesi || r.outDesi ? `<div class="meta"><span>İade kargosu: ${r.cargo ? (r.cargoLink ? `<a href="${esc(r.cargoLink)}" target="_blank" rel="noopener">${esc(r.cargo)}</a>` : esc(r.cargo)) : ''}</span>${r.retDesi ? `<span class="pill p-mute">${esc(String(r.retDesi).replace('.', ','))} desi</span>` : r.outDesi ? `<span class="pill p-mute" title="Trendyol iade desisini kargo faturasıyla bildirir; o zamana kadar gönderim desisi gösterilir">~${esc(String(r.outDesi).replace('.', ','))} desi (gönderim)</span>` : ''}${r.retCargo ? `<span class="pill p-mute">Kargo ${fmtTL(r.retCargo)}</span>` : ''}</div>` : ''}</div>
       <div class="end"><div class="qty" style="font-size:18px">${fmtN(g.qty)}<small>adet</small></div><span class="pill ${st[1]}">${esc(st[0])}</span>${btns ? `<div class="row" style="justify-content:flex-end">${btns}</div>` : ''}</div></div>
   </div>`;
@@ -2006,13 +2006,11 @@ function viewReturns(){
   const head = `<div class="spread"><div><h2 class="sec">İadeler</h2><p class="lead small">Trendyol iadeleri kendiliğinden gelir. Ürün depoya ulaşınca onayla: Trendyol'da da onaylanır ve stok artar.</p></div><button class="btn primary" data-act="new-return">İade kaydı aç</button></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${tabs.map(([id,l]) => `<button class="chip" data-act="rfilter" data-id="${id}" aria-pressed="${S.rfilter===id}">${l} · ${fmtN(c[id]||0)}</button>`).join('')}</div></div>`;
   if (!S.loaded.returns) return head + loading();
-  const inspN = (S.returns || []).filter(x => x.inspect === 'pending' && x.status === 'accepted' && !x.kept).reduce((t, x) => t + (Number(x.qty) || 1), 0);
-  const inspBan = `<div class="banner" style="background:${inspN ? 'var(--warn-soft)' : 'var(--surface-2)'};align-items:center"><div style="flex:1"><b>Kusurlu iadeler</b> · ${inspN ? `<b>${fmtN(inspN)} ürün sağlam mı kırık mı kontrol bekliyor.</b> Sağlamsa stoğa eklenir, kırıksa ziyan yazılır.` : 'Kontrol bekleyen ürün yok.'}</div><button class="btn sm ${inspN ? 'primary' : ''}" data-act="insp-open">${inspN ? 'Kontrole başla' : 'Kontrol edilenler'}</button></div>`;
-  const warn = inspBan + (urgent ? `<div class="banner bad"><div><b>${fmtN(urgent)} iade için Trendyol'daki işlem süren 24 saatten az.</b> Süre dolarsa Trendyol iadeyi kendiliğinden onaylar.</div></div>` : '');
+  const warn = (urgent ? `<div class="banner bad"><div><b>${fmtN(urgent)} iade için Trendyol'daki işlem süren 24 saatten az.</b> Süre dolarsa Trendyol iadeyi kendiliğinden onaylar.</div></div>` : '');
   const rs = gs.filter(g => S.rfilter === 'all' || g.bucket === S.rfilter)
     .sort((a, b) => { const da = retDeadline(a.r), db = retDeadline(b.r); if (da !== null || db !== null) return (da === null ? Infinity : da) - (db === null ? Infinity : db); return String(b.r.createdAt).localeCompare(String(a.r.createdAt)); });
   const empty = {action:'Aksiyon bekleyen iade yok', created:'Yolda olan iade talebi yok', stock:'Stoğa eklenecek iade yok', analysis:'İncelemede iade yok'}[S.rfilter] || 'Kayıt yok';
-  if (!rs.length) return head + inspBan + `<div class="panel empty"><h4>${empty}</h4><p>Trendyol'da iade talebi açıldığında burada "Talep oluşturulan" olarak görünür. Ürün depoya ulaşınca "Aksiyon bekleyen"e geçer; onaylayınca stok artar.</p></div>`;
+  if (!rs.length) return head + `<div class="panel empty"><h4>${empty}</h4><p>Trendyol'da iade talebi açıldığında burada "Talep oluşturulan" olarak görünür. Ürün depoya ulaşınca "Aksiyon bekleyen"e geçer; onaylayınca stok artar.</p></div>`;
   const acts = rs.filter(g => g.r.status === 'requested' && g.r.extStatus === 'WaitingInAction' && g.r.canTy).map(g => JSON.stringify(g.rows.map(x => x.id)));
   const sel = retSel(); for (const k of [...sel]) if (!acts.includes(k)) sel.delete(k);
   const bulk = acts.length > 1 ? `<div class="rbulk"><button class="btn sm" data-act="ret-selall">${sel.size === acts.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(sel.size)} / ${fmtN(acts.length)} seçili</span><button class="btn sm primary" data-act="ret-bulk" ${sel.size ? '' : 'disabled'}>Seçilenleri onayla</button></div>` : '';
@@ -2426,13 +2424,33 @@ async function submitReturn(){
 async function returnDecision(id, accept, viaTy){
   const ids = retIds(id), rows = ids.map(i => S.returns.find(x => x.id === i)).filter(Boolean); if (!rows.length) return;
   const r = rows[0], qty = rows.reduce((s, x) => s + (Number(x.qty) || 0), 0);
-  const defect = rows.some(x => INSPECT_RE.test(`${x.reason || ''} ${x.cnote || ''} ${x.note || ''}`.toLocaleLowerCase('tr-TR')));
+  const defect = false;
   const tail = defect ? ` <b>Kusurlu iade:</b> stoğa hemen eklenmez, <b>Kusurlu iadeler</b> paneline düşer; ürünü kontrol edip sağlam/kırık işaretlersin.` : ' ve ortak stoğa eklenecek.';
   if (accept && !(await confirmBox(viaTy ? `<b>${fmtN(qty)} adet</b> ${esc(r.name)} iadesi <b>Trendyol'da onaylanacak</b> (müşteriye para iadesi yapılır)${defect ? '.' + tail : tail} Devam edilsin mi?` : `<b>${fmtN(qty)} adet</b> ${esc(r.name)} depoya ulaştı ve kabul edildi.${defect ? tail : ' Ortak stoğa eklensin mi?'}`, viaTy ? 'Onayla' : defect ? 'Kabul et' : 'Stoğa ekle'))) return;
   if (!accept && !(await confirmBox('İade burada reddedilecek; stok değişmez. Trendyol\'a bir şey gönderilmez.', 'Reddet', true))) return;
-  await run(async () => { const d = await api('/api/returns/decide', {ids, accept, trendyol: !!viaTy}); await refresh(true); toast(accept ? (d.inspect ? `${d.tyApproved ? 'Trendyol\'da onaylandı. ' : ''}Kusurlu iade kontrole alındı: İadeler → Kusurlu iadeler'den sağlam/kırık işaretle.` : d.tyApproved ? `Trendyol'da onaylandı, ${fmtN(qty)} adet stoğa eklendi.` : `${fmtN(qty)} adet stoğa eklendi.`) : 'İade reddedildi.'); if (accept && d.inspect) openSheet('insp', {}); });
+  await run(async () => { const d = await api('/api/returns/decide', {ids, accept, trendyol: !!viaTy}); await refresh(true); toast(accept ? (d.inspect ? `${d.tyApproved ? 'Trendyol\'da onaylandı. ' : ''}Kusurlu iade kontrole alındı: İadeler → Kusurlu iadeler'den sağlam/kırık işaretle.` : d.tyApproved ? `Trendyol'da onaylandı, ${fmtN(qty)} adet stoğa eklendi.` : `${fmtN(qty)} adet stoğa eklendi.`) : 'İade reddedildi.'); });
 }
 
+/* ============ Kusurlu ürün düş (depoda kırık / kusurlu çıkan ürün) ============ */
+const WASTE_TAG = 'Kusurlu/ziyan';
+function sheetWaste(){
+  const sh = S.sheet, q = trFold(sh.q || ''), p = sh.key ? S.products.get(sh.key) : null;
+  const res = !p && q.length >= 2 ? productsArr().filter(x => !x.set && trFold(`${x.name} ${x.code} ${x.sku} ${x.barcode}`).includes(q)).slice(0, 12) : [];
+  const recent = (S.moves || []).filter(m => String(m.note || '').startsWith(WASTE_TAG) && m.delta < 0).slice(0, 40);
+  const cost = recent.reduce((t, m) => { const pp = S.products.get(m.key); return t + (pp && pp.cost ? pp.cost * -m.delta : 0); }, 0);
+  const R = ['Kırık', 'Kusurlu / defolu', 'Çizik / hasarlı', 'Eksik parça', 'Kullanılamaz'];
+  let body = `<div class="card" style="gap:10px">`;
+  if (!p) body += `<label class="f">Ürün<input class="input" id="ws-q" placeholder="Ürün adı, LH kodu, stok kodu ya da barkod" value="${esc(sh.q || '')}" autocomplete="off"></label>
+    ${res.length ? `<div class="afs">${res.map(x => `<button type="button" class="afo" data-act="ws-pick" data-id="${esc(x.id)}"><b class="mono">${esc(x.code || x.sku)}</b> · ${esc(x.name)} <span class="muted small">· stok ${fmtN(x.qty)}</span></button>`).join('')}</div>` : q.length >= 2 ? '<div class="small muted">Eşleşen ürün yok.</div>' : '<div class="small muted">Aramak için en az 2 harf yaz. Barkod okuyucuyla da okutabilirsin.</div>'}`;
+  else body += `<div style="display:flex;gap:12px;align-items:center">${thumb(p)}<div style="min-width:0;flex:1"><div style="font-weight:700;overflow-wrap:anywhere">${esc(p.name)}</div><div class="small muted"><span class="mono">${esc(p.code || p.sku)}</span> · depodaki stok <b>${fmtN(p.qty)}</b>${p.cost ? ' · birim maliyet ' + esc(tl2(p.cost)) : ''}</div></div><button class="btn sm ghost" data-act="ws-clear">Değiştir</button></div>
+    <div class="grid2"><label class="f">Kaç adet kusurlu?<input class="input num" id="ws-n" inputmode="numeric" value="${esc(sh.n || '1')}"></label>
+      <label class="f">Sebep<select class="input" id="ws-r">${R.map(x => `<option ${x === (sh.r || R[0]) ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label></div>
+    <label class="f">Not (isteğe bağlı)<input class="input" id="ws-note" placeholder="Örn. iade #10234'ten kırık çıktı" value="${esc(sh.note || '')}"></label>
+    <button class="btn primary" style="background:var(--bad);border-color:var(--bad)" data-act="ws-save">Stoktan düş</button>`;
+  body += `</div><div class="spread" style="margin:14px 2px 6px"><h3 style="margin:0;font-size:15px">Son düşülen kusurlu ürünler</h3><span class="small muted">${recent.length ? fmtN(recent.reduce((t, m) => t - m.delta, 0)) + ' adet' + (cost ? ' · ' + tl2(cost) + ' zarar' : '') : ''}</span></div>`;
+  body += recent.length ? `<div class="list">${recent.map(m => { const pp = S.products.get(m.key); return `<div class="item" style="cursor:default">${thumb(pp || {name: m.name})}<div class="main"><div class="ttl">${esc(m.name)}</div><div class="meta"><span>${esc(fmtDate(m.t))}</span><span>${esc(String(m.note).slice(WASTE_TAG.length + 3))}</span></div></div><div class="end"><b style="color:var(--bad)">${fmtN(m.delta)}</b><button class="btn sm ghost" data-act="ws-undo" data-id="${esc(String(m.id))}">Geri al</button></div></div>`; }).join('')}</div>` : '<div class="card"><p class="muted small" style="margin:0">Henüz kusurlu ürün düşülmedi.</p></div>';
+  return {title: 'Kusurlu ürün düş', sub: '<span class="muted">Depoda kırık / kusurlu çıkan ürünü stoktan düş</span>', body};
+}
 /* ============ Kusurlu iadeler: tek tek sağlam / kırık ============ */
 const INSPECT_RE = /kusurlu|hasarl[ıi]|defolu|ay[ıi]pl[ıi]|bozuk|k[ıi]r[ıi]k|[çc]al[ıi][şs]m[ıi]yor|çizik|yırtık|eksik parça|parça eksik/;
 function sheetInsp(){
@@ -3380,7 +3398,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, insp:sheetInsp, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -3411,6 +3429,8 @@ document.addEventListener('input', e => { const t = e.target; if (!t || !t.datas
   if (t.dataset.pu !== undefined) { const x = D.items[Number(t.dataset.pu)]; if (x) { x.unit = Math.max(0, Number(t.value) || 0); purTotals(); } }
   if (t.dataset.ps !== undefined) purSearch(t);
   if (t.id === 'pur-sup') D.supplier = t.value; if (t.id === 'pur-doc') D.doc_no = t.value; if (t.id === 'pur-date') D.date = t.value; });
+document.addEventListener('keydown', e => { const t = e.target; if (!t || t.id !== 'ws-q' || e.key !== 'Enter' || !S.sheet) return; e.preventDefault(); const v = t.value.trim(), f = trFold(v); const ex = productsArr().find(x => !x.set && [x.barcode, x.code, x.sku].some(y => y && trFold(y) === f)) || (() => { const r = productsArr().filter(x => !x.set && trFold(`${x.name} ${x.code} ${x.sku} ${x.barcode}`).includes(f)); return r.length === 1 ? r[0] : null; })(); if (ex) { S.sheet.key = ex.id; S.sheet.n = '1'; renderSheet(false); setTimeout(() => { const i = $('#ws-n'); if (i) { i.focus(); i.select(); } }, 30); } else toast('Ürün bulunamadı.', true); }, true);
+document.addEventListener('input', e => { const t = e.target; if (t && t.id === 'ws-q' && S.sheet && S.sheet.type === 'waste') { S.sheet.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { renderSheet(false); const i = $('#ws-q'); if (i) { i.focus(); const n = i.value.length; i.setSelectionRange(n, n); } }, 200); } });
 document.addEventListener('input', e => { const t = e.target; if (!t) return; if (t.id === 'buy-q') { bS().q = t.value; clearTimeout(qTimer); qTimer = setTimeout(render, 250); } if (t.dataset && t.dataset.buyqty) bS().qty[t.dataset.buyqty] = Math.max(0, parseInt(t.value, 10) || 0); if (t.dataset && t.dataset.buyin !== undefined) { const B = bS(), had = Object.keys(B.inq).some(k => Number(B.inq[k]) > 0); B.inq[t.dataset.buyin] = t.value.replace(/\D/g, ''); const has = Object.keys(B.inq).some(k => Number(B.inq[k]) > 0); if (had !== has) { const id = t.dataset.buyin; render(); const el = document.querySelector(`[data-buyin="${CSS.escape(id)}"]`); if (el) { el.focus(); const n = el.value.length; el.setSelectionRange(n, n); } } } });
 document.addEventListener('change', e => { const t = e.target; if (t && t.dataset && t.dataset.buysel) { const B = bS(); if (t.checked) B.sel.add(t.dataset.buysel); else B.sel.delete(t.dataset.buysel); render(); } });
 document.addEventListener('input', e => { const t = e.target, N = S.addr && S.addr.no; if (!t || !N) return;
@@ -3487,6 +3507,15 @@ document.addEventListener('click', async e => {
     case 'need-open': openSheet('need', {}); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'insp-open': openSheet('insp', {}); break;
+    case 'ws-open': S.drawer = false; renderDrawer(); openSheet('waste', {q: ''}); setTimeout(() => { const i = $('#ws-q'); if (i) i.focus(); }, 40); break;
+    case 'ws-pick': if (S.sheet) { S.sheet.key = id; S.sheet.n = '1'; renderSheet(false); setTimeout(() => { const i = $('#ws-n'); if (i) { i.focus(); i.select(); } }, 30); } break;
+    case 'ws-clear': if (S.sheet) { S.sheet.key = null; S.sheet.q = ''; renderSheet(false); setTimeout(() => { const i = $('#ws-q'); if (i) i.focus(); }, 30); } break;
+    case 'ws-save': { const sh = S.sheet, p = sh && S.products.get(sh.key); if (!p) break; const n = parseInt(($('#ws-n') || {}).value, 10), r = ($('#ws-r') || {}).value || 'Kusurlu', note = (($('#ws-note') || {}).value || '').trim();
+      if (!(n > 0)) { toast('Adedi yaz.', true); break; }
+      if (!(await confirmBox(`<b>${fmtN(n)} adet</b> ${esc(p.name)} kusurlu olarak stoktan düşülsün mü?<br><span class="small muted">Stok ${fmtN(p.qty)} → ${fmtN(p.qty - n)}${p.cost ? ' · zarar ' + esc(tl2(p.cost * n)) : ''}</span>`, 'Stoktan düş', true))) break;
+      await run(async () => { const d = await api('/api/stock', {key: p.id, mode: 'out', n, note: `${WASTE_TAG} · ${r}${note ? ' · ' + note : ''}`}); sh.key = null; sh.q = ''; await refresh(true); renderSheet(false); toast(`${fmtN(n)} adet düşüldü. Yeni stok: ${fmtN(d.qty)}.`); setTimeout(() => { const i = $('#ws-q'); if (i) i.focus(); }, 30); }); break; }
+    case 'ws-undo': { const m = (S.moves || []).find(x => String(x.id) === id); if (!m) break; if (!(await confirmBox(`${esc(m.name)}: ${fmtN(-m.delta)} adet geri stoğa eklensin mi?`, 'Geri al'))) break;
+      await run(async () => { await api('/api/stock', {key: m.key, mode: 'in', n: -m.delta, note: `Kusurlu düşümü geri alındı (${fmtDate(m.t)})`}); await refresh(true); renderSheet(false); toast('Geri alındı.'); }); break; }
     case 'insp-tab': if (S.sheet) { S.sheet.done = id === '1'; S.sheet.items = null; renderSheet(false); } break;
     case 'insp-nav': if (S.sheet && S.sheet.items) { S.sheet.i = (S.sheet.i + Number(id) + S.sheet.items.length) % Math.max(1, S.sheet.items.length); renderSheet(false); } break;
     case 'insp-do': await inspDo(Number(id) || 0); break;
