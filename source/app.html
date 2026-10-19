@@ -3042,7 +3042,19 @@ function suratCard(){
     <dt>Son gönderi</dt><dd>${d.ok ? esc(ago(d.ok)) : 'Henüz yok'}</dd>
     <dt>Takip</dt><dd>Şube okutunca takip no 30 dakikada bir alınır, Shopify'a işlenir ve müşteriye bildirim gider.${d.trackErr ? `<div style="color:var(--bad);font-size:12px">${esc(d.trackErr.slice(27) || d.trackErr)}</div>` : ''}</dd></dl>
     <p class="muted small" style="margin:0">Barkodlar <b>Adres düzeltme</b> sekmesinden oluşturulur.</p>
+    <div><button class="btn sm" data-act="sr-diag">🔎 Bağlantıyı test et</button></div>${S.srDiag ? srDiagHtml(S.srDiag) : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Son hata:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}</div>`;
+}
+function srDiagHtml(d){
+  if (d.loading) return loading();
+  if (d.err) return `<div class="banner bad" style="margin:0"><div>${esc(d.err)}</div></div>`;
+  const c = d.creds || {}, ci = (x) => x ? `${x.len} karakter${x.space ? ' · <b style="color:var(--bad)">başında/sonunda boşluk var</b>' : ''}${x.nonAscii ? ' · Türkçe/özel harf var' : ''}` : 'yok';
+  return `<div class="srf small" style="gap:4px"><b>Test sonucu</b>
+    <div>Kullanıcı adı: <span class="mono">${esc((c.user || {}).mask || '')}</span> (${ci(c.user)}) · Cari kodu: <span class="mono">${esc((c.cari || {}).mask || '')}</span> (${ci(c.cari)})</div>
+    <div>Kayıtlı şifre: ${ci(c.pass)} · Web servis şifresi: ${ci(c.web)}</div>
+    ${(d.tests || []).map(t => `<div>• ${esc(t.label)} → Sürat: <b>${esc(t.msg)}</b></div>`).join('')}
+    ${d.schema ? `<details><summary>Teknik ayrıntı</summary><div class="mono" style="font-size:11px;overflow-wrap:anywhere">${esc(JSON.stringify(d.schema))}</div></details>` : ''}
+    <div class="muted">Bu ekranın fotoğrafını Claude'a gönder.</div></div>`;
 }
 // Shopify bağlantısı: siparişler ortak stoktan düşer (iptal / stoğa iade geri ekler)
 function shopifyCard(){
@@ -3436,6 +3448,7 @@ document.addEventListener('click', async e => {
     case 'sr-open': { const A = aS(); A.sr = id; if (!S.surat || S.surat.connected === undefined) suratCard(); render(); break; }
     case 'sr-close': aS().sr = null; render(); break;
     case 'sr-edit': S.srEdit = id === '1'; renderSheet(false); break;
+    case 'sr-diag': S.srDiag = {loading: true}; renderSheet(false); try { S.srDiag = await api('/api/surat/diag', {}); } catch(err) { S.srDiag = {err: errText(err)}; } renderSheet(false); break;
     case 'sr-man': aS().srm = id || null; render(); setTimeout(() => { const i = $('#sr-man'); if (i) i.focus(); }, 20); break;
     case 'sr-track': { const A = aS(); A.busy['sr' + id] = 'track'; render();
       try { const r = (await api('/api/surat/track', {gid: id})).r; srApply(id, r); toast(r.fulfilled ? `Takip no ${r.tracking} Shopify'a işlendi; müşteriye bildirim gitti.` : r.tracking ? `Takip no: ${r.tracking}${r.err ? ' · Shopify: ' + r.err : ''}` : `Henüz takip no yok${r.msg ? ' · Sürat: ' + r.msg : ''}. Paket şubede okutulunca gelir.`, !!r.err); }

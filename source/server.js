@@ -638,21 +638,22 @@ const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&'
 const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1]] = m[2]; return o; };
 async function srSchema(env, force) {
   const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
-  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 2) return c; } catch (e) {} }
+  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 3) return c; } catch (e) {} }
   const r = await fetch(SR_URL + '?WSDL', { headers: { 'user-agent': 'LilyaBackstage/1.0' } });
   if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
   const w = await r.text();
   const ns = (/targetNamespace="([^"]+)"/.exec(w) || [])[1] || 'http://tempuri.org/';
   const elBlock = (name) => { const re = new RegExp(`<(?:\\w+:)?element[^>]*name="${name}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?element>`); const m = re.exec(w); return m ? m[1] : null; };
   const fields = (block) => [...block.matchAll(/<(?:\w+:)?element\b[^>]*\/?>/g)].map(m => xmlAttrs(m[0])).filter(a => a.name).map(a => ({ name: a.name, type: String(a.type || '').replace(/^\w+:/, ''), tns: /^tns:/.test(a.type || ''), min: a.minOccurs == null ? 1 : Number(a.minOccurs) }));
-  let method = null, params = null;
-  for (const m of SR_METHODS) { const b = elBlock(m); if (b) { method = m; params = fields(b); break; } }
+  let method = null, params = null; const alts = [];
+  for (const m of SR_METHODS) { const b = elBlock(m); if (b) { const ps = fields(b); alts.push({ method: m, params: ps }); if (!method) { method = m; params = ps; } } }
+  const ops = [...w.matchAll(/<(?:\w+:)?element[^>]*name="(\w+)Response"/g)].map(m => m[1]);
   if (!method) throw new Error('Sürat web servisinde gönderi kaydetme işlemi bulunamadı.');
   const gp = params.find(p => p.tns); if (!gp) throw new Error('Sürat gönderi tanımı okunamadı.');
   const ct = new RegExp(`<(?:\\w+:)?complexType[^>]*name="${gp.type}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?complexType>`).exec(w);
   if (!ct) throw new Error('Sürat gönderi alanları okunamadı.');
   let query = null; for (const m of ['WebSiparisKodu', 'WebSiparisKoduToplu']) { const b = elBlock(m); if (b) { query = { method: m, params: fields(b) }; break; } }
-  const sc = { v: 2, ns, method, params, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
+  const sc = { v: 3, ns, method, params, alts, ops, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
   await env.DB.batch([setStmt(env, 'sr_schema', JSON.stringify(sc)), setStmt(env, 'sr_schema_at', String(Date.now()))]);
   return sc;
 }
@@ -669,8 +670,9 @@ function srEnvelope(sc, creds, g) {
   return `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${sc.method} xmlns="${sc.ns}">${px}</${sc.method}></soap:Body></soap:Envelope>`;
 }
 const SR_FAIL = /hata|error|exception|ge[cç]ersiz|hatal|yetki|bulunamad|ba[sş]ar[iı]s[iı]z|zorunlu|eksik|invalid|fault|tan[iı]ml[iı] de[gğ]il|kay[iı]tl[iı]/i;
-async function srSend(env, creds, g) {
-  const sc = await srSchema(env, false);
+async function srSend(env, creds, g, alt) {
+  let sc = await srSchema(env, false);
+  if (alt) { const a = (sc.alts || []).find(x => x.method === alt); if (!a) throw new Error('Sürat: ' + alt + ' yok'); sc = { ...sc, method: a.method, params: a.params }; }
   const body = srEnvelope(sc, creds, g);
   const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${sc.method}"` }, body });
   const t = await r.text();
@@ -2696,6 +2698,17 @@ ${catalog}` });
     return json({ ok: true });
   }
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
+  if (path === '/api/surat/diag') {
+    const cr = await srCreds(env), out = { creds: {}, tests: [] };
+    const info = (x) => ({ len: x.length, space: /^\s|\s$/.test(x), nonAscii: /[^\x20-\x7e]/.test(x) });
+    out.creds = { user: { ...info(cr.user), mask: cr.user.slice(0, 2) + '•••' + cr.user.slice(-2) }, cari: { ...info(cr.cari), mask: cr.cari.slice(0, 2) + '•••' + cr.cari.slice(-2) }, pass: info(cr.pass), web: cr.web ? info(cr.web) : null };
+    let sc; try { sc = await srSchema(env, true); out.schema = { ns: sc.ns, create: (sc.alts || []).map(a => a.method + '(' + a.params.map(p => p.name).join(', ') + ')'), query: sc.query ? sc.query.method + '(' + sc.query.params.map(p => p.name).join(', ') + ')' : null, ops: sc.ops }; } catch (e) { out.schema = { err: String(e.message || e) }; return json(out); }
+    const tries = [['Cari kodu + şifre', { ...cr, cari: cr.cari, web: '' }]];
+    if (cr.user && cr.user !== cr.cari) tries.push(['Kullanıcı adı + şifre', { ...cr, cari: cr.user, web: '' }]);
+    if (cr.web) tries.push(['Cari kodu + web servis şifresi', { ...cr, web: cr.web }]);
+    for (const [label, c] of tries) { try { const q = await srQuery(env, c, 'LH0'); out.tests.push({ label, msg: q.durum || q.raw || '(boş cevap)' }); } catch (e) { out.tests.push({ label, msg: String(e.message || e) }); } }
+    return json(out);
+  }
   if (path === '/api/surat/track') {
     const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
     const row = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(); if (!row) return bad('Bu siparişin Sürat barkodu yok.');
@@ -2728,7 +2741,7 @@ ${catalog}` });
     const L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
     const icerik = L.map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ').slice(0, 100);
     const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: 0, kapidanodemetutari: 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: '', irsaliyesirano: '' };
-    let res; try { res = await srSend(env, cr, g); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
+    let res; try { try { res = await srSend(env, cr, g); } catch (e1) { const sc = await srSchema(env, false), other = (sc.alts || []).find(a => a.method !== sc.method); if (other && /kullan|[şs]ifre|yetki/i.test(String(e1.message))) res = await srSend(env, cr, g, other.method); else throw e1; } } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
     const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel };
     await env.DB.batch([env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso()), setStmt(env, 'sr_ok', iso()), setStmt(env, 'sr_err', '')]);
     return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
