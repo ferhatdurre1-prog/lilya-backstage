@@ -2657,7 +2657,7 @@ ${catalog}` });
     return json({ ok: true, purchase: { ...r, items: JSON.parse(r.items || '[]') }, suppliers: sups });
   }
   if (path === '/api/purchase/stock') {
-    // STOĞA EKLE (kullanıcı onayıyla): eşleşmiş satırlar stoğa girer, maliyet ağırlıklı ortalamayla güncellenir
+    // STOĞA EKLE (kullanıcı onayıyla): eşleşmiş satırlar stoğa girer, maliyet fişteki birim fiyat olur
     const id = intOr(body.id, 0), r = await env.DB.prepare('SELECT * FROM purchases WHERE id=?1').bind(id).first();
     if (!r) return bad('Alış bulunamadı.', 404);
     if (r.status !== 'draft') return bad('Bu alış zaten stoğa eklenmiş.');
@@ -2669,7 +2669,7 @@ ${catalog}` });
     const st = [];
     for (const x of use) { const p = cur.get(x.pkey); if (!p) { x.skipped = true; continue; }
       const q0 = Math.max(0, Number(p.qty) || 0), c0 = p.cost === null || p.cost === undefined ? null : Number(p.cost);
-      const c1 = Math.round((c0 === null || q0 === 0 ? x.unit : (q0 * c0 + x.qty * x.unit) / (q0 + x.qty)) * 100) / 100;
+      const c1 = x.unit > 0 ? Math.round(x.unit * 100) / 100 : c0; // fişteki birim fiyat aynen yeni maliyet olur (ortalama yok, KDV eklenmez); fiyatsız satır maliyeti değiştirmez
       x.prevCost = c0; x.newCost = c1; x.stocked = true; p.qty = (Number(p.qty) || 0) + x.qty; p.cost = c1;
       st.push(...changeQty(env, x.pkey, x.qty, { type: 'in', channel: 'manuel', ref: 'pur:' + id, note: `Alış · ${r.supplier}${r.doc_no ? ' · ' + r.doc_no : ''} · alış #${id}` })); }
     for (const [k, p] of cur) st.push(env.DB.prepare('UPDATE products SET cost=?2, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso()));
