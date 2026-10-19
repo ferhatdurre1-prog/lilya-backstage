@@ -124,6 +124,7 @@ async function init0(env) {
   // Sürat Kargo gönderileri: kendi barkodumuz (OzelKargoTakipNo) ve Sürat'a bildirilen adres
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ship(ref TEXT PRIMARY KEY, gid TEXT, order_no TEXT, adet INTEGER, desi REAL, addr TEXT, lines TEXT, msg TEXT, at TEXT)').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS sr_ship_gid ON sr_ship(gid)').run();
+  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_listing1'`).first())) {
@@ -637,7 +638,7 @@ const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&'
 const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1]] = m[2]; return o; };
 async function srSchema(env, force) {
   const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
-  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { return JSON.parse(s.sr_schema); } catch (e) {} }
+  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 2) return c; } catch (e) {} }
   const r = await fetch(SR_URL + '?WSDL', { headers: { 'user-agent': 'LilyaBackstage/1.0' } });
   if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
   const w = await r.text();
@@ -650,7 +651,8 @@ async function srSchema(env, force) {
   const gp = params.find(p => p.tns); if (!gp) throw new Error('Sürat gönderi tanımı okunamadı.');
   const ct = new RegExp(`<(?:\\w+:)?complexType[^>]*name="${gp.type}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?complexType>`).exec(w);
   if (!ct) throw new Error('Sürat gönderi alanları okunamadı.');
-  const sc = { ns, method, params, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, at: iso() };
+  let query = null; for (const m of ['WebSiparisKodu', 'WebSiparisKoduToplu']) { const b = elBlock(m); if (b) { query = { method: m, params: fields(b) }; break; } }
+  const sc = { v: 2, ns, method, params, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
   await env.DB.batch([setStmt(env, 'sr_schema', JSON.stringify(sc)), setStmt(env, 'sr_schema_at', String(Date.now()))]);
   return sc;
 }
@@ -680,7 +682,56 @@ async function srSend(env, creds, g) {
   if (!res || SR_FAIL.test(msg)) throw new Error('Sürat kabul etmedi: ' + (msg || 'boş cevap'));
   return { msg, method: sc.method };
 }
-async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_pass', 'sr_desi']); return { cari: env.SURAT_CARI_KODU || s.sr_cari || '', pass: env.SURAT_SIFRE || s.sr_pass || '', desi: Number(s.sr_desi) || 2 }; }
+// Takip: bizim barkodumuzla (WebSiparisKodu) Sürat'ın takip numarası sorulur; şube okutunca dolar
+const SR_TRACK_URL = (no) => `https://suratkargo.com.tr/KargoTakip/?kargotakipno=${encodeURIComponent(no)}`;
+async function srQuery(env, creds, ref) {
+  const sc = await srSchema(env, false); const q = sc.query; if (!q) throw new Error('Sürat web servisinde gönderi sorgulama bulunamadı.');
+  const px = q.params.map(p => { const n = p.name;
+    const v = /cari|kullanici/i.test(n) ? creds.cari : /sifre|password|parola/i.test(n) ? (creds.web || creds.pass) : /siparis|referans|ozel|kod/i.test(n) ? ref : null;
+    return v == null ? '' : `<${n}>${xmlEsc(v)}</${n}>`; }).join('');
+  const body = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${q.method} xmlns="${sc.ns}">${px}</${q.method}></soap:Body></soap:Envelope>`;
+  const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${q.method}"` }, body });
+  const raw = await r.text(), fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(raw);
+  if (fault) throw new Error('Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 200));
+  const t = raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  const no = (/<KargoTakipNo>\s*(\d{6,20})\s*</i.exec(t) || /KargoTakipNo["'\s:=]*(\d{6,20})/i.exec(t) || /<TakipNo>\s*(\d{6,20})\s*</i.exec(t) || [])[1] || '';
+  const durum = ((/<(?:Son)?Durum>([^<]{1,120})</i.exec(t) || /<Mesaj>([^<]{1,160})</i.exec(t) || [])[1] || '').trim();
+  if (!r.ok) throw new Error(`Sürat ${r.status}: ${durum || t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`);
+  return { no, durum, raw: t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300) };
+}
+// Shopify'da siparişi "kargolandı" yapar ve takip numarasını müşteriye bildirir
+// Gerekli yetkiler: read_merchant_managed_fulfillment_orders, write_merchant_managed_fulfillment_orders
+async function shFulfill(env, c, gid, number) {
+  let d; try { d = await shGql(env, c, `query($id:ID!){order(id:$id){fulfillmentOrders(first:10){nodes{id status}}}}`, { id: gid }); }
+  catch (e) { throw new Error(/access|scope|denied/i.test(String(e.message)) ? 'Shopify uygulamasına read_merchant_managed_fulfillment_orders ve write_merchant_managed_fulfillment_orders yetkilerini ekleyip yeni sürüm yayınla, mağazada onayla.' : String(e.message || e)); }
+  const open = (((d.order || {}).fulfillmentOrders || {}).nodes || []).filter(f => ['OPEN', 'IN_PROGRESS', 'SCHEDULED'].includes(f.status));
+  if (!open.length) return { already: true };
+  const r = await shGql(env, c, `mutation($f:FulfillmentInput!){fulfillmentCreate(fulfillment:$f){fulfillment{id status}userErrors{field message}}}`,
+    { f: { lineItemsByFulfillmentOrder: open.map(f => ({ fulfillmentOrderId: f.id })), notifyCustomer: true, trackingInfo: { company: 'Sürat Kargo', number, url: SR_TRACK_URL(number) } } })
+    .catch(e => { throw new Error(/access|scope|denied/i.test(String(e.message)) ? 'Shopify uygulamasına write_merchant_managed_fulfillment_orders yetkisini ekleyip yeni sürüm yayınla, mağazada onayla.' : String(e.message || e)); });
+  const ue = r.fulfillmentCreate.userErrors || []; if (ue.length) throw new Error('Shopify: ' + ue.map(e => e.message).join(' · '));
+  return { ok: true };
+}
+// Bir gönderinin takip numarasını sor; geldiyse Shopify'a işle
+async function srTrackOne(env, row, cr, c) {
+  let tr = row.tracking || '', msg = row.track_msg || '';
+  if (!tr) { const q = await srQuery(env, cr, row.ref); tr = q.no; msg = q.durum || q.raw; }
+  const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 200))];
+  let fulfilled = false, ferr = '';
+  if (tr && !row.fulfilled_at && shConfigured(c)) { try { await shFulfill(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } }
+  if (fulfilled) st.push(env.DB.prepare('UPDATE sr_ship SET fulfilled_at=?2, fulfill_err=NULL WHERE gid=?1').bind(row.gid, iso()));
+  else if (ferr) st.push(env.DB.prepare('UPDATE sr_ship SET fulfill_err=?2 WHERE ref=?1').bind(row.ref, ferr));
+  await env.DB.batch(st);
+  return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
+}
+async function srTrackPending(env) {
+  const cr = await srCreds(env); if (!cr.cari || !cr.pass) return null;
+  const c = await shCreds(env);
+  const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT 15`).bind(iso(Date.now() - 21 * 86400000)).all();
+  const out = []; for (const r of results) { try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); break; } }
+  return { checked: out.length, fulfilled: out.filter(x => x.fulfilled).length };
+}
+async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_pass', 'sr_web', 'sr_desi']); return { cari: env.SURAT_CARI_KODU || s.sr_cari || '', pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
 const SR_ORDER_Q = `query($id:ID!){order(id:$id){id name email phone cancelledAt displayFulfillmentStatus shippingAddress{${'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone'}} totalPriceSet{shopMoney{amount}}
   lineItems(first:50){nodes{name sku quantity unfulfilledQuantity variant{id} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} image{url}}}}}`;
 function shAddrErr(e) {
@@ -1533,7 +1584,7 @@ const qLeft = (env) => env.__q ? Q_LIMIT - env.__q.n : Infinity;
 async function heavySteps(env, budget, result, step, left, t) {
   {
     // Ağır işler seyrek çalışır; veritabanını sürekli meşgul edip ekranları yavaşlatmasın
-    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at']); const now = Date.now();
+    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at', 'run_sr_at']); const now = Date.now();
     const lvl = (GUARD_CACHE && GUARD_CACHE.v && GUARD_CACHE.v.level) || 0, mult = lvl >= 2 ? 6 : lvl === 1 ? 3 : 1;
     const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms * mult;
     const ok = (need) => qLeft(env) > need;
@@ -1545,6 +1596,8 @@ async function heavySteps(env, budget, result, step, left, t) {
     if (left() > 8000 && ok(40)) await step('shPush', async () => { try { return await pushShopifyStock(env); } catch (e) { await setSetting(env, 'sh_push_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } });
     // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
     if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) > 6 * 3600000 && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
+    // Sürat: şube okuttuysa takip numarası alınıp Shopify'a işlenir (müşteriye bildirim) — 30 dakikada bir
+    if (left() > 12000 && ok(80) && isDue('run_sr_at', 30 * 60000)) { await setSetting(env, 'run_sr_at', String(now)); await step('surat', () => srTrackPending(env), 'sr_track_err'); }
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 8000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env, Date.now() + Math.min(15000, left() - 5000)));
     if (left() > 8000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
@@ -2624,23 +2677,30 @@ ${catalog}` });
         total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0).map(l => `${l.unfulfilledQuantity}× ${l.name}`),
         addr: o.shippingAddress || null }));
       const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
-      const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
+      const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
       return json({ ok: true, orders, log, ships, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   // ---------- Sürat Kargo ----------
   if (path === '/api/surat/status') {
     const c = await srCreds(env), s = await getSettings(env, ['sr_err', 'sr_ok']);
-    return json({ connected: !!(c.cari && c.pass), cari: c.cari ? c.cari.slice(0, 2) + '•••' + c.cari.slice(-2) : '', desi: c.desi, err: s.sr_err || '', ok: s.sr_ok || '' });
+    const tk = await getSettings(env, ['sr_track_err']);
+    return json({ connected: !!(c.cari && c.pass), cari: c.cari ? c.cari.slice(0, 2) + '•••' + c.cari.slice(-2) : '', web: !!c.web, desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
   }
   if (path === '/api/surat/connect') {
     const cari = String(body.cari || '').trim(), pass = String(body.pass || '').trim(), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2));
     if (!cari || !pass) return bad('Cari kodu ve şifre gerekli.');
     try { await srSchema(env, true); } catch (e) { return bad(String(e.message || e)); }
-    await env.DB.batch([setStmt(env, 'sr_cari', cari), setStmt(env, 'sr_pass', pass), setStmt(env, 'sr_desi', String(desi)), setStmt(env, 'sr_err', '')]);
+    await env.DB.batch([setStmt(env, 'sr_cari', cari), setStmt(env, 'sr_pass', pass), setStmt(env, 'sr_web', String(body.web || '').trim()), setStmt(env, 'sr_desi', String(desi)), setStmt(env, 'sr_err', '')]);
     return json({ ok: true });
   }
-  if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi))]); return json({ ok: true }); }
+  if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
+  if (path === '/api/surat/track') {
+    const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
+    const row = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(); if (!row) return bad('Bu siparişin Sürat barkodu yok.');
+    if (body.number !== undefined) { const n = String(body.number || '').replace(/\D/g, ''); if (n.length < 6) return bad('Takip numarası geçersiz.'); row.tracking = n; row.track_msg = 'Elle girildi'; }
+    try { return json({ ok: true, r: await srTrackOne(env, row, cr, await shCreds(env)) }); } catch (e) { return bad(String(e.message || e)); }
+  }
   if (path === '/api/surat/disconnect') { await env.DB.batch([setStmt(env, 'sr_cari', ''), setStmt(env, 'sr_pass', '')]); return json({ ok: true }); }
   if (path === '/api/surat/schema') { try { const sc = await srSchema(env, true); return json({ ok: true, method: sc.method, fields: sc.gonderi.fields.map(f => f.name + (f.min ? '*' : '')) }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/ship') {
