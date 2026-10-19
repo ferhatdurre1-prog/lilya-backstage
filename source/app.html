@@ -408,13 +408,14 @@ const ICONS = {
   home:'<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
   link:'<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
   reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  buy:'<path d="M3 4h2l2.4 11.2a1 1 0 001 .8h9.2a1 1 0 001-.8L20 8H6.2"/><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/>',
   addr:'<path d="M12 21s-7-6.2-7-11.5A7 7 0 0119 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   questions:'<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1.1-4.6A8 8 0 1121 12z"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.5-1.5 1-1.5 2"/><path d="M12 16.5h.01"/>',
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
-const TABS = [['home','Ana ekran'],['stock','Stoklar'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
+const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
 const NAV_MAIN = ['stock','orders','profit']; // alt çubukta görünenler; diğerleri sol menüde
-const TAB_SHORT = {questions:'Soru', addr:'Adres', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
+const TAB_SHORT = {questions:'Soru', addr:'Adres', buy:'Sipariş ver', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
 
 /* ============ Durum ============ */
 const S = {
@@ -687,7 +688,7 @@ function render(){
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
-  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr}[S.tab])();
+  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr, buy:viewBuy}[S.tab])();
   enhanceTables(v);
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
@@ -959,6 +960,49 @@ async function addrSave(gid, e, before){
   toast(r.noProv ? 'Adres kaydedildi; il kodu Shopify\'da değiştirilemedi, il alanını Shopify panelinden kontrol et.' : r.noZip ? 'Adres Shopify\'da güncellendi. Posta kodu yeni ille uyuşmadığı için boş bırakıldı.' : 'Adres Shopify\'da güncellendi.', !!r.noProv);
   return true;
 }
+/* ============ Sipariş ver (stoksuz satış ürünleri) ============ */
+// Stoksuz satış işaretli ürünler: satılıp alınmamış adet (eksi stok) = sipariş verilecek; tedarikçiye göre gruplu, seçilip liste çıkarılır
+function bS(){ if (!S.buy) S.buy = {sel: new Set(), qty: {}, sup: null, loading: false, all: false, q: ''}; return S.buy; }
+function loadBuySup(){ const B = bS(); if (B.sup || B.loading) return; B.loading = true;
+  api('/api/buy/suppliers', {}).then(d => { B.sup = d.map || {}; B.loading = false; if (S.tab === 'buy') render(); }).catch(() => { B.sup = {}; B.loading = false; }); }
+function buyRows(){ const B = bS(), q = trFold(B.q);
+  return productsArr().filter(p => p.mto && (B.all || p.qty < 0) && (!q || trFold(`${p.name} ${p.code} ${p.sku}`).includes(q)))
+    .map(p => { const sp = (B.sup || {})[p.id] || {}, need = Math.max(0, -p.qty);
+      const ords = [...new Set((S.orders || []).filter(o => o.status !== 'cancelled' && (o.lines || []).some(l => l.pkey === p.id && l.status !== 'cancelled')).slice(0, 5).map(o => '#' + o.orderNo))];
+      return {p, need, qty: B.qty[p.id] != null ? B.qty[p.id] : need, sup: sp.supplier || '', unit: sp.unit || p.cost || 0, ords}; })
+    .sort((a, b) => (a.sup || 'zzz').localeCompare(b.sup || 'zzz', 'tr') || b.need - a.need || String(a.p.name).localeCompare(String(b.p.name), 'tr')); }
+function viewBuy(){
+  const B = bS(); loadBuySup(); const rows = buyRows(), all = productsArr().filter(p => p.mto), sold = all.filter(p => p.qty < 0);
+  const units = sold.reduce((t, p) => t + -p.qty, 0);
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Sipariş ver</h2><p class="lead small">Stoksuz satışa aldığın ürünler (Trendyol ve Shopify'da stok yokken de en az 10 adet görünenler). Satılıp henüz alınmayanlar burada birikir; seçip tedarikçine sipariş listesi çıkar.</p></div>
+  <div class="home-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:12px"><div class="kpi"><div class="k">Stoksuz satıştaki ürün</div><div class="v">${fmtN(all.length)}</div></div><div class="kpi"><div class="k">Satılıp alınacak ürün</div><div class="v" style="color:${sold.length ? 'var(--orange)' : 'inherit'}">${fmtN(sold.length)}</div></div><div class="kpi"><div class="k">Alınacak toplam adet</div><div class="v">${fmtN(units)}</div></div></div>
+  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips"><button class="chip" data-act="buy-all" data-id="0" aria-pressed="${!B.all}">Alınacaklar · ${fmtN(sold.length)}</button><button class="chip" data-act="buy-all" data-id="1" aria-pressed="${B.all}">Tüm stoksuz satış ürünleri · ${fmtN(all.length)}</button></div>
+    <input class="input" id="buy-q" placeholder="Ürün ara" value="${esc(B.q)}" style="flex:1;min-width:180px"></div>`;
+  if (!all.length) return h + `<div class="panel empty"><h4>Stoksuz satışta ürün yok</h4><p>Stoklar'da ürünü açıp <b>Stoksuz satış → Aç</b> de (ya da Stoklar'da <b>Seç</b> ile toplu). Stok bitse de kanallarda satılmaya devam eder, satılanlar burada listelenir.</p></div>`;
+  if (!rows.length) return h + `<div class="panel empty"><h4>${B.all ? 'Eşleşen ürün yok' : 'Alınacak ürün yok'}</h4><p>${B.all ? 'Aramayı değiştir.' : 'Stoksuz satıştaki ürünlerden henüz satılan yok. Satıldıkça burada görünür.'}</p></div>`;
+  const ns = rows.filter(r => B.sel.has(r.p.id)).length, allSel = rows.every(r => B.sel.has(r.p.id));
+  h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px;position:sticky;top:0;background:var(--surface);z-index:5"><b class="small">${fmtN(ns)} ürün seçili</b><div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="buy-selall">${allSel ? 'Seçimi kaldır' : 'Tümünü seç'}</button><button class="btn sm primary" data-act="buy-list" ${ns ? '' : 'disabled'}>📋 Sipariş listesi çıkar</button><button class="btn sm ghost" data-act="buy-mtooff" ${ns ? '' : 'disabled'}>Stoksuz satıştan çıkar</button></div></div>`;
+  let last = null;
+  for (const r of rows) { const p = r.p, g = r.sup || 'Tedarikçi belli değil';
+    if (g !== last) { const gr = rows.filter(x => (x.sup || 'Tedarikçi belli değil') === g); h += `<div class="spread" style="margin:14px 2px 6px"><h3 style="margin:0;font-size:15px">${esc(g)} <span class="muted small">· ${fmtN(gr.length)} ürün · ${fmtN(gr.reduce((t, x) => t + x.need, 0))} adet alınacak</span></h3><button class="btn sm ghost" data-act="buy-selsup" data-id="${esc(g)}">Bu tedarikçiyi seç</button></div>`; last = g; }
+    const on = B.sel.has(p.id);
+    h += `<div class="card" style="gap:6px;padding:10px 12px;${on ? 'border-color:var(--accent)' : ''}"><div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:10px;align-items:center">
+      <label class="chk"><input type="checkbox" data-buysel="${esc(p.id)}" ${on ? 'checked' : ''}></label>${thumb(p)}
+      <div style="min-width:0"><div class="ttl" style="font-weight:600;overflow-wrap:anywhere">${esc(p.name)}</div><div class="small muted"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span> · stok <b style="color:${p.qty < 0 ? 'var(--bad)' : 'inherit'}">${fmtN(p.qty)}</b>${r.need ? ` · <b style="color:var(--orange)">${fmtN(r.need)} adet satıldı, alınmadı</b>` : ''}${r.unit ? ' · son alış ' + esc(tl2(r.unit)) : ''}</div>${r.ords.length ? `<div class="small muted">Siparişler: ${esc(r.ords.join(', '))}</div>` : ''}</div>
+      <label class="f" style="width:84px;margin:0"><span class="small">Sipariş</span><input class="input num" data-buyqty="${esc(p.id)}" value="${esc(String(r.qty))}" inputmode="numeric"></label></div></div>`; }
+  return h;
+}
+function buyListText(rows){ const by = new Map(); for (const r of rows) { const g = r.sup || 'Tedarikçi belli değil'; (by.get(g) || by.set(g, []).get(g)).push(r); }
+  const d = new Date().toLocaleDateString('tr-TR'); let t = '';
+  for (const [g, L] of by) { t += `${g} — Lilya Home sipariş (${d})\n` + L.map((r, i) => `${i + 1}. ${r.p.name}${(S.buy.sup || {})[r.p.id] && S.buy.sup[r.p.id].code ? ' [' + S.buy.sup[r.p.id].code + ']' : ''} — ${r.qty} adet`).join('\n') + `\nToplam: ${L.reduce((a, r) => a + (Number(r.qty) || 0), 0)} adet\n\n`; }
+  return t.trim(); }
+function sheetBuyList(){ const B = bS(), rows = buyRows().filter(r => B.sel.has(r.p.id) && Number(r.qty) > 0), txt = buyListText(rows);
+  const cost = rows.reduce((a, r) => a + (r.unit || 0) * (Number(r.qty) || 0), 0);
+  if (!rows.length) return {title: 'Sipariş listesi', body: '<div class="card"><p class="muted" style="margin:0">Seçili ürünlerin sipariş adedi 0. Adetleri yazıp tekrar dene.</p></div>'};
+  return {title: 'Sipariş listesi', sub: `<span class="muted">${fmtN(rows.length)} ürün · ${fmtN(rows.reduce((a, r) => a + (Number(r.qty) || 0), 0))} adet${cost ? ' · yaklaşık ' + tl2(cost) : ''}</span>`,
+    body: `<div class="card" style="gap:10px"><p class="small muted" style="margin:0">Tedarikçine gönder: kopyala ya da WhatsApp ile paylaş. Ürünler gelince alış faturasıyla stoğa ekle; eksi stok kapanınca listeden düşer.</p>
+      <textarea class="input mono" id="buy-txt" rows="${Math.min(22, txt.split('\n').length + 1)}" style="font-size:13px">${esc(txt)}</textarea>
+      <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn primary" data-act="buy-copy">Kopyala</button><a class="btn" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">WhatsApp ile gönder</a></div></div>`}; }
 /* ============ Müşteri soruları ============ */
 function qS(){ if (!S.qna) S.qna = {tab:'waiting', data:null, at:0, loading:false, drafts:{}, open:{}, busy:{}}; return S.qna; }
 async function loadQna(force){
@@ -3301,7 +3345,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -3332,6 +3376,8 @@ document.addEventListener('input', e => { const t = e.target; if (!t || !t.datas
   if (t.dataset.pu !== undefined) { const x = D.items[Number(t.dataset.pu)]; if (x) { x.unit = Math.max(0, Number(t.value) || 0); purTotals(); } }
   if (t.dataset.ps !== undefined) purSearch(t);
   if (t.id === 'pur-sup') D.supplier = t.value; if (t.id === 'pur-doc') D.doc_no = t.value; if (t.id === 'pur-date') D.date = t.value; });
+document.addEventListener('input', e => { const t = e.target; if (!t) return; if (t.id === 'buy-q') { bS().q = t.value; clearTimeout(qTimer); qTimer = setTimeout(render, 250); } if (t.dataset && t.dataset.buyqty) bS().qty[t.dataset.buyqty] = Math.max(0, parseInt(t.value, 10) || 0); });
+document.addEventListener('change', e => { const t = e.target; if (t && t.dataset && t.dataset.buysel) { const B = bS(); if (t.checked) B.sel.add(t.dataset.buysel); else B.sel.delete(t.dataset.buysel); render(); } });
 document.addEventListener('input', e => { const t = e.target, N = S.addr && S.addr.no; if (!t || !N) return;
   if (t.dataset.nof) N.f[t.dataset.nof] = t.value;
   if (t.dataset.noi !== undefined) { const x = N.items[Number(t.dataset.noi)]; if (x) { if (t.dataset.k === 'qty') x.qty = Math.max(1, parseInt(t.value, 10) || 1); else x.price = t.value; }
@@ -3404,6 +3450,14 @@ document.addEventListener('click', async e => {
       if (!(await confirmBox(txt, clear ? 'Set olmaktan çıkar' : 'Seti kaydet'))) break;
       await run(async () => { await api('/api/products/bundle', {key: sh.id, items}); await refresh(true); toast(clear ? 'Set kaldırıldı.' : 'Set kaydedildi. Trendyol stoğu birkaç saniye içinde güncellenir.'); openSheet('product', {id: sh.id}); }); break; }
     case 'need-open': openSheet('need', {}); break;
+    case 'buy-all': bS().all = id === '1'; render(); break;
+    case 'buy-selall': { const B = bS(), rows = buyRows(); if (rows.every(r => B.sel.has(r.p.id))) rows.forEach(r => B.sel.delete(r.p.id)); else rows.forEach(r => B.sel.add(r.p.id)); render(); break; }
+    case 'buy-selsup': { const B = bS(); buyRows().filter(r => (r.sup || 'Tedarikçi belli değil') === id).forEach(r => B.sel.add(r.p.id)); render(); break; }
+    case 'buy-list': openSheet('buylist', {}); break;
+    case 'buy-copy': { const t = ($('#buy-txt') || {}).value || ''; try { await navigator.clipboard.writeText(t); toast('Sipariş listesi kopyalandı.'); } catch(e) { const ta = $('#buy-txt'); if (ta) { ta.select(); document.execCommand('copy'); toast('Kopyalandı.'); } } break; }
+    case 'buy-mtooff': { const B = bS(), keys = [...B.sel]; if (!keys.length) break;
+      if (!(await confirmBox(`${fmtN(keys.length)} ürün stoksuz satıştan çıkarılsın mı? Kanallara gerçek stok gönderilir (stok yoksa 0, satış durur).`, 'Çıkar'))) break;
+      await run(async () => { await api('/api/products/mto', {keys, on: false}); B.sel.clear(); await refresh(true); toast('Stoksuz satıştan çıkarıldı.'); }); break; }
     case 'psel-mode': S.psel = S.psel ? null : new Set(); render(); break;
     case 'psel': { if (!S.psel) break; S.psel.has(id) ? S.psel.delete(id) : S.psel.add(id); const r = b.querySelector('.rsel'); if (r) r.setAttribute('aria-pressed', String(S.psel.has(id))); const bar = $('#psel-bar'); if (bar) bar.innerHTML = pselBar(); break; }
     case 'psel-all': if (S.psel) { filteredProducts().slice(0, 300).forEach(p => S.psel.add(p.id)); render(); } break;

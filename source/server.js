@@ -2544,6 +2544,14 @@ ${catalog}` });
     const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name);
     return json({ ok: true, supplier: String(out.supplier || '').trim().slice(0, 120), doc_no: String(out.doc_no || '').slice(0, 60), date: /^\d{4}-\d{2}-\d{2}$/.test(out.date || '') ? out.date : '', total: Number(out.total) || null, items, suppliers: sups });
   }
+  // Sipariş ver: ürün başına son tedarikçi ve son alış fiyatı (alış listelerinden)
+  if (path === '/api/buy/suppliers') {
+    const { results } = await env.DB.prepare(`SELECT supplier, doc_date, t, items FROM purchases WHERE status IN ('stocked','draft') ORDER BY COALESCE(doc_date, t) DESC LIMIT 400`).all();
+    const map = {};
+    for (const r of results) { let items = []; try { items = JSON.parse(r.items || '[]'); } catch (e) {}
+      for (const x of items) if (x.pkey && !map[x.pkey]) map[x.pkey] = { supplier: r.supplier || '', unit: Number(x.unit) || 0, date: r.doc_date || String(r.t || '').slice(0, 10), code: x.code || '' }; }
+    return json({ ok: true, map });
+  }
   if (path === '/api/purchase/save') {
     // Alış listesini KAYDET (taslak): stok ve maliyet DEĞİŞMEZ, cariye işlenmez. Stoğa ekleme ve cari ayrı, onaylı adımlar.
     const supplier = String(body.supplier || '').trim().slice(0, 120); if (!supplier) return bad('Tedarikçi adını yaz.');
