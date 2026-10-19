@@ -3254,6 +3254,19 @@ function usageCard(){
     <p class="small muted" style="margin:0">Cloudflare'de ayrıca <b>Notifications → Add → Usage Based Billing</b> uyarısı kurarsan, ek ücret ihtimalinde e-posta da gelir.</p></div>`;
 }
 // Sürat Kargo bağlantısı: Shopify siparişleri kendi barkodumuzla Sürat'a bildirilir (ön kabul)
+function bkCard(){
+  const H = S.bk;
+  if (!H || (!H.loading && H.loadedAt && Date.now() - H.loadedAt > 30000)) { S.bk = {...(H || {}), loading: true}; api('/api/bk/status', {}).then(d => { S.bk = {...d, loadedAt: Date.now()}; if (S.sheet) renderSheet(false); }).catch(e => { S.bk = {err: errText(e), loadedAt: Date.now()}; }); }
+  const d = S.bk || {}, badge = '<span class="pill p-brass">Basit Kargo</span>';
+  if (d.loading && d.connected === undefined) return `<div class="card"><h3>${badge}</h3>${loading()}</div>`;
+  const info = `<p class="muted small" style="margin:0">17.10.2026 saat 10:00'a kadar Basit Kargo'dan giden Shopify siparişlerinin <b>gerçek kargo ücreti</b> ve <b>kapıda ödeme bedeli</b> buradan alınır ve Kâr hesabında sabit Shopify kargo ücretinin yerine kullanılır. Sonraki siparişler Sürat Kargo'yla gittiği için etkilenmez.</p>`;
+  if (!d.connected || S.bkEdit) return `<div class="card" style="gap:8px"><div class="spread"><h3 style="margin:0">${badge} ${d.connected ? 'Anahtarı değiştir' : 'Bağlan'}</h3>${d.connected ? '<button class="btn sm ghost" data-act="bk-edit" data-id="0">Vazgeç</button>' : ''}</div>${info}
+    <p class="small" style="margin:0">Basit Kargo panelinde <b>hesap ayarları → API</b> bölümünden bir anahtar (token) oluştur, aşağıya yapıştır. Anahtarı kimseyle paylaşma.</p>
+    <form id="f-bk" class="row" style="gap:6px;flex-wrap:wrap"><input class="input mono" id="bk-token" type="password" placeholder="API anahtarı (token)" autocomplete="off" required style="flex:1;min-width:200px"><button class="btn primary" type="submit">Bağlan</button></form></div>`;
+  return `<div class="card" style="gap:8px"><div class="spread"><h3 style="margin:0">${badge} <span class="pill p-good">Bağlı</span></h3><div class="row" style="gap:6px"><button class="btn sm ghost" data-act="bk-edit" data-id="1">Anahtarı değiştir</button><button class="btn sm ghost" data-act="bk-off" style="color:var(--bad)">Bağlantıyı kes</button></div></div>${info}
+    <dl class="kv" style="margin:0"><dt>Okunan gönderi</dt><dd>${fmtN(d.n)}${d.from ? ` · ${esc(d.from)} – ${esc(d.to)}` : ''}</dd><dt>Ücreti gelen</dt><dd>${fmtN(d.withFee)}</dd><dt>Kapıda ödemeli</dt><dd>${fmtN(d.cod)}${d.codPending ? ` · <span style="color:var(--warn)">${fmtN(d.codPending)} bedeli bekliyor</span>` : ''}</dd><dt>Son eşitleme</dt><dd>${d.syncAt ? esc(new Date(d.syncAt).toLocaleString('tr-TR')) : '—'}${d.msg ? `<div class="small muted">${esc(d.msg)}</div>` : ''}</dd></dl>
+    <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm primary" data-act="bk-sync">${d.n ? 'Tekrar eşitle' : 'Gönderileri çek'}</button><button class="btn sm ghost" data-act="bk-sample">Alan teşhisi</button></div>${S.bkSample ? `<pre class="small mono" style="white-space:pre-wrap;max-height:260px;overflow:auto;margin:0;background:var(--surface-2);padding:8px;border-radius:8px">${esc(S.bkSample)}</pre>` : ''}</div>`;
+}
 function suratCard(){
   const H = S.surat;
   if (!H || (H.loadedAt && Date.now() - H.loadedAt > 30000 && !H.loading)) { if (!H || !H.loading) { S.surat = {...(H || {}), loading: true}; api('/api/surat/status', {}).then(d => { S.surat = {...d, loadedAt: Date.now()}; if (S.sheet) renderSheet(false); if (S.tab === 'addr') render(); }).catch(e => { S.surat = {err: errText(e), loadedAt: Date.now()}; }); } }
@@ -3348,6 +3361,7 @@ function sheetImport(){
   </div>
   ${shopifyCard()}
   ${suratCard()}
+  ${bkCard()}
   <div class="card"><h3>Dosyadan aktar</h3>
     <p class="muted small" style="margin:0">Diğer kanalların sipariş/ürün dosyasını (CSV, Excel) ya da eski uygulamanın yedeğini buraya yükleyebilirsin. Aynı dosyayı tekrar yüklemek stoğu iki kez düşürmez.</p>
     ${stage}
@@ -3761,6 +3775,10 @@ document.addEventListener('click', async e => {
     case 'ad-fedit': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (!o) break; const k = b.dataset.k, E = A.edit[id] || addrForm(o.addr || {});
       A.field = {gid: id, k, v: k === 'phone' ? phoneShow(phoneFix(E.phone) || E.phone) : String(E[k] || '')}; render(); addrFocus(); break; }
     case 'ad-fok': addrFieldCommit(); break;
+    case 'bk-edit': S.bkEdit = id === '1'; renderSheet(false); break;
+    case 'bk-off': if (!(await confirmBox('Basit Kargo bağlantısı kesilsin mi? Okunan gönderiler ve kâr hesabı korunur.', 'Bağlantıyı kes', true))) break; await run(async () => { await api('/api/bk/disconnect', {}); S.bk = null; renderSheet(false); }); break;
+    case 'bk-sync': b.disabled = true; b.textContent = 'Çekiliyor…'; await run(async () => { const r = await api('/api/bk/sync', {}); toast('Basit Kargo: ' + r.msg); S.bk = null; renderSheet(false); }); break;
+    case 'bk-sample': await run(async () => { const r = await api('/api/bk/sample', {}); S.bkSample = JSON.stringify(r.sample, null, 1).slice(0, 6000); renderSheet(false); }); break;
     case 'sr-open': { const A = aS(); A.sr = id; if (!S.surat || S.surat.connected === undefined) suratCard(); render(); break; }
     case 'sr-close': aS().sr = null; render(); break;
     case 'sr-trackall': { const A = aS(); A.trk = 1; render();
@@ -3897,6 +3915,7 @@ document.addEventListener('submit', async e => {
     await run(async () => { await api('/api/cari/terms', {supplier: sup, terms: t}); const C = cS(); C.terms = false; C.tk = null; toast(`${sup}: çalışma şekli kaydedildi.`); loadCari(true); loadCariDet(sup); }); return; }
   if (id === 'f-caripay') { const sup = ($('#cp-sup').value || '').trim(), amt = $('#cp-amt').value;
     await run(async () => { await api('/api/cari/pay', {supplier: sup, amount: amt, date: $('#cp-date').value, method: $('#cp-method').value, note: $('#cp-note').value}); const C = cS(); toast(`Ödeme kaydedildi: ${sup}.`); C.pre = null; if (C.open === '__new') C.open = sup; loadCari(true); loadCariDet(C.open); }); return; }
+  if (id === 'f-bk') { await run(async () => { await api('/api/bk/connect', {token: $('#bk-token').value}); S.bkEdit = false; S.bk = null; toast('Basit Kargo bağlandı. Şimdi "Gönderileri çek"e bas.'); renderSheet(false); }); return; }
   if (id === 'f-srweb') { await run(async () => { await api('/api/surat/settings', {desi: (S.surat || {}).desi || 2, web: $('#sr-web2').value}); S.surat = null; renderSheet(false); toast('Web servis şifresi kaydedildi.'); }); return; }
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
   if (id === 'f-srdesi') { await run(async () => { await api('/api/surat/settings', {desi: $('#sr-desi2').value}); S.surat = null; renderSheet(false); toast('Varsayılan desi kaydedildi.'); }); return; }

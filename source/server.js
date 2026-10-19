@@ -21,6 +21,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS bundles(pkey TEXT NOT NULL, comp TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(pkey, comp))`,
   `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS bk_ship(no TEXT PRIMARY KEY, bk_id TEXT, created TEXT, handler TEXT, status TEXT, fee REAL, cod INTEGER, cod_type TEXT, cod_amount REAL, cod_fee REAL, cod_status TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sup_pay(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier TEXT NOT NULL COLLATE NOCASE, date TEXT, amount REAL NOT NULL, method TEXT, note TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS sup_map(supplier TEXT NOT NULL, k TEXT NOT NULL, pkey TEXT NOT NULL, PRIMARY KEY(supplier, k))`,
   `CREATE TABLE IF NOT EXISTS out_lists(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, reason TEXT, note TEXT, markup REAL, disc REAL, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT)`,
@@ -272,6 +273,52 @@ function costPick(p, unit, date) {
   if (c0 !== null && d0 && date && d0 > date) return null;          // mevcut maliyet daha yeni fişten
   if (c0 !== null && d0 && date && d0 === date && c0 >= u) return null; // aynı tarih: yüksek olan kalır
   return u;
+}
+/* ---------- Basit Kargo (17.10.2026 10:00'a kadarki Shopify gönderileri) ---------- */
+const BK_CUTOFF = '2026-10-17T10:00', BK_CUTOFF_MS = Date.parse('2026-10-17T07:00:00Z');
+const bkTime = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(0, 19); // Türkiye saati, YYYY-MM-DDTHH:mm:ss
+async function bkCall(env, method, path, body) {
+  const tok = env.BASIT_KARGO_TOKEN || (await getSetting(env, 'bk_token')); if (!tok) throw new Error('Basit Kargo bağlı değil.');
+  const r = await fetch('https://basitkargo.com/api' + path, { method, headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', Accept: 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const txt = await r.text(); let data = null; try { data = JSON.parse(txt); } catch (e) {}
+  if (!r.ok) throw new Error((data && (data.message || data.error || data.detail)) || `HTTP ${r.status} ${txt.slice(0, 120)}`);
+  return { list: data, pages: Number(r.headers.get('X-Total-Pages')) || null, total: Number(r.headers.get('X-Total-Count')) || null };
+}
+function bkRow(o) {
+  const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
+  const no = String(c.code || o.orderNumber || o.foreignCode || o.code || '').replace(/\D/g, '');
+  const tc = N(pi.totalCost), fee = tc !== null ? tc + (N(pi.extraFee) || 0) : N(pi.shipmentFee) !== null ? (N(pi.shipmentFee) || 0) + (N(pi.extraFee) || 0) + (N(pi.returnFee) || 0) + (N(pi.extraServicesFee) || 0) : null;
+  const cod = ci.collectOnDelivery || ci.collect || /COD|DOOR|KAPI/i.test(String(o.orderPaymentType || '')) ? 1 : 0;
+  return { no, id: String(o.id || ''), created: String(o.createdTime || o.createdDate || '').slice(0, 10), handler: (sh.handler && (sh.handler.name || sh.handler.code)) || '', hcode: (sh.handler && sh.handler.code) || '', status: String(o.status || ''),
+    fee: fee === null ? null : r2(fee), cod, codType: ci.type || '', codAmount: N(ci.amount), codFee: N(ci.fee), codStatus: ci.collectionStatusText || ci.collectionStatus || '' };
+}
+async function bkSync(env) {
+  const T0 = Date.now(), rows = []; let page = 0, pages = 1;
+  while (page < pages && page < 60 && Date.now() - T0 < 20000) {
+    const r = await bkCall(env, 'POST', '/v2/order/filter', { startDate: '2024-01-01T00:00:00', endDate: bkTime(BK_CUTOFF_MS), page, size: 100, sortBy: 'CREATED_TIME' });
+    const L = Array.isArray(r.list) ? r.list : (r.list && (r.list.content || r.list.data || r.list.items)) || [];
+    for (const o of L) { const x = bkRow(o); if (x.no) rows.push(x); }
+    pages = r.pages || (L.length === 100 ? page + 2 : page + 1); page++;
+  }
+  const st = rows.map(x => env.DB.prepare(`INSERT INTO bk_ship(no, bk_id, created, handler, status, fee, cod, cod_type, cod_amount, cod_fee, cod_status, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+    ON CONFLICT(no) DO UPDATE SET bk_id=excluded.bk_id, created=excluded.created, handler=excluded.handler, status=excluded.status, fee=excluded.fee, cod=excluded.cod, cod_type=excluded.cod_type, cod_amount=excluded.cod_amount, cod_fee=COALESCE(excluded.cod_fee, bk_ship.cod_fee), cod_status=excluded.cod_status, at=excluded.at`)
+    .bind(x.no, x.id, x.created, x.handler, x.status, x.fee, x.cod, x.codType, x.codAmount, x.codFee, x.codStatus, iso()));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  // Kapıda ödeme bedeli siparişte yazmıyorsa, gönderen kargo firmasının ücret listesinden alınır
+  const hc = new Map(rows.map(x => [x.no, x.hcode]));
+  const need = (await env.DB.prepare('SELECT no, bk_id, handler FROM bk_ship WHERE cod=1 AND cod_fee IS NULL LIMIT 120').all()).results; let filled = 0;
+  for (let i = 0; i < need.length && Date.now() - T0 < 26000; i += 6) {
+    const part = need.slice(i, i + 6), res = await Promise.all(part.map(x => bkCall(env, 'GET', `/v2/order/${encodeURIComponent(x.bk_id)}/fee`).then(r => r.list).catch(() => null)));
+    const up = [];
+    part.forEach((x, j) => { const L = Array.isArray(res[j]) ? res[j] : []; const code = hc.get(x.no) || ''; const m = L.find(f => f.handlerCode === code) || L.find(f => String(f.handler || '') === x.handler) || null;
+      if (m && m.codFee !== undefined) { up.push(env.DB.prepare('UPDATE bk_ship SET cod_fee=?2 WHERE no=?1').bind(x.no, r2(m.codFee))); filled++; } });
+    if (up.length) await env.DB.batch(up);
+  }
+  const left = (await env.DB.prepare('SELECT COUNT(*) n FROM bk_ship WHERE cod=1 AND cod_fee IS NULL').first()).n;
+  const msg = `${rows.length} gönderi okundu${page < pages ? ` (${page}/${pages} sayfa, devam için tekrar eşitle)` : ''} · ${filled} kapıda ödeme bedeli eklendi${left ? ` · ${left} kapıda ödeme bedeli bekliyor` : ''}`;
+  const first = rows.reduce((a, x) => !a || (x.created && x.created < a) ? x.created : a, '');
+  await env.DB.batch([setStmt(env, 'bk_sync_at', iso()), setStmt(env, 'bk_sync_msg', msg), ...(first ? [env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(first)] : []), setStmt(env, 'home_cache', ''), REV(env)]);
+  return { n: rows.length, filled, left, more: page < pages, msg };
 }
 async function selectIn(env, sql, col, values, chunk = 80) {
   const out = [];
@@ -2027,7 +2074,7 @@ async function computeProfit(env, from, to) {
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
-  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR]] = await Promise.all([loadFees(env), env.DB.batch([
+  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day FROM products`),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note, kept, inspect, insp_ok FROM returns WHERE order_id<>'' AND status<>'rejected'`),
@@ -2037,7 +2084,9 @@ async function computeProfit(env, from, to) {
     env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%'),
     env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT COUNT(*) n FROM ad_spend'),
-    env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo)])]);
+    env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
+    env.DB.prepare('SELECT no, fee, cod_fee, handler FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10))])]);
+  const bkMap = new Map(bkR.results.map(x => [x.no, x]));
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
@@ -2124,7 +2173,10 @@ async function computeProfit(env, from, to) {
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
       if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi, g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi, g.carrier);
       if (g.defVal > 0) penalty += penaltyFor(g.defVal); cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (desi yok, 1 sayıldı)'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
-    else if (ch === 'shopify') cargo = fee.cargoSh;
+    else if (ch === 'shopify') { const bk = bkMap.get(String(ord.order_no || '').replace(/\D/g, ''));
+      // Basit Kargo'dan giden siparişte gerçek kargo ücreti + kapıda ödeme bedeli; yoksa ayardaki sabit Shopify kargo ücreti
+      if (bk && bk.fee !== null) { cargo = r2(bk.fee + (bk.cod_fee || 0)); cargoInfo.push(`Basit Kargo${bk.handler ? ' · ' + bk.handler : ''} · gerçek ücret${bk.cod_fee ? ' (kapıda ödeme bedeli ' + bk.cod_fee + ' TL dahil)' : ''}`); }
+      else cargo = fee.cargoSh; }
     // Platform hizmet bedeli: sipariş saat <kesim> (15:00) öncesi geldiyse indirimli (Bugün Kargoda), sonrası normal. Fatura detayı gelince gerçeği yazılır.
     const ordHour = ord.date ? new Date(Date.parse(ord.date) + TY_TZ).getUTCHours() : 23;
     let service = 0, fastPk = 0;
@@ -2920,6 +2972,25 @@ ${catalog}` });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   // ---------- Sürat Kargo ----------
+  if (path === '/api/bk/status') {
+    const s0 = await getSettings(env, ['bk_token', 'bk_sync_at', 'bk_sync_msg']), c = await env.DB.prepare('SELECT COUNT(*) n, SUM(fee IS NOT NULL) f, SUM(cod) c, SUM(cod=1 AND cod_fee IS NULL) cp, MIN(created) a, MAX(created) b FROM bk_ship').first();
+    return json({ connected: !!(env.BASIT_KARGO_TOKEN || s0.bk_token), syncAt: s0.bk_sync_at || '', msg: s0.bk_sync_msg || '', n: c.n || 0, withFee: c.f || 0, cod: c.c || 0, codPending: c.cp || 0, from: c.a || '', to: c.b || '', cutoff: BK_CUTOFF });
+  }
+  if (path === '/api/bk/connect') {
+    const t = String(body.token || '').trim(); if (t.length < 10) return bad('API anahtarını (token) yapıştır.');
+    try { await bkCall({ ...env, BASIT_KARGO_TOKEN: t }, 'POST', '/v2/order/filter', { page: 0, size: 1 }); } catch (e) { return bad('Basit Kargo bağlantısı kurulamadı: ' + e.message); }
+    await setSetting(env, 'bk_token', t); return json({ ok: true });
+  }
+  if (path === '/api/bk/disconnect') { await setSetting(env, 'bk_token', ''); return json({ ok: true }); }
+  if (path === '/api/bk/sync') {
+    try { const r = await bkSync(env); return json({ ok: true, ...r }); } catch (e) { await setSetting(env, 'bk_sync_msg', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad('Basit Kargo: ' + e.message, 502); }
+  }
+  if (path === '/api/bk/sample') {
+    // Teşhis: alan adlarını görmek için ilk 2 gönderinin kişisel bilgileri çıkarılmış yapısı
+    const L = await bkCall(env, 'POST', '/v2/order/filter', { page: 0, size: 2, endDate: bkTime(BK_CUTOFF_MS) });
+    const strip = (o, d = 0) => { if (Array.isArray(o)) return o.slice(0, 2).map(x => strip(x, d + 1)); if (!o || typeof o !== 'object') return o; const out = {}; for (const [k, v] of Object.entries(o)) out[k] = /name|phone|address|mail|city|town|district|street|surname|note|tckn|identity/i.test(k) && typeof v !== 'object' ? '•' : d > 4 ? '…' : strip(v, d + 1); return out; };
+    return json({ ok: true, sample: strip(L.list) });
+  }
   if (path === '/api/surat/status') {
     const c = await srCreds(env), s = await getSettings(env, ['sr_err', 'sr_ok']);
     const tk = await getSettings(env, ['sr_track_err', 'sr_mode']);
