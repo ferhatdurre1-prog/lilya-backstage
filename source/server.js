@@ -638,7 +638,7 @@ const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&'
 const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1]] = m[2]; return o; };
 async function srSchema(env, force) {
   const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
-  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 4) return c; } catch (e) {} }
+  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 5) return c; } catch (e) {} }
   const r = await fetch(SR_URL + '?WSDL', { headers: { 'user-agent': 'LilyaBackstage/1.0' } });
   if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
   const w = await r.text();
@@ -654,7 +654,8 @@ async function srSchema(env, force) {
   const ct = new RegExp(`<(?:\\w+:)?complexType[^>]*name="${gp.type}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?complexType>`).exec(w);
   if (!ct) throw new Error('Sürat gönderi alanları okunamadı.');
   let query = null; for (const m of ['WebSiparisKodu', 'WebSiparisKoduToplu']) { const b = elBlock(m); if (b) { query = { method: m, params: fields(b) }; break; } }
-  const sc = { v: 4, ns, method, params, alts, ops, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
+  const lists = {}; for (const m of ['CariKoduveSifre', 'KargoTakipHareketDetayliV2', 'WebSiparisKodundanKargoTeslimatBilgisi']) { const b = elBlock(m); if (b) lists[m] = fields(b); }
+  const sc = { v: 5, ns, method, params, alts, ops, lists, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
   await env.DB.batch([setStmt(env, 'sr_schema', JSON.stringify(sc)), setStmt(env, 'sr_schema_at', String(Date.now()))]);
   return sc;
 }
@@ -701,8 +702,46 @@ async function srQuery(env, creds, ref) {
   const no = (/<KargoTakipNo>\s*(\d{6,20})\s*</i.exec(t) || /KargoTakipNo["'\s:=]*(\d{6,20})/i.exec(t) || /<(\w*Takip\w*)>\s*(\d{8,20})\s*</i.exec(t) && [0, /<(\w*Takip\w*)>\s*(\d{8,20})\s*</i.exec(t)[2]] || /"\w*(?:Takip|Barkod)\w*"\s*:\s*"?(\d{8,20})/i.exec(t) || /<(?:\w*Barkod\w*)>\s*(\d{8,20})\s*</i.exec(t) || [])[1] || '';
   const durum = ((/<(?:Son)?Durum>([^<]{1,120})</i.exec(t) || /<Mesaj>([^<]{1,160})</i.exec(t) || [])[1] || '').trim();
   if (!r.ok) throw new Error(`Sürat ${r.status}: ${durum || t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`);
-  return { no, durum, raw: t.replace(/<\?xml[^>]*>|<\/?soap:[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 600) };
+  return { no, durum, raw: srText(t).slice(0, 600) };
 }
+// DataSet cevabı: şema atılır, satırlar (<Table diffgr:id=…>) alan → değer olarak okunur
+const srText = (t) => String(t).replace(/<xs:schema[\s\S]*?<\/xs:schema>/g, '').replace(/<\?xml[^>]*>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+function srRows(t) {
+  const body = String(t).replace(/<xs:schema[\s\S]*?<\/xs:schema>/g, ''), out = [];
+  for (const m of body.matchAll(/<(\w+)\s[^>]*diffgr:id="[^"]*"[^>]*>([\s\S]*?)<\/\1>/g)) { const o = {}; for (const f of m[2].matchAll(/<(\w+)(?:\s[^>]*)?>([^<]*)<\/\1>/g)) o[f[1]] = f[2].trim(); out.push(o); }
+  return out;
+}
+async function srCall(env, method, params, val) {
+  const sc = await srSchema(env, false);
+  const px = params.map(p => { const v = val(p); return v == null ? '' : `<${p.name}>${xmlEsc(v)}</${p.name}>`; }).join('');
+  const body = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${method} xmlns="${sc.ns}">${px}</${method}></soap:Body></soap:Envelope>`;
+  const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${method}"` }, body });
+  const raw = await r.text(), fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(raw);
+  if (fault) throw new Error('Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 200));
+  return raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+}
+// Cari koduna ait gönderiler (Sürat en çok 7 günlük aralık verir)
+async function srList(env, cr, days) {
+  const sc = await srSchema(env, false), ps = (sc.lists || {}).CariKoduveSifre; if (!ps) return null;
+  const d0 = new Date(Date.now() - (days || 6) * 86400000), d1 = new Date(Date.now() + 86400000);
+  const fmt = (d, p) => /date/i.test(p.type) ? d.toISOString().slice(0, 10) + 'T00:00:00' : `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${d.getUTCFullYear()}`;
+  const t = await srCall(env, 'CariKoduveSifre', ps, p => /cari|kullanici/i.test(p.name) ? cr.cari : /sifre|password|parola/i.test(p.name) ? (cr.web || cr.pass) : /bas|ilk|start|from/i.test(p.name) ? fmt(d0, p) : /bit|son|end|to$/i.test(p.name) ? fmt(d1, p) : null);
+  const rows = srRows(t), mesaj = ((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '').trim();
+  return { rows, mesaj, text: rows.length ? '' : srText(t).slice(0, 300) };
+}
+const srNorm = (x) => String(x || '').toLocaleUpperCase('tr').replace(/İ/g, 'I').replace(/[^A-Z0-9ÇĞÖŞÜ]/g, '');
+// Listeden bizim gönderiyi bul: barkodumuz (LH…), sipariş no ya da alıcı adı
+function srMatch(rows, ship) {
+  const ref = srNorm(ship.ref), no = String(ship.order_no || '').replace(/\D/g, ''); let a = {}; try { a = JSON.parse(ship.addr || '{}'); } catch (e) {}
+  const nm = srNorm(a.name), byName = [];
+  for (const r of rows) { const vals = Object.entries(r);
+    if (vals.some(([, v]) => srNorm(v) === ref || srNorm(v).includes(ref))) return r;
+    if (no && vals.some(([k, v]) => /referans|siparis|irsaliye/i.test(k) && String(v).replace(/\D/g, '') === no)) return r;
+    if (nm && vals.some(([k, v]) => /alici|unvan|kisi/i.test(k) && srNorm(v) === nm)) byName.push(r); }
+  return byName.length === 1 ? byName[0] : null;
+}
+const srRowTrack = (r) => { for (const [k, v] of Object.entries(r)) if (/takip|barkod/i.test(k) && /^\d{8,20}$/.test(String(v).trim())) return String(v).trim(); return ''; };
+const srRowState = (r) => { for (const [k, v] of Object.entries(r)) if (/durum|islem|hareket/i.test(k) && v) return String(v).slice(0, 120); return ''; };
 // Shopify'da siparişi "kargolandı" yapar ve takip numarasını müşteriye bildirir
 // Gerekli yetkiler: read_merchant_managed_fulfillment_orders, write_merchant_managed_fulfillment_orders
 async function shFulfill(env, c, gid, number) {
@@ -735,6 +774,8 @@ async function srTrackPending(env, limit) {
   const cr = await srCreds(env); if (!cr.cari || !cr.pass) return null;
   const c = await shCreds(env);
   const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
+  let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
+  for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
   const out = []; for (const r of results) { try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); break; } }
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
@@ -2711,11 +2752,14 @@ ${catalog}` });
     const tries = [['Cari kodu + şifre', { ...cr, cari: cr.cari, web: '' }]];
     if (cr.user && cr.user !== cr.cari) tries.push(['Kullanıcı adı + şifre', { ...cr, cari: cr.user, web: '' }]);
     if (cr.web) tries.push(['Cari kodu + web servis şifresi', { ...cr, web: cr.web }]);
+    try { const L = await srList(env, cr, 2); out.list = L ? { count: L.rows.length, mesaj: L.mesaj, text: L.text, sample: L.rows[0] || null, keys: L.rows[0] ? Object.keys(L.rows[0]) : [] } : { err: 'Listeleme işlemi yok' }; } catch (e) { out.list = { err: String(e.message || e) }; }
     for (const [label, c] of tries) { try { const q = await srQuery(env, c, 'LH0'); out.tests.push({ label, msg: q.durum || q.raw || '(boş cevap)' }); } catch (e) { out.tests.push({ label, msg: String(e.message || e) }); } }
     return json(out);
   }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/track') {
+    if (body.number === undefined) { const cr0 = await srCreds(env), row0 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
+      if (row0 && !row0.tracking && cr0.cari) { try { const L = await srList(env, cr0, 6), m = L && srMatch(L.rows, row0), tn = m && srRowTrack(m); if (tn) { row0.tracking = tn; row0.track_msg = srRowState(m) || 'Sürat listesinden'; return json({ ok: true, r: await srTrackOne(env, row0, cr0, await shCreds(env)) }); } } catch (e) {} } }
     const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
     const row = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(); if (!row) return bad('Bu siparişin Sürat barkodu yok.');
     if (body.number !== undefined) { const n = String(body.number || '').replace(/\D/g, ''); if (n.length < 6) return bad('Takip numarası geçersiz.'); row.tracking = n; row.track_msg = 'Elle girildi'; }
