@@ -2557,7 +2557,7 @@ async function inspDo(okQty){ const sh = S.sheet, x = sh && sh.items && sh.items
 function viewValue(){
   // Stoklar ekranıyla aynı ürünler: birleştirilip gizlenen eski kayıtlar ve pasif ürünler sayılmaz
   const ps = productsArr().filter(p => !p.set), pas = passiveArr().filter(p => p.qty > 0 && !p.set);
-  const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<div class="row"><button class="btn" data-act="export-value">Excel indir</button><button class="btn primary" data-act="open-costs">Excel'den fiyat / stok yükle</button><button class="btn" data-act="costs-reset" style="color:var(--bad)">Maliyetleri sıfırla</button><button class="btn ghost" data-act="costs-restore">Yedekten geri yükle</button></div>` : ''}</div>`;
+  const head = `<div class="spread"><div><h2 class="sec">Stok değeri</h2><p class="lead small">Her ürünün depodaki adedi ile birim alış fiyatı çarpılır. Stok değiştikçe tutarlar kendiliğinden güncellenir.</p></div>${ps.length ? `<div class="row"><button class="btn" data-act="export-value">Excel indir</button><button class="btn primary" data-act="open-costs">Excel'den fiyat / stok yükle</button><button class="btn" data-act="costs-reset" style="color:var(--bad)">Maliyetleri sıfırla</button></div>` : ''}</div>`;
   if (!S.loaded.products) return head + loading();
   if (!ps.length) return head + `<div class="panel empty"><h4>Hesaplanacak ürün yok</h4><p>Önce ürünleri ekle ya da aktar, sonra alış fiyatlarını buradan gir.</p></div>`;
   const val = p => Math.max(0, p.qty) * (p.cost || 0);
@@ -3866,8 +3866,6 @@ document.addEventListener('click', async e => {
       if (!(await confirmBox(`<b>${fmtN(n)} ürünün maliyeti silinecek</b> (alış fiyatı boşalacak). Önce yedek alınır; fiş yükledikçe yeni maliyetler girilir. Fiş girilene kadar o ürünlerin kârı ve stok değeri hesaplanmaz. Devam edilsin mi?`, 'Hepsini sıfırla', true))) break;
       if (!(await confirmBox('Emin misin? Bütün ürün maliyetleri şimdi boşaltılacak.', 'Evet, sıfırla', true))) break;
       await run(async () => { const r = await api('/api/costs/reset', {}); await refresh(true); toast(`${fmtN(r.n)} ürünün maliyeti sıfırlandı. Yedek alındı.`); }); break; }
-    case 'costs-restore': if (!(await confirmBox('Son yedekteki maliyetler geri yüklensin mi? Sadece maliyeti hâlâ boş olan ürünler doldurulur; fişle girdiğin yeni maliyetler değişmez.', 'Geri yükle'))) break;
-      await run(async () => { const r = await api('/api/costs/restore', {}); await refresh(true); toast(`${fmtN(r.n)} ürünün maliyeti yedekten geri yüklendi.`); }); break;
     case 'cost-reset': S.costImp = null; renderSheet(false); break;
     case 'cost-run': await runCosts(); break;
     case 'sync-now': await syncNow(); break;

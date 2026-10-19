@@ -129,6 +129,12 @@ async function init0(env) {
   for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_costreset1'`).first())) {
+    // Kullanıcı isteği (19.10.2026): bütün ürün maliyetleri silinir, fişlerle baştan girilecek (sessiz yedek settings'te kalır)
+    try { const { results } = await env.DB.prepare('SELECT key, cost FROM products WHERE cost IS NOT NULL').all(), at = iso();
+      await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_costreset1','1')`), setStmt(env, 'cost_backup_mig1', JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })),
+        env.DB.prepare('UPDATE products SET cost=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_missing1'`).first())) {
     try { const { results } = await env.DB.prepare(`SELECT * FROM returns WHERE kept=1 AND status='accepted'`).all();
       const st = [env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_missing1','1')`)];
@@ -2729,15 +2735,6 @@ ${catalog}` });
     await env.DB.batch([setStmt(env, k, JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })), setStmt(env, 'cost_backup_last', k)]);
     await env.DB.batch([env.DB.prepare('UPDATE products SET cost=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]);
     return json({ ok: true, n: results.length, at });
-  }
-  if (path === '/api/costs/restore') {
-    // Son yedekten geri yükle: SADECE maliyeti hâlâ boş olan ürünler doldurulur (fişle girilen yeni maliyetler korunur)
-    const k = await getSetting(env, 'cost_backup_last'); const raw = k ? await getSetting(env, k) : null;
-    if (!raw) return bad('Maliyet yedeği bulunamadı.');
-    const B = JSON.parse(raw), st = B.rows.map(([key, cost]) => env.DB.prepare('UPDATE products SET cost=?2 WHERE key=?1 AND cost IS NULL').bind(key, cost));
-    let n = 0; for (let i = 0; i < st.length; i += 90) { const rs = await env.DB.batch(st.slice(i, i + 90)); for (const r of rs) n += (r.meta && r.meta.changes) || 0; }
-    await env.DB.batch([REV(env)]);
-    return json({ ok: true, n, at: B.at });
   }
   if (path === '/api/cari/list') {
     // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç; ödeme şekline göre vadesi gelenler uyarı olarak döner
