@@ -2582,13 +2582,16 @@ ${catalog}` });
     try {
       const run = (inp) => shGql(env, c, `mutation($input:OrderInput!){orderUpdate(input:$input){order{id name shippingAddress{${SH_ADDR_F}}}userErrors{field message}}}`, { input: { id: gid, shippingAddress: inp } });
       let r = await run(input), ue = r.orderUpdate.userErrors || [];
+      const errTxt = () => ue.map(e => (e.field || []).join('.') + ' ' + e.message).join(' ');
+      // Posta kodu yeni ille uyuşmuyorsa (ör. il Kayseri→Mersin, posta kodu 38000 kalmış) posta kodu boşaltılıp bir kez daha denenir
+      if (ue.length && input.zip && /zip|postal|posta/i.test(errTxt())) { input.zip = ''; r = await run(input); ue = r.orderUpdate.userErrors || []; if (!ue.length) r._noZip = true; }
       // İl kodu Shopify'ın beklediği biçimde değilse il kodu olmadan bir kez daha denenir (il, mevcut haliyle kalır)
       if (ue.length && input.provinceCode && /province|zone|il\b/i.test(ue.map(e => (e.field || []).join('.') + ' ' + e.message).join(' '))) { const { provinceCode, ...rest } = input; r = await run(rest); ue = r.orderUpdate.userErrors || []; if (!ue.length) r._noProv = true; }
       if (ue.length) return bad('Shopify kabul etmedi: ' + ue.map(e => e.message).join(' · '));
       const o = r.orderUpdate.order;
       await env.DB.prepare('INSERT INTO sh_addr_log(gid, order_no, before, after, at) VALUES(?1,?2,?3,?4,?5)').bind(gid, o.name, JSON.stringify(body.before || null), JSON.stringify(o.shippingAddress || null), iso()).run();
       await env.DB.prepare('DELETE FROM sh_addr_log WHERE id NOT IN (SELECT id FROM sh_addr_log ORDER BY id DESC LIMIT 300)').run();
-      return json({ ok: true, addr: o.shippingAddress, noProv: !!r._noProv });
+      return json({ ok: true, addr: o.shippingAddress, noProv: !!r._noProv, noZip: !!r._noZip });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   if (path === '/api/shopify/status') {

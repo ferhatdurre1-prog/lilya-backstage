@@ -774,7 +774,7 @@ function addrFix(a){
 }
 // İl adı → Shopify il kodu: önce mağazadaki diğer siparişlerde görülen kod, yoksa aynı biçimle plakadan üretilir (ör. TR-34)
 function ilCode(name){ const A = aS(), f = trFold(name); if (A.codes[f]) return A.codes[f]; const i = ilFind(name); if (i == null) return '';
-  const fmt = A.codeFmt; return fmt ? fmt.pre + String(i + 1).padStart(fmt.w, '0') : ''; }
+  const fmt = A.codeFmt || {pre: 'TR-', w: 2}; return fmt.pre + String(i + 1).padStart(fmt.w, '0'); } // Shopify Türkiye il kodu: TR-plaka
 function addrLearnCodes(orders){ const A = aS(); for (const o of orders) { const a = o.addr; if (!a || !a.province || !a.provinceCode) continue; A.codes[trFold(a.province)] = a.provinceCode;
   const i = ilFind(a.province), m = /^(\D*)(\d+)$/.exec(a.provinceCode); if (i != null && m && Number(m[2]) === i + 1) A.codeFmt = {pre: m[1], w: m[2].length}; } }
 async function loadAddr(force){
@@ -838,13 +838,14 @@ function addrFieldCommit(v){ const A = aS(), F = A.field; if (!F) return; const 
   if (JSON.stringify(E) === JSON.stringify(addrForm(o.addr || {}))) delete A.edit[F.gid];
   render(); addrFocus(); }
 function addrFocus(){ setTimeout(() => { const i = $('#af-in'); if (!i) return; i.focus(); try { if (i.dataset.k === 'province' || i.dataset.k === 'city') i.select(); else { const n = i.value.length; i.setSelectionRange(n, n); } } catch(e) {} }, 20); }
-function addrPayload(e){ const ph = phoneFix(e.phone); return {firstName:e.firstName, lastName:e.lastName, company:e.company, address1:e.address1, address2:e.address2, city:e.city, zip:e.zip, countryCode:e.countryCode || 'TR', phone: ph || (String(e.phone || '').trim() ? e.phone : ''), provinceCode: ilCode(e.province) || e.provinceCode || ''}; }
+function addrPayload(e){ const ph = phoneFix(e.phone), il = ilFind(e.province); let zip = String(e.zip || '').trim(); if (il != null && /^\d{5}$/.test(zip) && Number(zip.slice(0, 2)) !== il + 1) zip = ''; // il değişti, eski ilin posta kodu kaldıysa gönderilmez
+  return {firstName:e.firstName, lastName:e.lastName, company:e.company, address1:e.address1, address2:e.address2, city:e.city, zip, countryCode:e.countryCode || 'TR', phone: ph || (String(e.phone || '').trim() ? e.phone : ''), provinceCode: ilCode(e.province) || e.provinceCode || ''}; }
 async function addrSave(gid, e, before){
   const A = aS(), ph = String(e.phone || '').trim();
   if (ph && !phoneFix(ph)) { toast('Telefon geçersiz. 05xx xxx xx xx biçiminde yaz.', true); return false; }
   const r = await api('/api/shaddr/save', {gid, addr: addrPayload(e), before});
   const o = A.data.orders.find(x => x.gid === gid); if (o && r.addr) o.addr = r.addr;
-  toast(r.noProv ? 'Adres kaydedildi; il kodu Shopify\'da değiştirilemedi, il alanını Shopify panelinden kontrol et.' : 'Adres Shopify\'da güncellendi.', !!r.noProv);
+  toast(r.noProv ? 'Adres kaydedildi; il kodu Shopify\'da değiştirilemedi, il alanını Shopify panelinden kontrol et.' : r.noZip ? 'Adres Shopify\'da güncellendi. Posta kodu yeni ille uyuşmadığı için boş bırakıldı.' : 'Adres Shopify\'da güncellendi.', !!r.noProv);
   return true;
 }
 /* ============ Müşteri soruları ============ */
