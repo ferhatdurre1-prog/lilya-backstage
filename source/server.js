@@ -3581,6 +3581,11 @@ ${catalog}` });
     }
     return json({ ok: true, prof });
   }
+  if (path === '/api/orders/get') {
+    // Tek sipariş: birincil anahtarla hızlı okuma (Kâr ekranından açılan eski siparişler için)
+    const r = await env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' WHERE o.id=?1`).bind(String(body.id || '')).first();
+    return json({ ok: true, orders: r ? [mapOrder(r)] : [] });
+  }
   if (path === '/api/orders/search') {
     // Sipariş no, müşteri adı, ürün adı / stok kodu / barkod ile arama (son 300 siparişin dışındakiler dahil)
     const q = String(body.q || '').trim(); if (q.length < 2) return json({ ok: true, orders: [] });
