@@ -579,7 +579,7 @@ function confirmBox(text, ok='Onayla', danger=false){
 }
 function openSheet(type, data={}){ S.sheet = {type, ...data}; renderSheet(true); }
 function closeSheet(){ if (S.busy) return; if (S.sheet && S.sheet.type === 'scanout') { if (S.sheet.items && S.sheet.items.length && !S.sheet.saved && !confirm('Okutulan ürünler kaydedilmedi. Kapatılsın mı?')) return; scanStop(); } S.sheet = null; $('#sheet-root').innerHTML = ''; document.body.style.overflow = ''; }
-function setTab(t){ S.tab = t; try{ sessionStorage.setItem('lb-tab', t); localStorage.removeItem('lb-tab'); }catch(e){} render(); window.scrollTo(0,0); }
+function setTab(t){ if (t !== 'profit' && S.prof) S.prof.focus = null; S.tab = t; try{ sessionStorage.setItem('lb-tab', t); localStorage.removeItem('lb-tab'); }catch(e){} render(); window.scrollTo(0,0); }
 
 function viewLogin(){
   const I = S.authInfo; if (!I) loadAuthInfo();
@@ -1581,7 +1581,7 @@ function banners(){
   const st = tyState();
   if (st.cls === 'err') h += `<div class="banner bad"><div><b>Trendyol eşitlemesi hata verdi:</b> ${esc(st.err || '')}</div><button class="btn sm" data-act="open-import">Ayrıntı</button></div>`;
   else if (!(S.sync && S.sync.trendyol && S.sync.trendyol.configured)) h += `<div class="banner"><div><b>Trendyol bağlantısı kurulmadı.</b> Cloudflare'de Trendyol bilgileri girilince siparişler her 10 saniyede kendiliğinden gelir.</div></div>`;
-  if (S.tab !== 'cari' && S.tab !== 'home') { loadCari(); const ca = cariDueAlert(); if (ca) h += `<div class="banner bad"><div><b>⏰ Tedarikçi ödemesi:</b> ${ca.today > 0.004 ? `bugün <b>${tl2(ca.today)}</b>` : ''}${ca.today > 0.004 && ca.late > 0.004 ? ', ' : ''}${ca.late > 0.004 ? `gecikmiş <b>${tl2(ca.late)}</b>` : ''}${ca.fxTxt ? ` <span class="small">(${esc(ca.fxTxt)} dahil, güncel kurla)</span>` : ''} · ${fmtN(ca.n)} firma</div><button class="btn sm" data-act="go-cari">Carilere git</button></div>`; }
+  /* tedarikçi ödeme uyarısı yalnızca Cariler ekranında */ if (S.tab === 'cari') { loadCari(); const ca = cariDueAlert(); if (ca) h += `<div class="banner bad"><div><b>⏰ Tedarikçi ödemesi:</b> ${ca.today > 0.004 ? `bugün <b>${tl2(ca.today)}</b>` : ''}${ca.today > 0.004 && ca.late > 0.004 ? ', ' : ''}${ca.late > 0.004 ? `gecikmiş <b>${tl2(ca.late)}</b>` : ''}${ca.fxTxt ? ` <span class="small">(${esc(ca.fxTxt)} dahil, güncel kurla)</span>` : ''} · ${fmtN(ca.n)} firma</div><button class="btn sm" data-act="go-cari">Carilere git</button></div>`; }
   return h;
 }
 function loading(){ return `<div class="list" aria-busy="true"><div class="skel" style="border-top:0"></div><div class="skel"></div><div class="skel"></div></div>`; }
@@ -2954,6 +2954,12 @@ function viewProfit(){
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
   <div class="filters" style="margin-top:8px"><div class="chips">${[['','Tüm kanallar'],['trendyol','Trendyol'],['shopify','Shopify']].map(([id,l]) => `<button class="chip" data-act="pch" data-id="${id}" aria-pressed="${(P.ch||'')===id}">${l}</button>`).join('')}</div>${P.ch ? '<span class="small muted">Kanal seçiliyken elle girilen genel giderler ve günlük sabit giderler düşülmez.</span>' : ''}</div>
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
+  // Ana ekrandaki kısayoldan açılınca yalnızca o bölüm (gider/gelir ya da zarar edenler) görünür
+  const FT = {expenses: 'Gider / gelir', losers: 'Zarar eden ürünler'}[P.focus];
+  const fh = FT ? `<div class="spread" style="gap:8px"><h2 class="sec" style="margin:0">${FT}</h2><button class="btn sm" data-act="focus-exit">← Ana sayfa</button></div>${P.focus === 'losers' ? `<div class="filters" style="margin-top:10px"><div class="chips">${PERIODS.filter(([id]) => id !== 'custom').map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>` : '<div style="height:10px"></div>'}` : '';
+  if (FT && P.err) return fh + `<div class="banner bad"><div>${esc(P.err)}</div></div>`;
+  if (FT && !D) return fh + loading();
+  if (FT && P.focus === 'expenses') return fh + expensesCard(D) + recurringCard(D);
   if (P.err) return h + `<div class="banner bad"><div>${esc(P.err)}</div></div>`;
   if (!D) return h + loading();
   const subs = [['products','Ürünler'],['orders','Siparişler'],['expenses','Gider / gelir'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi'],['audit','Kontrol'],['shcheck','Shopify hesap kontrolü'],['settings','Ayarlar']];
@@ -2988,7 +2994,7 @@ function viewProfit(){
   if (s.noDesiTable && s.desiOrders) h += `<div class="banner"><div><b>${fmtN(s.desiOrders)} paket 350 TL üzerinde</b>, ama desi ücretleri henüz bilinmiyor; bu paketlere 200–349,99 ücreti uygulandı. Trendyol kargo faturaları okununca desi ücretleri kendiliğinden öğrenilecek.</div></div>`;
   else if (s.desiMissing) h += `<div class="banner"><div><b>${fmtN(s.desiMissing)} paketin desisi Trendyol'dan gelmedi</b>; 1 desi sayıldı.</div></div>`;
   if (s.missingPrice) h += `<div class="banner"><div><b>${fmtN(s.missingPrice)} sipariş satırında satış tutarı yok.</b> Eski ya da elle girilmiş siparişler olabilir; bu satırların cirosu 0 sayıldı.</div></div>`;
-  h += subsHtml();
+  if (FT) h = fh; else h += subsHtml();
   if (P.sub !== 'audit') h += `<div class="toolbar" style="margin-bottom:10px"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="pq" type="search" placeholder="${P.sub==='orders'?'Sipariş no, müşteri adı, ürün, stok kodu veya barkod':'Ürün adı, stok kodu veya barkod'}" value="${esc(P.q||'')}" aria-label="Ara" autocomplete="off"></div></div>`;
   const pq = searchNorm((P.q||'').trim());
   if (P.sub === 'pricing') h += viewPricing();
@@ -3885,7 +3891,7 @@ document.addEventListener('click', async e => {
   const act = b.dataset.act, id = b.dataset.id;
   if (act === 'scrim') { if (e.target === b) closeSheet(); return; }
   switch (act) {
-    case 'tab': S.drawer = false; renderDrawer(); if (id === 'stock' && S.tab !== 'stock') S.filter = 'active'; setTab(id); break;
+    case 'tab': S.drawer = false; renderDrawer(); if (id === 'profit' && S.prof) S.prof.focus = null; if (id === 'stock' && S.tab !== 'stock') S.filter = 'active'; setTab(id); break;
     case 'menu': S.drawer = true; renderDrawer(); break;
     case 'menu-close': S.drawer = false; renderDrawer(); break;
     case 'dnav': S.drawer = false; renderDrawer(); if (id === '__conn') { S.imp = null; openSheet('import'); } else { if (id === 'stock' && S.tab !== 'stock') S.filter = 'active'; setTab(id); } break;
@@ -3898,7 +3904,8 @@ document.addEventListener('click', async e => {
     case 'wa-del': if (await confirmBox('Bu cihazın Face ID girişi kaldırılsın mı?', 'Kaldır', true)) { await run(async () => { await api('/api/passkey/delete', {id}); try { localStorage.removeItem('lb_wa'); } catch(e) {} S.sheet.list = null; renderSheet(false); }); } break;
     case 'security': S.drawer = false; renderDrawer(); openSheet('security'); break;
     case 'home-retry': homeMaybeLoad(true); render(); break;
-    case 'home-losers': profS().sub = 'losers'; setTab('profit'); break;
+    case 'home-losers': { const P = profS(); P.sub = 'losers'; P.focus = 'losers'; } setTab('profit'); break;
+    case 'focus-exit': profS().focus = null; setTab('home'); break;
     case 'filter': S.filter = id; if (S.tab !== 'stock') setTab('stock'); else render(); break;
     case 'chf': S.ch = id; render(); break;
     case 'ofilter': S.ofilter = id; S.opage = 1; render(); break;
@@ -4123,7 +4130,7 @@ document.addEventListener('click', async e => {
     case 'rec-stop': case 'rec-del': { const del = act === 'rec-del'; if (!(await confirmBox(del ? 'Bu günlük kalem geçmiş günler dahil tamamen silinsin mi?' : 'Bu günlük kalem bugünden sonra yazılmasın mı? Geçmiş günler kalır.', del ? 'Sil' : 'Durdur', del))) break;
       await run(async () => { await api(del ? '/api/recurring/delete' : '/api/recurring/stop', {id}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(del ? 'Silindi.' : 'Durduruldu.'); }); break; }
     case 'exp-kind': S.expKind = id; if (S.expEdit) S.expEdit.kind = id; S.sheet ? renderSheet(false) : render(); break;
-    case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
+    case 'add-expense': S.drawer = false; renderDrawer(); { const P = profS(); P.sub = 'expenses'; P.focus = 'expenses'; if (P.period !== 'month') { P.period = 'month'; P.data = null; P.key = ''; } } setTab('profit'); setTimeout(() => { const i = $('#ex-name'); if (i) i.focus(); }, 300); break;
     case 'rep-year': repS().year = Number(id); render(); break;
     case 'rep-gran': repS().gran = id; try { localStorage.setItem('lb_rgran', id); } catch(e) {} render(); break;
     case 'q-tab': qS().tab = id; qS().data = null; render(); break;
