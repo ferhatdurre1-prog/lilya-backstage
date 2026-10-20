@@ -3084,6 +3084,21 @@ ${catalog}` });
     return json({ ok: true });
   }
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
+  if (path === '/api/surat/trackdiag') {
+    // Teşhis: bir siparişin Sürat'taki takip sorgusu ve listede eşleşen satır (kişisel bilgiler gizli)
+    const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş no yaz.');
+    const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat bağlı değil.');
+    const row = await env.DB.prepare(`SELECT * FROM sr_ship WHERE replace(order_no,'#','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first();
+    if (!row) return bad('Bu sipariş için Sürat gönderisi kaydı yok (barkod oluşturulmamış).');
+    const PII = /ad|isim|unvan|alici|gonderen|kisi|tel|gsm|adres|il$|ilce|mahalle|sokak|mail|tc|vergi/i;
+    const mask = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, PII.test(k) && !/takip|barkod|kod$|no$/i.test(k) ? (v ? '•' : '') : v]));
+    const out = { ref: row.ref, order_no: row.order_no, at: row.at, saved: { tracking: row.tracking, track_msg: row.track_msg, track_at: row.track_at, fulfilled_at: row.fulfilled_at, fulfill_err: row.fulfill_err } };
+    try { const q = await srQuery(env, cr, row.ref); out.byRef = { no: q.no, durum: q.durum, raw: q.raw }; } catch (e) { out.byRef = { err: String(e.message || e) }; }
+    try { const q = await srQuery(env, cr, no); out.byOrderNo = { no: q.no, durum: q.durum, raw: q.raw }; } catch (e) { out.byOrderNo = { err: String(e.message || e) }; }
+    try { const L = await srList(env, cr, 6); out.list = { count: L ? L.rows.length : 0, mesaj: L && L.mesaj, text: L && L.text, keys: L && L.rows[0] ? Object.keys(L.rows[0]) : [] }; const m = L && srMatch(L.rows, row); out.match = m ? mask(m) : null; out.matchTrack = m ? srRowTrack(m) : ''; if (!m && L && L.rows[0]) out.sampleRow = mask(L.rows[0]); } catch (e) { out.list = { err: String(e.message || e) }; }
+    try { const sc = await srSchema(env, false); out.queryMethod = sc.query ? sc.query.method + '(' + sc.query.params.map(p => p.name).join(', ') + ')' : null; } catch (e) {}
+    return json(out);
+  }
   if (path === '/api/surat/diag') {
     const cr = await srCreds(env), out = { creds: {}, tests: [] };
     const info = (x) => ({ len: x.length, space: /^\s|\s$/.test(x), nonAscii: /[^\x20-\x7e]/.test(x) });

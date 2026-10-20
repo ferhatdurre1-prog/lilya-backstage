@@ -3299,6 +3299,7 @@ function suratCard(){
     <label class="chk small"><input type="checkbox" id="sr-mode" ${d.mode === 'api' ? 'checked' : ''}><span><b>Otomatik gönderim:</b> barkod oluşturunca gönderi doğrudan Sürat'a kaydedilsin (Excel yüklemeye gerek kalmaz). Bağlantı testi geçtikten sonra aç.</span></label>
     <p class="muted small" style="margin:0">Barkodlar <b>Adres düzeltme</b> sekmesinden oluşturulur.</p>
     <div><button class="btn sm" data-act="sr-diag">🔎 Bağlantıyı test et</button></div>${S.srDiag ? srDiagHtml(S.srDiag) : ''}
+    <form id="f-srtd" class="row" style="gap:6px;flex-wrap:wrap"><input class="input mono" id="srtd-no" placeholder="Sipariş no (ör. 2810)" inputmode="numeric" style="width:170px"><button class="btn sm" type="submit">Takip teşhisi</button></form>${S.srTd ? `<pre class="small mono" style="white-space:pre-wrap;max-height:320px;overflow:auto;margin:0;background:var(--surface-2);padding:8px;border-radius:8px">${esc(S.srTd)}</pre>` : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Son hata:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}</div>`;
 }
 function srDiagHtml(d){
@@ -3926,6 +3927,7 @@ document.addEventListener('submit', async e => {
   if (id === 'f-caripay') { const sup = ($('#cp-sup').value || '').trim(), amt = $('#cp-amt').value;
     await run(async () => { await api('/api/cari/pay', {supplier: sup, amount: amt, date: $('#cp-date').value, method: $('#cp-method').value, note: $('#cp-note').value}); const C = cS(); toast(`Ödeme kaydedildi: ${sup}.`); C.pre = null; if (C.open === '__new') C.open = sup; loadCari(true); loadCariDet(C.open); }); return; }
   if (id === 'f-bkord') { await run(async () => { const r = await api('/api/bk/order', {no: $('#bk-no').value}); S.bkSample = JSON.stringify({kayitli: r.saved, gonderiler: r.shipments}, null, 1).slice(0, 8000); renderSheet(false); }); return; }
+  if (id === 'f-srtd') { S.srTd = 'Sorgulanıyor…'; renderSheet(false); try { S.srTd = JSON.stringify(await api('/api/surat/trackdiag', {no: $('#srtd-no').value}), null, 1).slice(0, 9000); } catch (err) { S.srTd = errText(err); } renderSheet(false); return; }
   if (id === 'f-bk') { await run(async () => { await api('/api/bk/connect', {token: $('#bk-token').value}); S.bkEdit = false; S.bk = null; toast('Basit Kargo bağlandı. Şimdi "Gönderileri çek"e bas.'); renderSheet(false); }); return; }
   if (id === 'f-srweb') { await run(async () => { await api('/api/surat/settings', {desi: (S.surat || {}).desi || 2, web: $('#sr-web2').value}); S.surat = null; renderSheet(false); toast('Web servis şifresi kaydedildi.'); }); return; }
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
