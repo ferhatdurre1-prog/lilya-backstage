@@ -261,8 +261,8 @@ function addDayStr(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.
 function addMonthStr(d, n) { const [y, m, dd] = d.split('-').map(Number), t = new Date(Date.UTC(y, m - 1 + n, 1, 12)); const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0, 12)).getUTCDate(); t.setUTCDate(Math.min(dd, last)); return t.toISOString().slice(0, 10); }
 function cariTerms(raw) {
   let t = raw; if (typeof t === 'string') { try { t = JSON.parse(t); } catch (e) { t = null; } } t = t || {};
-  const kind = ['cash', 'days', 'split', 'pct'].includes(t.kind) ? t.kind : 'cash', I = (v, d, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || d));
-  return { kind, n: I(t.n, 30, 1, 720), unit: t.unit === 'ay' ? 'ay' : 'gün', parts: I(t.parts, 4, 2, 52), every: I(t.every, 7, 1, 120), first: I(t.first ?? t.every, 7, 0, 365), pct: I(t.pct, 25, 1, 100), wday: I(t.wday, 1, 1, 7), note: String(t.note || '').slice(0, 120) };
+  const kind = ['cash', 'days', 'split', 'pct', 'month'].includes(t.kind) ? t.kind : 'cash', I = (v, d, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || d));
+  return { kind, n: I(t.n, 30, 1, 720), unit: t.unit === 'ay' ? 'ay' : 'gün', parts: I(t.parts, 4, 2, 52), every: I(t.every, 7, 1, 120), first: I(t.first ?? t.every, 7, 0, 365), pct: I(t.pct, 25, 1, 100), wday: I(t.wday, 1, 1, 7), mday: I(t.mday, 15, 1, 31), gap: I(t.gap, 0, 0, 120), note: String(t.note || '').slice(0, 120) };
 }
 // "40.500,25" / "40500.25" / "-1.200" → sayı (2 basamak)
 function cariAmt(v) { if (typeof v === 'number') return r2(v); let t = String(v ?? '').replace(/[^\d,.\-]/g, ''); if (!t) return 0; if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.'); else if ((t.match(/\./g) || []).length > 1 || /\.\d{3}$/.test(t)) t = t.replace(/\./g, ''); return r2(Number(t) || 0); }
@@ -307,11 +307,15 @@ function cariSchedule(c, today) {
     for (const b of c.buys.slice().sort((x, y) => x.date.localeCompare(y.date) || x.t.localeCompare(y.t))) {
       const tag = b.mov ? b.label : `Alış #${b.id}${b.doc_no ? ' · ' + b.doc_no : ''}`;
       if (T.kind === 'split') { const per = r2(b.amount / T.parts); for (let i = 0; i < T.parts; i++) inst.push({ due: addDayStr(b.date, T.first + i * T.every), amount: i === T.parts - 1 ? r2(b.amount - per * (T.parts - 1)) : per, label: `${tag} · ${i + 1}/${T.parts}. taksit` }); }
+      else if (T.kind === 'month') { // her ayın X'i: faturadan (en az "gap" gün sonra) gelen ilk ayın X'i; ay kısaysa ayın son günü
+        const from = addDayStr(b.date, T.gap), [y, mo, dd] = from.split('-').map(Number), on = (yy, mm) => { const last = new Date(Date.UTC(yy, mm, 0, 12)).getUTCDate(); return new Date(Date.UTC(yy, mm - 1, Math.min(T.mday, last), 12)).toISOString().slice(0, 10); };
+        let due = on(y, mo); if (due < from) due = on(mo === 12 ? y + 1 : y, mo === 12 ? 1 : mo + 1);
+        inst.push({ due, amount: b.amount, label: `${tag} · her ayın ${T.mday}'i`, fixed: 1 }); }
       else if (T.kind === 'days') inst.push({ due: T.unit === 'ay' ? addMonthStr(b.date, T.n) : addDayStr(b.date, T.n), amount: b.amount, label: `${tag} · ${T.n} ${T.unit} vade` });
       else inst.push({ due: b.date, amount: b.amount, label: `${tag} · peşin` });
     }
     // Ödeme günü: vade dolduktan sonraki ilk cuma (vade cumaya denk gelirse o gün)
-    for (const x of inst) { x.vade = x.due; x.due = nextWday(x.due, 5); }
+    for (const x of inst) { x.vade = x.due; if (!x.fixed) x.due = nextWday(x.due, 5); } // "her ayın X'i" tam o gün
     inst.sort((a, b) => a.due.localeCompare(b.due));
     let pool = c.paid; for (const x of inst) { const p = Math.min(pool, x.amount); pool = r2(pool - p); x.paid = r2(p); x.left = r2(x.amount - p); items.push(x); }
   }
