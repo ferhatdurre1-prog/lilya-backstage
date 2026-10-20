@@ -1685,6 +1685,22 @@ async function storeProductInfo(env, content) {
 }
 /* ---------- Müşteri soruları (Trendyol Soru-Cevap) ---------- */
 async function qnaCount(env) { const c = await env.DB.prepare(`SELECT COUNT(*) n FROM qna WHERE status='waiting'`).first(); await setSetting(env, 'qna_waiting', String((c && c.n) || 0)); }
+// Geçmişte (Trendyol panelinden de) verilmiş cevaplar: yapay zekâ mağaza sahibinin üslubunu ve kararlarını bunlardan öğrenir.
+// İlk seferde geriye doğru sayfa sayfa okunur (her turda en fazla 4 sayfa), sonra yalnızca yeni cevaplananlar.
+async function syncQnaHistory(env, maxPages = 4) {
+  const sid = env.TRENDYOL_SELLER_ID; if (!sid) return null; const s0 = await getSettings(env, ['qna_hist_page', 'qna_hist_done']); const done = s0.qna_hist_done === '1';
+  let page = done ? 0 : Number(s0.qna_hist_page) || 0, n = 0, end = false;
+  for (let i = 0; i < maxPages; i++, page++) { let r;
+    try { r = await ty(env, `qna/sellers/${sid}/questions/filter`, { status: 'ANSWERED', page, size: 50, orderByField: 'CreatedDate', orderByDirection: 'DESC' }); } catch (e) { if (e.status === 400) { end = true; break; } throw e; }
+    const list = (r.content || []).filter(q => q && q.id && q.answer && (q.answer.text || '').trim());
+    const st = list.map(q => env.DB.prepare(`INSERT INTO qna(id, main_id, product_name, image, web_url, text, created_at, status, answer, answered_at, updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'answered_elsewhere',?8,?9,?10)
+      ON CONFLICT(id) DO UPDATE SET answer=COALESCE(NULLIF(qna.answer,''), excluded.answer), answered_at=COALESCE(qna.answered_at, excluded.answered_at), status=CASE WHEN qna.status IN ('waiting','sent_failed') THEN 'answered_elsewhere' ELSE qna.status END`)
+      .bind(String(q.id), String(q.productMainId || ''), q.productName || '', q.imageUrl || '', q.webUrl || '', String(q.text || ''), iso(Number(q.creationDate) || Date.now()), String(q.answer.text).slice(0, 2000), iso(Number(q.answer.creationDate) || Number(q.creationDate) || Date.now()), iso()));
+    for (let k = 0; k < st.length; k += 50) await env.DB.batch(st.slice(k, k + 50)); n += list.length;
+    if (!(r.content || []).length || page + 1 >= (r.totalPages || 1)) { end = true; break; } if (done) break; }
+  await env.DB.batch([setStmt(env, 'qna_hist_page', String(end ? 0 : page)), ...(end && !done ? [setStmt(env, 'qna_hist_done', '1')] : []), setStmt(env, 'qna_hist_at', iso())]);
+  return { n, done: done || end };
+}
 async function syncTrendyolQna(env) {
   const sid = env.TRENDYOL_SELLER_ID, now = Date.now(), seen = new Set(); let n = 0;
   for (let page = 0; page < 5; page++) {
@@ -1724,7 +1740,7 @@ async function draftQna(env, id, hint) {
     env.DB.prepare(`SELECT text, answer FROM qna WHERE main_id=?1 AND id<>?2 AND answer IS NOT NULL AND answer<>'' ORDER BY answered_at DESC LIMIT 6`).bind(q.main_id || '-', q.id).all(),
     getSetting(env, 'qa_general'),
     // Mağaza sahibinin son cevapları (her üründe): üslubunu ve karar mantığını öğrenmek için; taslağı düzelttiyse taslak → gönderilen
-    env.DB.prepare(`SELECT product_name, text, answer, sent_draft FROM qna WHERE id<>?1 AND (main_id IS NULL OR main_id<>?2) AND status='answered' AND answer IS NOT NULL AND answer<>'' ORDER BY answered_at DESC LIMIT 15`).bind(q.id, q.main_id || '-').all()]);
+    env.DB.prepare(`SELECT product_name, text, answer, sent_draft FROM qna WHERE id<>?1 AND (main_id IS NULL OR main_id<>?2) AND status IN ('answered','answered_elsewhere') AND answer IS NOT NULL AND answer<>'' ORDER BY answered_at DESC LIMIT 20`).bind(q.id, q.main_id || '-').all()]);
   const parts = [`ÜRÜN: ${(pi && pi.title) || q.product_name || '-'}`];
   if (pi && pi.attrs) parts.push(`ÖZELLİKLER:\n${pi.attrs}`);
   if (pi && pi.descr) parts.push(`ÜRÜN AÇIKLAMASI:\n${pi.descr.slice(0, 3500)}`);
@@ -2105,7 +2121,7 @@ async function pollOnce(env, full, budget, mode) {
   // İadeler ve sorular da siparişlerle birlikte sık kontrol edilir (iadeler her turda, sorular 30 sn'de bir)
   if (mode !== 'heavy' && qLeft(env) > 160) {
     await step('claims', () => syncTrendyolClaims(env));
-    if ((env.__poll || 0) % 3 === 0) { await step('qna', () => syncTrendyolQna(env), 'qna_err'); if (result.qna && !result.steps.qnaErr && !env.__poll) await setSetting(env, 'qna_err', ''); }
+    if ((env.__poll || 0) % 3 === 0) { await step('qna', async () => { const r = await syncTrendyolQna(env); try { const h = await getSetting(env, 'qna_hist_at'); if (!h || Date.now() - Date.parse(h) > ((await getSetting(env, 'qna_hist_done')) === '1' ? 3 * 3600000 : 60000)) r.hist = await syncQnaHistory(env); } catch (e) {} return r; }, 'qna_err'); if (result.qna && !result.steps.qnaErr && !env.__poll) await setSetting(env, 'qna_err', ''); }
   }
   if (full && mode !== 'light') await heavySteps(env, budget, result, step, left, t);
   result.ms = Date.now() - t;
@@ -2866,7 +2882,7 @@ async function api(req, env, path, ctx) {
     return json({ ok: true });
   }
   if (path === '/api/qna/general') { await setSetting(env, 'qa_general', String(body.text || '').slice(0, 4000)); return json({ ok: true }); }
-  if (path === '/api/qna/sync') { try { const r = await syncTrendyolQna(env); return json(r); } catch (e) { return bad(e.message || String(e)); } }
+  if (path === '/api/qna/sync') { try { const r = await syncTrendyolQna(env); try { r.hist = await syncQnaHistory(env, 2); } catch (e) {} return json(r); } catch (e) { return bad(e.message || String(e)); } }
   if (path === '/api/home') return json(await homeData(env, ctx, !!body.force));
   if (path === '/api/weather') { try { return json(await weatherData(req, body)); } catch (e) { return json({ temp: null }); } }
   if (path === '/api/market') { try { return json(await marketData(env)); } catch (e) { return json({ at: Date.now(), items: [] }); } }
