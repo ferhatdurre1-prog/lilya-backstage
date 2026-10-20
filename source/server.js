@@ -89,6 +89,8 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN cost_date TEXT').run(); } catch (e) {} // maliyetin geldiği fiş tarihi // cari ödeme şekli (vade)
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN tx TEXT').run(); } catch (e) {} // Shopify ödeme işlem kimlikleri (PayTR eşleşmesi)
   try { await env.DB.prepare('ALTER TABLE paytr_tx ADD COLUMN paid_day TEXT').run(); } catch (e) {} // PayTR parayı hangi gün yatırdı
+  try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN delivered TEXT').run(); } catch (e) {} // Shopify gönderisinin teslim günü
+  try { await env.DB.prepare('ALTER TABLE bk_ship ADD COLUMN delivered TEXT').run(); } catch (e) {} // Basit Kargo teslim günü
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN mto INTEGER').run(); } catch (e) {} // stoksuz satış (sipariş üzerine)
   for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -146,6 +148,7 @@ async function init0(env) {
       await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_costreset1','1')`), setStmt(env, 'cost_backup_mig1', JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })),
         env.DB.prepare('UPDATE products SET cost=NULL, cost_date=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_dlv1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_dlv1','1')`), setStmt(env, 'sh_pay_done', ''), setStmt(env, 'sh_pay_after', ''), setStmt(env, 'bk_sync_at', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ptdet2'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ptdet2','1')`), env.DB.prepare('UPDATE pt_payout SET detailed=0')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shtx1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shtx1','1')`), setStmt(env, 'sh_pay_done', ''), setStmt(env, 'sh_pay_after', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpack2'`).first())) {
@@ -371,13 +374,25 @@ async function bkCall(env, method, path, body) {
   if (!r.ok) throw new Error((data && (data.message || data.error || data.detail)) || `HTTP ${r.status} ${txt.slice(0, 120)}`);
   return { list: data, pages: Number(r.headers.get('X-Total-Pages')) || null, total: Number(r.headers.get('X-Total-Count')) || null };
 }
+// Teslim tarihi metnini/sayısını Türkiye günü (YYYY-MM-DD) yapar: '20.10.2026 14:30', '2026-10-20 14:30', ISO, epoch ms/sn, Excel seri no
+function dlvDay(v) { if (v === null || v === undefined || v === '') return null; if (typeof v === 'bigint') v = Number(v);
+  if (typeof v === 'number' || /^\d+(\.\d+)?$/.test(String(v).trim())) { const n = Number(v); if (n > 1e12) return trDay(n); if (n > 1e9) return trDay(n * 1000); if (n > 40000 && n < 60000) return new Date(Math.round((n - 25569) * 86400000)).toISOString().slice(0, 10); return null; }
+  const t = String(v).trim(); let m = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/.exec(t); if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t) || /^\d{4}-\d{2}-\d{2}[ ]\d/.test(t)) return t.slice(0, 10); const ms = Date.parse(t); return ms > 1e12 ? trDay(ms) : null; }
+// Basit Kargo gönderisinde teslim zamanı: 'deliver…' adlı tarih alanı ya da durum geçmişinde TESLİM/DELIVERED satırının zamanı
+function bkDelivered(o) { const out = []; const walk = (x, d) => { if (!x || typeof x !== 'object' || d > 4) return; if (Array.isArray(x)) { x.forEach(y => walk(y, d + 1)); return; }
+    const stt = Object.entries(x).find(([k, v]) => /status|durum|state/i.test(k) && typeof v === 'string' && /DELIVERED|TESL[İI]M ?ED[İI]LD[İI]|TESLIM_EDILDI|COMPLETED/i.test(v));
+    for (const [k, v] of Object.entries(x)) { if (v && typeof v === 'object') { walk(v, d + 1); continue; }
+      if (/deliver/i.test(k) && !/address|adres|type|fee|price|estimat|plan|expect|count|method/i.test(k)) { const dd = dlvDay(v); if (dd) out.push(dd); }
+      else if (stt && /time|date|tarih|created/i.test(k)) { const dd = dlvDay(v); if (dd) out.push(dd); } } };
+  walk(o, 0); return out.sort().pop() || null; }
 function bkRow(o) {
   const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
   const no = String(o.orderNumber || c.code || o.foreignCode || o.code || '').replace(/\D/g, ''); // orderNumber = Shopify sipariş no (2002); content.code Shopify'ın iç kimliği
   const tc = N(pi.totalCost), fee = tc !== null ? tc + (N(pi.extraFee) || 0) : N(pi.shipmentFee) !== null ? (N(pi.shipmentFee) || 0) + (N(pi.extraFee) || 0) + (N(pi.returnFee) || 0) + (N(pi.extraServicesFee) || 0) : null;
   const cod = ci.collectOnDelivery || ci.collect || /COD|DOOR|KAPI/i.test(String(o.orderPaymentType || '')) ? 1 : 0;
   return { no, id: String(o.id || ''), created: String(o.createdTime || o.createdDate || '').slice(0, 10), handler: (sh.handler && (sh.handler.name || sh.handler.code)) || '', hcode: (sh.handler && sh.handler.code) || '', status: String(o.status || ''),
-    fee: fee === null ? null : r2(fee), cod, codType: ci.type || '', codAmount: N(ci.amount), codFee: N(ci.fee), codStatus: ci.collectionStatusText || ci.collectionStatus || '' };
+    fee: fee === null ? null : r2(fee), cod, codType: ci.type || '', codAmount: N(ci.amount), codFee: N(ci.fee), codStatus: ci.collectionStatusText || ci.collectionStatus || '', delivered: bkDelivered(o) };
 }
 async function bkSync(env) {
   const T0 = Date.now(), rows = [], seenId = new Set(); let page = 0, pages = 1;
@@ -390,12 +405,12 @@ async function bkSync(env) {
   // Aynı siparişin birden fazla gönderisi (iade, tekrar gönderim) varsa iptal/taslak olmayanların ücreti toplanır
   const DEAD = /CANCEL|IPTAL|İPTAL|DRAFT|TASLAK|DELETED/i, grp = new Map();
   for (const x of rows) { const g = grp.get(x.no); if (!g) { grp.set(x.no, { ...x, n: 1, live: DEAD.test(x.status) ? 0 : 1, fee: DEAD.test(x.status) ? null : x.fee }); continue; }
-    g.n++; const dead = DEAD.test(x.status); if (!dead) { g.live++; g.fee = r2((g.fee || 0) + (x.fee || 0)); if (x.cod) { g.cod = 1; g.id = x.id; g.hcode = x.hcode; g.handler = x.handler; g.codType = x.codType; g.codAmount = x.codAmount; g.codFee = x.codFee ?? g.codFee; g.codStatus = x.codStatus; } if (x.created < g.created) g.created = x.created; } }
+    g.n++; const dead = DEAD.test(x.status); if (!dead) { g.live++; g.fee = r2((g.fee || 0) + (x.fee || 0)); if (x.cod) { g.cod = 1; g.id = x.id; g.hcode = x.hcode; g.handler = x.handler; g.codType = x.codType; g.codAmount = x.codAmount; g.codFee = x.codFee ?? g.codFee; g.codStatus = x.codStatus; } if (x.created < g.created) g.created = x.created; } if (x.delivered && (!g.delivered || x.delivered > g.delivered)) g.delivered = x.delivered; }
   for (const g of grp.values()) if (g.live === 0) g.fee = null; // hepsi iptal: sabit ücret kullanılır
   const uniq = [...grp.values()];
-  const st = uniq.map(x => env.DB.prepare(`INSERT INTO bk_ship(no, bk_id, created, handler, status, fee, cod, cod_type, cod_amount, cod_fee, cod_status, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
-    ON CONFLICT(no) DO UPDATE SET bk_id=excluded.bk_id, created=excluded.created, handler=excluded.handler, status=excluded.status, fee=excluded.fee, cod=excluded.cod, cod_type=excluded.cod_type, cod_amount=excluded.cod_amount, cod_fee=COALESCE(excluded.cod_fee, bk_ship.cod_fee), cod_status=excluded.cod_status, at=excluded.at`)
-    .bind(x.no, x.id, x.created, x.handler, x.status, x.fee, x.cod, x.codType, x.codAmount, x.codFee, x.codStatus, iso()));
+  const st = uniq.map(x => env.DB.prepare(`INSERT INTO bk_ship(no, bk_id, created, handler, status, fee, cod, cod_type, cod_amount, cod_fee, cod_status, at, delivered) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+    ON CONFLICT(no) DO UPDATE SET bk_id=excluded.bk_id, created=excluded.created, handler=excluded.handler, status=excluded.status, fee=excluded.fee, cod=excluded.cod, cod_type=excluded.cod_type, cod_amount=excluded.cod_amount, cod_fee=COALESCE(excluded.cod_fee, bk_ship.cod_fee), cod_status=excluded.cod_status, at=excluded.at, delivered=COALESCE(excluded.delivered, bk_ship.delivered)`)
+    .bind(x.no, x.id, x.created, x.handler, x.status, x.fee, x.cod, x.codType, x.codAmount, x.codFee, x.codStatus, iso(), x.delivered || null));
   const runAt = iso(); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90).map(x => x));
   // Tam okuma bittiyse bu turda görülmeyen eski kayıtlar (ör. yanlış numarayla kaydedilenler) silinir
   if (page >= pages && uniq.length) await env.DB.prepare('DELETE FROM bk_ship WHERE at < ?1').bind(new Date(T0).toISOString()).run();
@@ -1089,7 +1104,7 @@ async function shGql(env, c, query, variables) {
   }
   throw new Error('Shopify isteği tamamlanamadı.');
 }
-const SH_ORDERS_Q = `query($q:String!,$after:String){orders(first:40,after:$after,sortKey:UPDATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt updatedAt cancelledAt test displayFulfillmentStatus paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}} transactions(first:5){paymentId authorizationCode}
+const SH_ORDERS_Q = `query($q:String!,$after:String){orders(first:40,after:$after,sortKey:UPDATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt updatedAt cancelledAt test displayFulfillmentStatus paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}} transactions(first:5){paymentId authorizationCode} fulfillments(first:5){deliveredAt}
   lineItems(first:60){nodes{id sku name quantity currentQuantity unfulfilledQuantity variant{id sku barcode image{url}} image{url} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} originalUnitPriceSet{shopMoney{amount}}}}
   refunds{refundLineItems(first:60){nodes{quantity restockType lineItem{id}}}}}}}`;
 const shId = (gid) => { const m = /(\d+)\s*$/.exec(String(gid || '')); return m ? m[1] : ''; };
@@ -1125,14 +1140,15 @@ function shPayRow(o) {
   const card = cod && /kart|card|pos|kredi/.test(gl) ? 1 : 0;
   const M = (x) => x && x.shopMoney ? Number(x.shopMoney.amount) || 0 : null;
   const tx = (o.transactions || []).flatMap(t => [t.paymentId, t.authorizationCode]).filter(Boolean).map(String).join(' ').slice(0, 400);
-  return { no: String(o.name || '').replace(/\D/g, ''), gateway: g.slice(0, 200), cod, card, subtotal: M(o.subtotalPriceSet), ship: M(o.totalShippingPriceSet), total: M(o.totalPriceSet), tx };
+  const dl = (o.fulfillments || []).map(f => f && f.deliveredAt).filter(Boolean).sort().pop();
+  return { no: String(o.name || '').replace(/\D/g, ''), gateway: g.slice(0, 200), cod, card, subtotal: M(o.subtotalPriceSet), ship: M(o.totalShippingPriceSet), total: M(o.totalPriceSet), tx, delivered: dl ? trDay(Date.parse(dl)) : null };
 }
 async function shPaySave(env, nodes) {
-  const st = nodes.filter(o => o && o.name && Array.isArray(o.paymentGatewayNames)).map(o => { const x = shPayRow(o); return env.DB.prepare('INSERT INTO sh_pay(no, gateway, cod, card, subtotal, ship, total, at, tx) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(no) DO UPDATE SET gateway=excluded.gateway, cod=excluded.cod, card=excluded.card, subtotal=excluded.subtotal, ship=excluded.ship, total=excluded.total, at=excluded.at, tx=excluded.tx').bind(x.no, x.gateway, x.cod, x.card, x.subtotal, x.ship, x.total, iso(), x.tx || ''); });
+  const st = nodes.filter(o => o && o.name && Array.isArray(o.paymentGatewayNames)).map(o => { const x = shPayRow(o); return env.DB.prepare('INSERT INTO sh_pay(no, gateway, cod, card, subtotal, ship, total, at, tx, delivered) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(no) DO UPDATE SET gateway=excluded.gateway, cod=excluded.cod, card=excluded.card, subtotal=excluded.subtotal, ship=excluded.ship, total=excluded.total, at=excluded.at, tx=excluded.tx, delivered=COALESCE(excluded.delivered, sh_pay.delivered)').bind(x.no, x.gateway, x.cod, x.card, x.subtotal, x.ship, x.total, iso(), x.tx || '', x.delivered); });
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
 }
 // Geçmiş siparişlerin ödeme yöntemi bir kez (rapor başlangıcından bu yana) sayfa sayfa okunur
-const SH_PAY_Q = `query($q:String!,$after:String){orders(first:100,after:$after,sortKey:CREATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{name paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}} transactions(first:5){paymentId authorizationCode}}}}`;
+const SH_PAY_Q = `query($q:String!,$after:String){orders(first:100,after:$after,sortKey:CREATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{name paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}} transactions(first:5){paymentId authorizationCode} fulfillments(first:5){deliveredAt}}}}`;
 async function shPayBackfill(env, maxPages = 4) {
   const s = await getSettings(env, ['sh_pay_done', 'sh_pay_after', 'report_start']); if (s.sh_pay_done === '1') return null;
   const c = await shCreds(env); if (!shConfigured(c)) return null;
@@ -3164,7 +3180,7 @@ ${catalog}` });
   if (path === '/api/paytr/recon') {
     // PayTR mutabakatı: Shopify online siparişlerde beklenen tutar (ürün + 700 TL altı 100 TL kargo) ile PayTR'nin işlediği tutar, komisyonu, neti ve hesaba yattığı gün
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs));
-    const [oR, tR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.subtotal, p.total, p.tx, p.gateway FROM orders o JOIN sh_pay p ON p.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1 AND COALESCE(p.cod,0)=0 ORDER BY o.date`).bind(from),
+    const [oR, tR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.subtotal, p.total, p.tx, p.gateway, p.delivered shd, s.teslim srd, b.delivered bkd FROM orders o JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost s ON s.no = p.no LEFT JOIN bk_ship b ON b.no = p.no WHERE o.channel='shopify' AND o.date >= ?1 AND COALESCE(p.cod,0)=0 ORDER BY o.date`).bind(from),
       env.DB.prepare(`SELECT * FROM paytr_tx WHERE tarih >= ?1 ORDER BY tarih`).bind(addDayStr(rs, -1)), env.DB.prepare('SELECT * FROM pt_payout WHERE day >= ?1 ORDER BY day DESC').bind(rs)]);
     const sales = tR.results.filter(x => x.tip === 'S'), refunds = tR.results.filter(x => x.tip === 'I'), used = new Set(), out = [];
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'); if (!act.length) continue;
@@ -3174,7 +3190,8 @@ ${catalog}` });
       if (!m) { const c = sales.filter(x => !used.has(x.k) && x.tarih === day && Math.abs((x.tutar || 0) - exp) <= exp * 0.15).sort((a, b) => Math.abs(a.tutar - exp) - Math.abs(b.tutar - exp)); if (c.length) m = c[0]; } // aynı gün en yakın tutar: fark olarak gösterilir
       if (m) used.add(m.k);
       const lag = m && m.paid_day ? Math.round((Date.parse(m.paid_day) - Date.parse(m.tarih)) / 86400000) : null;
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff' }); }
+      const deliv = dlvDay(r.srd) || r.bkd || r.shd || null, dlag = m && m.paid_day && deliv ? Math.round((Date.parse(m.paid_day) - Date.parse(deliv)) / 86400000) : null; // PayTR ödemeyi teslimata göre yapar
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, deliv, dlag, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff' }); }
     const orphan = sales.filter(x => !used.has(x.k)).map(x => ({ siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day, odeme: x.odeme_tipi || '' }));
     // Eşleşmeyen her PayTR işlemi için aday Shopify siparişleri (±1 gün, tutar ±%15): neden eşleşmediği yazılır
     if (orphan.length) { const { results: cand } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, p.gateway FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1`).bind(iso(dayStartTR(addDayStr(rs, -2)))).all();
@@ -3184,11 +3201,12 @@ ${catalog}` });
           const amt = tot !== null ? tot : exp; if (Math.abs(amt - x.tutar) > x.tutar * 0.15 + 1) return null;
           const why = !act.length ? 'Shopify\'da iptal / tamamen iade edilmiş' : c.cod ? `Shopify'da kapıda ödeme görünüyor (${c.gateway || ''})` : c.total === null || c.total === undefined ? 'Shopify ödeme bilgisi henüz okunmamış' : Date.parse(c.date) < Date.parse(from) ? 'rapor başlangıcından (1 Ekim) önce verilmiş' : Math.abs(amt - x.tutar) >= 1 ? `tutar farklı (Shopify ${amt} TL)` : 'başka bir PayTR işlemiyle eşleşmiş olabilir';
           return { id: c.id, orderNo: c.order_no, date: c.date, amt, why }; }).filter(Boolean).slice(0, 4); } }
+    const st3 = (k) => { const a = out.filter(x => x[k] !== null && x[k] !== undefined).map(x => x[k]).sort((p, q) => p - q); return a.length ? { min: a[0], max: a[a.length - 1], med: a[Math.floor(a.length / 2)], avg: r2(a.reduce((p, q) => p + q, 0) / a.length), n: a.length } : null; };
     const lags = out.filter(x => x.lag !== null).map(x => x.lag).sort((a, b) => a - b), mm = (k, f = () => true) => r2(out.filter(x => x.st !== 'nodata' && f(x)).reduce((a, x) => a + (x[k] || 0), 0));
     const pend = mm('net', x => !x.paid), paidTot = r2(pR.results.reduce((a, x) => a + (x.net || 0), 0));
     return json({ ok: true, items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { exp: mm('exp'), pt: mm('pt'), kes: mm('kes'), net: mm('net'), pend, paid: paidTot, refunds: r2(refunds.reduce((a, x) => a + (x.tutar || 0), 0)) },
-      lag: lags.length ? { min: lags[0], max: lags[lags.length - 1], med: lags[Math.floor(lags.length / 2)], n: lags.length } : null, payouts: pR.results.slice(0, 60), orphan: orphan.slice(0, 50), orphanN: orphan.length });
+      lag: lags.length ? { min: lags[0], max: lags[lags.length - 1], med: lags[Math.floor(lags.length / 2)], n: lags.length } : null, lagD: st3('dlag'), delivN: out.filter(x => x.deliv).length, payouts: pR.results.slice(0, 60), orphan: orphan.slice(0, 50), orphanN: orphan.length });
   }
   if (path === '/api/paytr/rawdiag') { const cr = await ptCreds(env); const d = trToday(); const a = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-dokumu/', { start_date: addDayStr(d, -14), end_date: d }, cr.id + addDayStr(d, -14) + d + cr.salt).catch(e => ({ err: String(e.message) }));
     const p1 = a.list && a.list[0]; const day = p1 ? ptDay(String(p1.date_paid || '')) : addDayStr(d, -1); const b = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-detayi/', { date: day }, cr.id + day + cr.salt).catch(e => ({ err: String(e.message) }));
