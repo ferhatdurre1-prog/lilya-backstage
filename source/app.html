@@ -995,6 +995,21 @@ function viewCari(){
     h += `</div>`; }
   return h;
 }
+function srRecHtml(R){
+  if (R.loading) return loading(); if (R.err) return `<div class="banner bad"><div>${esc(R.err)}</div></div>`;
+  const T = R.tot, eq = Math.abs(T.sNet - T.eNet) < 1, F = cS().recF || 'all';
+  const rows = R.items.filter(x => F === 'all' || x.st === F);
+  const st = {ok: ['Eşit', 'p-good'], diff: ['Fark var', 'p-bad'], nodata: ['Sürat verisi yok', 'p-mute']};
+  return `<div class="card" style="gap:6px;padding:10px;border-color:${eq ? 'var(--good)' : 'var(--bad)'}"><b>${eq ? '✅ Tamam — iki taraf eşit' : '⚠️ Fark var'}</b>
+    <div class="tbl-wrap"><table class="t"><thead><tr><th></th><th class="r">Bizim hesap</th><th class="r">Sürat</th><th class="r">Fark</th></tr></thead><tbody>
+    <tr><td>Kapıda tahsilat (Sürat'ın toplayacağı)</td><td class="r">${tl2(T.eColl)}</td><td class="r">${tl2(T.sColl)}</td><td class="r">${tl2(T.sColl - T.eColl)}</td></tr>
+    <tr><td>Kargo + kapıda ödeme bedeli (Sürat'ın keseceği)</td><td class="r">${tl2(T.eFee)}</td><td class="r">${tl2(T.sFee)}</td><td class="r">${tl2(T.sFee - T.eFee)}</td></tr>
+    <tr><td><b>Net (+ Sürat bize öder / − biz öderiz)</b></td><td class="r"><b>${tl2(T.eNet)}</b></td><td class="r"><b>${tl2(T.sNet)}</b></td><td class="r"><b style="color:${eq ? 'var(--good)' : 'var(--bad)'}">${tl2(T.sNet - T.eNet)}</b></td></tr></tbody></table></div>
+    <p class="small muted" style="margin:0">${fmtN(R.matched)} / ${fmtN(R.n)} sipariş Sürat raporuyla eşleşti (karşılaştırma bunlar üzerinden) · ${fmtN(R.ok_n)} eşit · ${fmtN(R.diff_n)} fark var. Bizim hesap: anlaşmalı Sürat tarifesi (ürün desisi) + %2,35 posta vergisi + kapıda ödeme bedeli; teslim edilemeyende gidiş + yarı dönüş.</p></div>
+    <div class="chips" style="margin:6px 0">${[['all', 'Tümü · ' + R.n], ['diff', 'Fark var · ' + R.diff_n], ['ok', 'Eşit · ' + R.ok_n], ['nodata', 'Sürat verisi yok · ' + (R.n - R.matched)]].map(([id, l]) => `<button class="chip" data-act="srrec-f" data-id="${id}" aria-pressed="${F === id}">${l}</button>`).join('')}</div>
+    <div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th>Ödeme</th><th class="r">Bizim (tahsilat − ücret)</th><th class="r">Sürat (tahsilat − ücret)</th><th class="r">Fark</th><th>Durum</th></tr></thead><tbody>${rows.slice(0, 400).map(x => `<tr data-act="order" data-id="${esc(x.id)}" style="cursor:pointer"><td class="mono" style="white-space:nowrap">#${esc(String(x.orderNo || '').replace(/^#/, ''))}<div class="small muted">${esc(cDay(String(x.date).slice(0, 10)))} · ${x.desi} desi${x.miss ? '*' : ''}</div></td><td>${esc(x.method)}${x.und ? '<div class="small" style="color:var(--bad)">teslim edilemedi</div>' : ''}</td><td class="r" style="white-space:nowrap">${tl2(x.eColl)} − ${tl2(x.eFee)}<div><b>${tl2(x.eNet)}</b></div></td><td class="r" style="white-space:nowrap">${x.sNet === null ? '—' : `${tl2(x.sColl)} − ${tl2(x.sFee)}<div><b>${tl2(x.sNet)}</b></div>`}</td><td class="r"><b style="color:${x.st === 'ok' ? 'var(--good)' : x.st === 'diff' ? 'var(--bad)' : 'inherit'}">${x.diff === null ? '—' : tl2(x.diff)}</b></td><td><span class="pill ${st[x.st][1]}">${st[x.st][0]}</span></td></tr>`).join('')}</tbody></table></div>
+    <p class="small muted" style="margin:0">* ürün desisi girilmemiş, 1 sayıldı.</p>`;
+}
 // Sürat Kargo cari: kapıda tahsilatlar (Sürat bize borçlu) − kargo ücretleri (biz Sürat'a) ± aktarılan/ödenen
 function srCariCard(){
   const C = cS(); if (!C.sr && !C.srLoading) { C.srLoading = true; api('/api/srcari/summary', {}).then(d => { C.sr = d; C.srLoading = false; if (S.tab === 'cari') render(); }).catch(() => { C.srLoading = false; C.sr = {err: true}; }); }
@@ -1009,7 +1024,8 @@ function srCariCard(){
       <label class="f" style="margin:0"><span class="small">Tarih</span><input class="input" id="srm-day" type="date" value="${todayTR()}"></label>
       <label class="f" style="margin:0"><span class="small">Not</span><input class="input" id="srm-note" placeholder="İsteğe bağlı"></label>
       <button class="btn sm primary" type="submit">Kaydet</button></form>
-    <label class="btn sm" style="justify-self:start;cursor:pointer">📤 Sürat raporunu yükle<input type="file" id="sr-rep2" accept=".xlsx,.xls,.csv" style="display:none"></label>
+    <div class="row" style="gap:6px;flex-wrap:wrap"><label class="btn sm" style="cursor:pointer">📤 Sürat raporunu yükle<input type="file" id="sr-rep2" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="btn sm primary" type="button" data-act="srrec-open">${C.rec ? 'Mutabakatı kapat' : 'Sipariş bazında mutabakat'}</button>${C.rec && C.rec.items ? '<button class="btn sm" type="button" data-act="srrec-xls">Excel\'e aktar</button>' : ''}</div>
+    ${C.rec ? srRecHtml(C.rec) : ''}
     ${d.moves.length ? `<div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Hareket</th><th class="r">Tutar</th><th></th></tr></thead><tbody>${d.moves.map(m => `<tr><td>${esc(cDay(m.day))}</td><td>${m.kind === 'in' ? 'Sürat aktardı' : m.kind === 'out' ? 'Biz ödedik' : 'Düzeltme'}${m.note ? ' · ' + esc(m.note) : ''}</td><td class="r">${tl2(m.amount)}</td><td class="r"><button class="btn sm ghost" data-act="srmov-del" data-id="${m.id}">Sil</button></td></tr>`).join('')}</tbody></table></div>` : ''}` : ''}</div>`;
 }
 function cariDetail(x){
@@ -3681,6 +3697,10 @@ document.addEventListener('click', async e => {
       const rows = D.items.map(x => ({'Sipariş no': '#' + String(x.orderNo || '').replace(/^#/, ''), 'Tarih': fmtDate(x.date), 'Ödeme': x.method, 'Ödeme yöntemi (Shopify)': x.gateway, 'Ürün tutarı': x.sub, 'Beklenen kargo': x.shipE, 'Beklenen kapıda ödeme': x.codE, 'Olması gereken': x.exp, 'Shopify tahsil': x.got, 'Shopify kargo/ek ücret': x.shipGot, 'Kargo kapıda tahsil': x.collected, 'Fark': x.diff, 'Teslim edilemedi': x.undelivered ? 'Evet' : '', 'Açıklama': x.issues.join(' · ')}));
       const ws = XLSX.utils.json_to_sheet(rows); ws['!cols'] = [10, 16, 12, 22, 11, 11, 13, 13, 12, 14, 14, 10, 10, 70].map(w => ({wch: w}));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Hatalı siparişler'); XLSX.writeFile(wb, `shopify-hesap-kontrolu-${todayTR()}.xlsx`); break; }
+    case 'srrec-open': { const C = cS(); if (C.rec) { C.rec = null; render(); break; } C.rec = {loading: true}; render(); try { C.rec = await api('/api/srcari/recon', {}); } catch (e) { C.rec = {err: errText(e)}; } render(); break; }
+    case 'srrec-f': cS().recF = id; render(); break;
+    case 'srrec-xls': { const R = cS().rec; if (!R || !R.items) break; const ws = XLSX.utils.json_to_sheet(R.items.map(x => ({'Sipariş': '#' + String(x.orderNo || '').replace(/^#/, ''), 'Tarih': String(x.date).slice(0, 10), 'Ödeme': x.method, 'Desi': x.desi, 'Teslim edilemedi': x.und ? 'Evet' : '', 'Takip no': x.tracking, 'Bizim tahsilat': x.eColl, 'Bizim ücret': x.eFee, 'Bizim net': x.eNet, 'Sürat tahsilat': x.sColl, 'Sürat ücret': x.sFee, 'Sürat net': x.sNet, 'Fark': x.diff, 'Durum': x.st === 'ok' ? 'Eşit' : x.st === 'diff' ? 'Fark var' : 'Sürat verisi yok'})));
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sürat mutabakat'); XLSX.writeFile(wb, `surat-mutabakat-${todayTR()}.xlsx`); break; }
     case 'srcari-open': { const C = cS(); C.srOpen = !C.srOpen; render(); break; }
     case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
