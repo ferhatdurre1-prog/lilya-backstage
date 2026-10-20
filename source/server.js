@@ -423,8 +423,9 @@ function srPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z')
 function trOff(ms) { const x = new Date(ms), k = x.toISOString().slice(0, 10); return x.getUTCDay() === 0 || x.getUTCDay() === 6 || TR_HOLI.has(k) || TR_HOLI.has(k.slice(5)); }
 // PayTR: teslimden 7 gün geçtikten sonraki ilk iş günü (22.10 teslim → 30.10; 23.10 teslim → 31.10 cumartesi → 2.11)
 function ptPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 8 * 86400000; while (trOff(t)) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
-// Trendyol: teslimden 28 gün sonraki ilk salı ya da perşembe (tatilse sonraki salı/perşembe)
-function tyPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 28 * 86400000; for (let i = 0; i < 30; i++) { const w = new Date(t).getUTCDay(); if ((w === 2 || w === 4) && !trOff(t)) break; t += 86400000; } return new Date(t).toISOString().slice(0, 10); }
+// Trendyol: vade teslimden 28 gün; ödeme vadeden sonraki ilk pazartesi ya da perşembe. O gün resmi tatilse sonraki ilk iş günü.
+// (Erken ödeme alınan siparişler salı/cuma yatar; onların günü Trendyol ekstresinden gelir.)
+function tyPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 28 * 86400000; for (let i = 0; i < 7; i++) { const w = new Date(t).getUTCDay(); if (w === 1 || w === 4) break; t += 86400000; } while (trOff(t)) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
 // Erken ödeme bedeli faturaları: fatura tarihine en yakın (±3, yoksa ±7 gün) erken ödemeye (ödeme emri) bağlanır.
 // Yalnızca hakediş mutabakatında o ödeme gününün yanında gösterilir; kâr hesabı değişmez (fatura, fatura tarihine göre "Diğer Trendyol kesintileri"nde kalır).
 const EARLY_RE = /erken|early/i;
