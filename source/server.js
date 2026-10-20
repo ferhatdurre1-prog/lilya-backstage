@@ -146,7 +146,7 @@ async function init0(env) {
       await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_costreset1','1')`), setStmt(env, 'cost_backup_mig1', JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })),
         env.DB.prepare('UPDATE products SET cost=NULL, cost_date=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]); } catch (e) {}
   }
-  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ptdet1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ptdet1','1')`), env.DB.prepare('UPDATE pt_payout SET detailed=0')]); } catch (e) {} }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ptdet2'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ptdet2','1')`), env.DB.prepare('UPDATE pt_payout SET detailed=0')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shtx1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shtx1','1')`), setStmt(env, 'sh_pay_done', ''), setStmt(env, 'sh_pay_after', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpack2'`).first())) {
     // Shopify kuralları ve ayrı paketleme ücreti (sipariş başı 4 TL + ürün başı 1 TL): kayıtlı rapor günleri yeniden hesaplanır
@@ -340,7 +340,7 @@ async function ptPayoutSync(env, cr, maxDetail = 10) {
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
   const days = (await env.DB.prepare('SELECT day FROM pt_payout WHERE detailed=0 ORDER BY day LIMIT ?1').bind(maxDetail).all()).results; let linked = 0;
   for (const { day } of days) { const { list } = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-detayi/', { date: day }, cr.id + day + cr.salt);
-    const oids = [...new Set(list.map(ptOid).filter(Boolean))];
+    const oids = [...new Set(list.flat(4).map(ptOid).filter(Boolean))]; // detay iç içe liste olarak geliyor: [[{merchant_oid…}]]
     const st = oids.map(id => env.DB.prepare('UPDATE paytr_tx SET paid_day=?2 WHERE siparis_no=?1').bind(id, day)); linked += st.length;
     // detay boş geldiyse (PayTR henüz hazırlamamış) gün tekrar denenir; 5 günden eskiyse bırakılır
     if (oids.length || day < addDayStr(today, -5)) st.push(env.DB.prepare('UPDATE pt_payout SET detailed=1 WHERE day=?1').bind(day)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
@@ -3192,9 +3192,9 @@ ${catalog}` });
   }
   if (path === '/api/paytr/rawdiag') { const cr = await ptCreds(env); const d = trToday(); const a = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-dokumu/', { start_date: addDayStr(d, -14), end_date: d }, cr.id + addDayStr(d, -14) + d + cr.salt).catch(e => ({ err: String(e.message) }));
     const p1 = a.list && a.list[0]; const day = p1 ? ptDay(String(p1.date_paid || '')) : addDayStr(d, -1); const b = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-detayi/', { date: day }, cr.id + day + cr.salt).catch(e => ({ err: String(e.message) }));
-    const mask = (o) => JSON.parse(JSON.stringify(o || null, (k, v) => /iban|name|kart|pan/i.test(k) ? '•' : v)); const oids = (b.list || []).map(ptOid).filter(Boolean), hit = oids.length ? (await env.DB.prepare(`SELECT COUNT(*) n FROM paytr_tx WHERE siparis_no IN (${oids.slice(0, 90).map(() => '?').join(',')})`).bind(...oids.slice(0, 90)).first()).n : 0;
+    const mask = (o) => JSON.parse(JSON.stringify(o || null, (k, v) => /iban|name|kart|pan/i.test(k) ? '•' : v)); const oids = (b.list || []).flat(4).map(ptOid).filter(Boolean), hit = oids.length ? (await env.DB.prepare(`SELECT COUNT(*) n FROM paytr_tx WHERE siparis_no IN (${oids.slice(0, 90).map(() => '?').join(',')})`).bind(...oids.slice(0, 90)).first()).n : 0;
     const pd = await env.DB.prepare(`SELECT COUNT(*) n, SUM(detailed) d FROM pt_payout`).first(), lk = await env.DB.prepare(`SELECT COUNT(*) n FROM paytr_tx WHERE paid_day IS NOT NULL`).first();
-    return json({ ozet: { detayGunu: day, detaySatir: (b.list || []).length, siparisNoBulunan: oids.length, bizdeEslesen: hit, odemeGunu: pd.n, detayiOkunanGun: pd.d || 0, yattiIsaretli: lk.n }, detay: b.err || mask(b.list && b.list.slice(0, 2)), detayKeys: b.raw ? Object.keys(b.raw) : [], dokum: a.err || mask(a.raw && a.raw.paid_list ? a.raw.paid_list.slice(0, 2) : a.raw) }); }
+    return json({ ozet: { detayGunu: day, detaySatir: (b.list || []).flat(4).length, siparisNoBulunan: oids.length, bizdeEslesen: hit, odemeGunu: pd.n, detayiOkunanGun: pd.d || 0, yattiIsaretli: lk.n }, detay: b.err || mask(b.list && b.list.slice(0, 2)), detayKeys: b.raw ? Object.keys(b.raw) : [], dokum: a.err || mask(a.raw && a.raw.paid_list ? a.raw.paid_list.slice(0, 2) : a.raw) }); }
   if (path === '/api/paytr/status') {
     const cr = await ptCreds(env), s0 = await getSettings(env, ['pt_sync_at', 'pt_err']);
     const c = await env.DB.prepare(`SELECT COUNT(*) n, SUM(tip='S') sales, SUM(tip='I') refunds, SUM(CASE WHEN tip='S' THEN kesinti END) kes, AVG(CASE WHEN tip='S' AND oran>0 THEN oran END) oran, MIN(tarih) a, MAX(tarih) b FROM paytr_tx`).first();
