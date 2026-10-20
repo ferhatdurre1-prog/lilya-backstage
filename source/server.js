@@ -899,15 +899,18 @@ async function srList(env, cr, days) {
   const rows = srRows(t), mesaj = ((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '').trim();
   return { rows, mesaj, text: rows.length ? '' : srText(t).slice(0, 300) };
 }
-const srNorm = (x) => String(x || '').toLocaleUpperCase('tr').replace(/İ/g, 'I').replace(/[^A-Z0-9ÇĞÖŞÜ]/g, '');
+const srNorm = (x) => String(x || '').toLocaleUpperCase('tr').replace(/İ/g, 'I').replace(/Ç/g, 'C').replace(/Ğ/g, 'G').replace(/Ö/g, 'O').replace(/Ş/g, 'S').replace(/Ü/g, 'U').replace(/Â/g, 'A').replace(/Î/g, 'I').replace(/Û/g, 'U').replace(/[^A-Z0-9]/g, ''); // Türkçe harfler sadeleşir: Müjgan = MUJGAN
+const srToks = (x) => String(x || '').split(/\s+/).map(srNorm).filter(t => t.length > 1).sort().join(' ');
 // Listeden bizim gönderiyi bul: barkodumuz (LH…), sipariş no ya da alıcı adı
 function srMatch(rows, ship) {
   const ref = srNorm(ship.ref), no = String(ship.order_no || '').replace(/\D/g, ''); let a = {}; try { a = JSON.parse(ship.addr || '{}'); } catch (e) {}
-  const nm = srNorm(a.name), byName = [];
+  const nm = srNorm(a.name), tk = srToks(a.name), byName = [];
   for (const r of rows) { const vals = Object.entries(r);
     if (vals.some(([, v]) => srNorm(v) === ref || srNorm(v).includes(ref))) return r;
     if (no && vals.some(([k, v]) => /referans|siparis|irsaliye/i.test(k) && String(v).replace(/\D/g, '') === no)) return r;
-    if (nm && vals.some(([k, v]) => /alici|unvan|kisi/i.test(k) && srNorm(v) === nm)) byName.push(r); }
+    if (nm && vals.some(([k, v]) => /alici|unvan|kisi/i.test(k) && !/adres|tel|gonderen/i.test(k) && (srNorm(v) === nm || (tk && srToks(v) === tk)))) byName.push(r); }
+  if (byName.length > 1 && (a.ilce || a.il)) { const il = srNorm(a.il), ilce = srNorm(a.ilce); // aynı ad birden çok satırda: il/ilçeyle ayır
+    const f = byName.filter(r => Object.entries(r).some(([k, v]) => /ilce/i.test(srNorm(k).toLowerCase()) && ilce && srNorm(v) === ilce) || Object.entries(r).some(([k, v]) => /il$/i.test(k) && il && srNorm(v) === il)); if (f.length === 1) return f[0]; }
   return byName.length === 1 ? byName[0] : null;
 }
 // Takip no sütunu: önce "Kargo Takip No" benzeri, sonra diğer takip/barkod sütunları; bizim/müşterinin referans sütunları (web, özel, müşteri, sipariş) kullanılmaz. Excel'de sayı 1,23E+12 / 123.0 gibi gelebilir
