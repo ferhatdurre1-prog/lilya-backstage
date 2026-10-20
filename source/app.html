@@ -983,7 +983,7 @@ function viewCari(){
     for (const k of ['late', 'today', 'week']) { const g = A.filter(x => x.st === k); if (!g.length) continue;
       h += `<div class="small" style="margin-top:6px;font-weight:600;color:${k === 'late' ? 'var(--bad)' : 'inherit'}">${ST[k][0]} · ${tl2(g.reduce((t, x) => t + x.left, 0))}</div>` + g.map(x => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:6px 0;border-top:1px dashed var(--line)"><div style="min-width:0"><b style="overflow-wrap:anywhere">${esc(x.supplier)}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(cDay(x.due))} · ${esc(x.label)}${x.paid > 0.004 ? ` · ${tl2(x.paid)} ödendi` : ''}</div></div><b style="white-space:nowrap">${tl2(x.left)}</b><button class="btn sm primary" data-act="cari-pay" data-id="${esc(x.supplier)}" data-amt="${x.left}">Öde</button></div>`).join(''); }
     h += `</div>`; }
-  h += srCariCard();
+  h += srCariCard() + ptCariCard();
   h += `<div class="row" style="justify-content:flex-end;margin-bottom:10px"><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button></div>`;
   if (C.open === '__new') h += cariPayForm('', D.suppliers || []);
   if (!L.length) return h + `<div class="panel empty"><h4>Henüz cari kaydı yok</h4><p>Stoklar → <b>Alış listeleri</b>'nde bir faturayı açıp <b>Cariye işle</b> de; tedarikçi burada borcuyla görünür.</p></div>`;
@@ -994,6 +994,26 @@ function viewCari(){
     if (op) h += cariDetail(x);
     h += `</div>`; }
   return h;
+}
+// PayTR: online Shopify siparişleri — beklenen tutar, PayTR'nin işlediği, komisyon, net ve hesaba yattığı gün
+function ptCariCard(){
+  const C = cS(); if (!C.pt && !C.ptLoading) { C.ptLoading = true; api('/api/paytr/recon', {}).then(d => { C.pt = d; C.ptLoading = false; if (S.tab === 'cari') render(); }).catch(e => { C.ptLoading = false; C.pt = {err: errText(e)}; }); }
+  const d = C.pt; if (!d || d.err) return '';
+  const T = d.tot, eq = Math.abs(T.pt - T.exp) < 1, open = C.ptOpen, F = C.ptF || 'all', st = {ok: ['Eşit', 'p-good'], diff: ['Fark var', 'p-bad'], nodata: ['PayTR kaydı yok', 'p-mute']};
+  const L = d.lag ? `PayTR parayı satıştan ortalama <b>${d.lag.med} gün</b> sonra yatırıyor (en az ${d.lag.min}, en çok ${d.lag.max} gün · ${fmtN(d.lag.n)} işlemden)` : 'Ödeme günleri PayTR\'den okununca paranın kaç günde yattığı burada görünecek.';
+  let h = `<div class="card" style="gap:8px;padding:12px;margin-bottom:12px;border-color:var(--accent)"><div class="spread" style="gap:10px;cursor:pointer;align-items:flex-start" data-act="ptcari-open"><div style="min-width:0"><div style="font-weight:700"><span class="pill p-brass">PayTR</span> hesabı</div><div class="small muted">${fmtN(d.n)} online sipariş · ${fmtN(d.matched)} PayTR'de eşleşti · ${eq ? 'tutarlar eşit' : '<span style="color:var(--bad)">fark var</span>'}</div><div class="small" style="margin-top:4px">${L}</div></div>
+    <div style="text-align:right"><div class="small muted">Yatması beklenen</div><div style="font-weight:700;font-size:17px;color:var(--good)">${tl2(T.pend)}</div></div></div>`;
+  if (!open) return h + '</div>';
+  h += `<div class="tbl-wrap"><table class="t"><tbody>
+    <tr><td>Beklenen online ciro (ürün + kargo)</td><td class="r">${tl2(T.exp)}</td></tr><tr><td>PayTR'nin işlediği tutar</td><td class="r">${tl2(T.pt)}${eq ? '' : ` <b style="color:var(--bad)">(fark ${tl2(T.pt - T.exp)})</b>`}</td></tr>
+    <tr><td>PayTR komisyonu</td><td class="r" style="color:var(--bad)">−${tl2(T.kes)}</td></tr><tr><td><b>Net (bize yatacak)</b></td><td class="r"><b>${tl2(T.net)}</b></td></tr>
+    <tr><td>Hesaba yatan (PayTR ödeme dökümü)</td><td class="r" style="color:var(--good)">${tl2(T.paid)}</td></tr><tr><td>Henüz yatmamış (eşleşen siparişlerin neti)</td><td class="r"><b>${tl2(T.pend)}</b></td></tr>${T.refunds ? `<tr><td>PayTR iadeleri</td><td class="r">${tl2(T.refunds)}</td></tr>` : ''}</tbody></table></div>`;
+  if ((d.payouts || []).length) h += `<details><summary class="small" style="cursor:pointer">Hesaba yatan ödemeler (${fmtN(d.payouts.length)})</summary><div class="tbl-wrap"><table class="t"><thead><tr><th>Gün</th><th class="r">Satış</th><th class="r">İade</th><th class="r">Yatan net</th></tr></thead><tbody>${d.payouts.map(p => `<tr><td>${esc(cDay(p.day))}</td><td class="r">${tl2(p.sales || 0)}</td><td class="r">${tl2(p.ret || 0)}</td><td class="r"><b>${tl2(p.net || 0)}</b></td></tr>`).join('')}</tbody></table></div></details>`;
+  const rows = d.items.filter(x => F === 'all' || x.st === F);
+  h += `<div class="row" style="gap:6px;flex-wrap:wrap"><div class="chips">${[['all', 'Tümü · ' + d.n], ['diff', 'Fark var · ' + d.diff_n], ['ok', 'Eşit · ' + d.ok_n], ['nodata', 'PayTR kaydı yok · ' + (d.n - d.matched)]].map(([id, l]) => `<button class="chip" data-act="ptrec-f" data-id="${id}" aria-pressed="${F === id}">${l}</button>`).join('')}</div><button class="btn sm" data-act="ptrec-xls">Excel'e aktar</button></div>
+    <div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th class="r">Beklenen</th><th class="r">PayTR</th><th class="r">Komisyon</th><th class="r">Net</th><th>Yattı</th><th>Durum</th></tr></thead><tbody>${rows.slice(0, 400).map(x => `<tr data-act="order" data-id="${esc(x.id)}" style="cursor:pointer"><td class="mono" style="white-space:nowrap">#${esc(String(x.orderNo || '').replace(/^#/, ''))}<div class="small muted">${esc(cDay(String(x.date).slice(0, 10)))}</div></td><td class="r">${tl2(x.exp)}</td><td class="r">${x.pt === null ? '—' : tl2(x.pt)}</td><td class="r">${x.kes === null ? '—' : tl2(x.kes) + (x.oran ? `<div class="small muted">%${String(x.oran).replace('.', ',')}</div>` : '')}</td><td class="r">${x.net === null ? '—' : tl2(x.net)}</td><td class="small">${x.paid ? esc(cDay(x.paid)) + (x.lag !== null ? ` (${x.lag} gün)` : '') : x.pt === null ? '' : 'bekliyor'}</td><td><span class="pill ${st[x.st][1]}">${st[x.st][0]}</span></td></tr>`).join('')}</tbody></table></div>
+    ${d.orphanN ? `<p class="small muted" style="margin:0">PayTR'de olup Shopify siparişiyle eşleşmeyen ${fmtN(d.orphanN)} işlem var (ör. ${esc(d.orphan.slice(0, 3).map(x => x.tutar + ' TL ' + cDay(x.tarih)).join(', '))}).</p>` : ''}`;
+  return h + '</div>';
 }
 function srRecHtml(R){
   if (R.loading) return loading(); if (R.err) return `<div class="banner bad"><div>${esc(R.err)}</div></div>`;
@@ -3703,6 +3723,10 @@ document.addEventListener('click', async e => {
     case 'srrec-f': cS().recF = id; render(); break;
     case 'srrec-xls': { const R = cS().rec; if (!R || !R.items) break; const ws = XLSX.utils.json_to_sheet(R.items.map(x => ({'Sipariş': '#' + String(x.orderNo || '').replace(/^#/, ''), 'Tarih': String(x.date).slice(0, 10), 'Ödeme': x.method, 'Desi': x.desi, 'Teslim edilemedi': x.und ? 'Evet' : '', 'Takip no': x.tracking, 'Bizim tahsilat': x.eColl, 'Bizim ücret': x.eFee, 'Bizim net': x.eNet, 'Sürat tahsilat': x.sColl, 'Sürat ücret': x.sFee, 'Sürat net': x.sNet, 'Fark': x.diff, 'Durum': x.st === 'ok' ? 'Eşit' : x.st === 'diff' ? 'Fark var' : 'Sürat verisi yok'})));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sürat mutabakat'); XLSX.writeFile(wb, `surat-mutabakat-${todayTR()}.xlsx`); break; }
+    case 'ptcari-open': { const C = cS(); C.ptOpen = !C.ptOpen; render(); break; }
+    case 'ptrec-f': cS().ptF = id; render(); break;
+    case 'ptrec-xls': { const d = cS().pt; if (!d || !d.items) break; const ws = XLSX.utils.json_to_sheet(d.items.map(x => ({'Sipariş': '#' + String(x.orderNo || '').replace(/^#/, ''), 'Tarih': String(x.date).slice(0, 10), 'Beklenen': x.exp, 'PayTR tutar': x.pt, 'Komisyon': x.kes, 'Oran %': x.oran, 'Net': x.net, 'Yattığı gün': x.paid, 'Kaç gün sonra': x.lag, 'Fark': x.diff, 'Durum': x.st === 'ok' ? 'Eşit' : x.st === 'diff' ? 'Fark var' : 'PayTR kaydı yok'})));
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'PayTR mutabakat'); XLSX.writeFile(wb, `paytr-mutabakat-${todayTR()}.xlsx`); break; }
     case 'srcari-open': { const C = cS(); C.srOpen = !C.srOpen; render(); break; }
     case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
@@ -3883,7 +3907,7 @@ document.addEventListener('click', async e => {
     case 'ad-fok': addrFieldCommit(); break;
     case 'pt-edit': S.ptEdit = id === '1'; renderSheet(false); break;
     case 'pt-off': if (!(await confirmBox('PayTR bağlantısı kesilsin mi? Okunan işlemler korunur.', 'Bağlantıyı kes', true))) break; await run(async () => { await api('/api/paytr/disconnect', {}); S.pt = null; renderSheet(false); }); break;
-    case 'pt-sync': b.disabled = true; b.textContent = 'Okunuyor…'; await run(async () => { const r = (await api('/api/paytr/sync', {})).r; toast(`PayTR: ${fmtN(r ? r.n : 0)} işlem okundu${r && !r.done ? ' (devam için tekrar bas)' : ''}.`); S.pt = null; renderSheet(false); }); break;
+    case 'pt-sync': b.disabled = true; b.textContent = 'Okunuyor…'; await run(async () => { const r = (await api('/api/paytr/sync', {})).r; toast(`PayTR: ${fmtN(r ? r.n : 0)} işlem okundu${r && r.pay ? ` · ${fmtN(r.pay.linked)} işleme ödeme günü yazıldı` : ''}${r && !r.done ? ' (devam için tekrar bas)' : ''}.`); S.pt = null; if (S.cari) S.cari.pt = null; renderSheet(false); }); break;
     case 'bk-edit': S.bkEdit = id === '1'; renderSheet(false); break;
     case 'bk-off': if (!(await confirmBox('Basit Kargo bağlantısı kesilsin mi? Okunan gönderiler ve kâr hesabı korunur.', 'Bağlantıyı kes', true))) break; await run(async () => { await api('/api/bk/disconnect', {}); S.bk = null; renderSheet(false); }); break;
     case 'bk-sync': b.disabled = true; b.textContent = 'Çekiliyor…'; await run(async () => { const r = await api('/api/bk/sync', {}); toast('Basit Kargo: ' + r.msg); S.bk = null; renderSheet(false); }); break;
