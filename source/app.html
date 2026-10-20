@@ -444,7 +444,7 @@ async function refresh(force){
     const d = await api('/api/state' + (S.rev && !force ? '?rev=' + encodeURIComponent(S.rev) : ''));
     S.authed = true; S.conn = 'ok'; try { localStorage.setItem('lb_seen', '1'); sessionStorage.setItem('lb_live', '1'); } catch(e) {} if (!mktAt) setTimeout(loadMarket, 0); if (!wxAt) setTimeout(loadWeather, 0);
     // Yeni sürüm yayına alındıysa uygulama kendini yeniler (ana ekrana eklenmiş uygulama açık kalsa bile)
-    if (d.build && d.build !== CLIENT_BUILD && !S.sheet && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) {
+    if (d.build && d.build !== CLIENT_BUILD && !S.sheet && !userBusy()) {
       let last = null; try { last = JSON.parse(sessionStorage.getItem('lb_reload') || 'null'); } catch(e) {}
       if (!last || last.b !== d.build || Date.now() - last.t > 120000) { try { sessionStorage.setItem('lb_reload', JSON.stringify({b: d.build, t: Date.now()})); } catch(e) {} location.reload(); return; }
     }
@@ -453,7 +453,7 @@ async function refresh(force){
     if (!d.same) {
       S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); applySets(); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
       for (const k in S.loaded) S.loaded[k] = true;
-      render();
+      if (userBusy()) S.dirty = true; else render(); // kullanıcı yazıyor / formla uğraşıyorsa ekran yenilenmez, işi bitince yenilenir
     } else if (nwChanged && S.tab === 'home') render(); // bekleyen sipariş sayısı veri sürümünden bağımsız değişebilir
     else renderSync();
   } catch(e) {
@@ -462,12 +462,24 @@ async function refresh(force){
   }
 }
 let pollTimer = null;
+// Kullanıcı bir şeyle uğraşıyor mu: odakta bir kutu var, bir forma elle değer yazılmış ya da son 20 saniyede dokunulmuş/yazılmış
+let lastTouch = 0;
+['keydown', 'input', 'pointerdown', 'wheel', 'touchmove'].forEach(ev => document.addEventListener(ev, () => { lastTouch = Date.now(); }, { passive: true, capture: true }));
+// Yarım bırakılmış form 3 dakika dokunulmazsa yenilemeyi artık engellemez
+function userBusy(){
+  const a = document.activeElement; if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) return true;
+  if (Date.now() - lastTouch < 20000) return true;
+  if (Date.now() - lastTouch < 180000) for (const el of document.querySelectorAll('#view input, #view textarea, #view select, #sheet-root input, #sheet-root textarea, #sheet-root select')) { if (el.type === 'checkbox' || el.type === 'radio' ? el.checked !== el.defaultChecked : el.tagName === 'SELECT' ? [...el.options].some(o => o.selected !== o.defaultSelected) : el.type !== 'file' && el.value !== el.defaultValue) return true; }
+  const sel = window.getSelection && window.getSelection(); if (sel && String(sel).length) return true;
+  return false;
+}
+setInterval(() => { if (S.dirty && !userBusy()) render(); }, 3000);
 function startPolling(){
   refresh(true);
   if (pollTimer) return;
   // Maliyet koruması: tasarruf modunda uygulama da daha seyrek sorar
   let lastPoll = 0;
-  pollTimer = setInterval(() => { const lv = (S.usage && S.usage.level) || 0, every = lv >= 2 ? 60000 : lv === 1 ? 30000 : 10000; if (document.visibilityState === 'visible' && S.authed && Date.now() - lastPoll >= every - 500) { lastPoll = Date.now(); refresh(false); } }, 10000);
+  pollTimer = setInterval(() => { const lv = (S.usage && S.usage.level) || 0, every = lv >= 2 ? 120000 : lv === 1 ? 90000 : 60000; if (document.visibilityState === 'visible' && S.authed && Date.now() - lastPoll >= every - 500) { lastPoll = Date.now(); refresh(false); } }, 10000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.authed) refresh(false); });
 }
 function allMoves(){ return S.moves; }
@@ -675,6 +687,7 @@ document.addEventListener('click', e => {
   sortTable(t, col, TSORT[key].dir);
 });
 function render(){
+  S.dirty = false;
   const logged = S.authed === true;
   document.body.dataset.tab = logged ? S.tab : 'login';
   $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#hdr-actions').hidden = !logged; $('#burger').hidden = !logged;
