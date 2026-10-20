@@ -1145,7 +1145,7 @@ function cariWeekCard(D){
   const incRow = (x) => `<div class="spread" style="gap:8px;padding:6px 0;border-top:1px dashed var(--line)"><div style="min-width:0"><b>${esc(x.who)}</b><div class="small muted">${esc(wd(x.day))} ${esc(cDay(x.day))}${x.note ? ' · ' + esc(x.note) : ''}</div></div><b style="white-space:nowrap;color:var(--good)">+${tl2(x.amt)}</b></div>`;
   const credits = (D.list || []).filter(x => x.bal < -0.004), I = Math.min(C.wkI || 0, NW - 1);
   const panels = weeks.map((w, i) => { const lp = i === 0 ? grp(late, true) : [], pp = grp(w.pay, true), ii = grp(w.inc, false), po = sumT(w.pay) + (i === 0 ? sumT(late) : 0), pi = sumT(w.inc), net = pi - po;
-    return `<section class="wk-pane" style="flex:0 0 100%;scroll-snap-align:start;min-width:0;padding:2px 2px 4px">
+    return `<section class="wk-pane" style="flex:0 0 100%;width:100%;box-sizing:border-box;scroll-snap-align:start;min-width:0;padding:2px 2px 4px">
       <div class="spread" style="gap:8px;align-items:flex-start"><div><b>${esc(cDay(w.a).slice(0, 5))} – ${esc(cDay(w.b))}</b><div class="small muted">${i === 0 ? 'bu hafta' : i === 1 ? 'gelecek hafta' : i + ' hafta sonra'}</div></div>
         <div style="text-align:right"><div class="small">Ödenecek <b style="color:var(--bad)">${tl2(po)}</b></div><div class="small">Gelecek <b style="color:var(--good)">${tl2(pi)}</b></div><div class="small">Net <b style="color:${net >= 0 ? 'var(--good)' : 'var(--bad)'}">${net >= 0 ? '+' : '−'}${tl2(Math.abs(net))}</b></div></div></div>
       ${lp.length ? `<div class="small" style="margin-top:8px;font-weight:600;color:var(--bad)">Gecikmiş · ${tl2(sumT(late))}</div>${lp.map(payRow).join('')}` : ''}
@@ -1153,7 +1153,7 @@ function cariWeekCard(D){
       ${ii.length ? `<div class="small" style="margin-top:8px;font-weight:600;color:var(--good)">Alacakların · ${tl2(pi)}</div>${ii.map(incRow).join('')}` : ''}
       ${!lp.length && !pp.length && !ii.length ? '<div class="small muted" style="margin-top:10px">Bu hafta ödeme ya da tahsilat yok.</div>' : ''}</section>`; }).join('');
   let h = `<div class="card" style="gap:8px;padding:12px;margin-bottom:12px;border-color:${late.length ? 'var(--bad)' : 'var(--accent)'}"><div class="spread" style="gap:8px"><b>📆 Haftalık ödeme / tahsilat</b><div class="row" style="gap:4px"><button class="btn sm" data-act="wk-go" data-id="-1" aria-label="Önceki hafta"${I === 0 ? ' disabled' : ''}>‹</button><button class="btn sm" data-act="wk-go" data-id="1" aria-label="Sonraki hafta"${I >= NW - 1 ? ' disabled' : ''}>›</button></div></div>
-    <div id="wk-swipe" style="display:flex;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none;gap:0;overscroll-behavior-x:contain">${panels}</div>
+    <div id="wk-swipe" style="min-width:0;width:100%;max-width:100%;display:flex;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none;gap:0;overscroll-behavior-x:contain">${panels}</div>
     <div class="row" id="wk-dots" style="justify-content:center;gap:5px">${weeks.map((w, i) => `<span data-act="wk-dot" data-id="${i}" style="width:${i === I ? 16 : 7}px;height:7px;border-radius:4px;background:${i === I ? 'var(--accent)' : 'var(--line)'};cursor:pointer;transition:width .2s"></span>`).join('')}</div>
     <p class="small muted" style="margin:0">Sağa-sola kaydır: her hafta kime ne ödeyeceğin (vade sonrası ilk cuma, firma başına toplam) ve nereden ne geleceği.${credits.length ? ` Tarihi olmayan alacakların: ${credits.map(x => `${esc(x.supplier)} ${curAmt(-x.bal, x.cur)}`).join(' · ')}.` : ''}${!T || !P || !R0 ? ' Trendyol / PayTR / Sürat tahsilatları yükleniyor…' : ''}</p></div>`;
   return h;
@@ -4350,10 +4350,11 @@ startPolling();
   const set = (d, back) => { el.classList.toggle('back', !!back); const t = Math.min(d, MAX); el.style.opacity = String(Math.min(1, t / TRIG)); el.style.transform = `translateY(${t - 50}px) rotate(${t * 3}deg)`; };
   const hide = () => { el.classList.remove('go'); set(0, true); el.style.opacity = '0'; };
   const blocked = () => busy || S.sheet || S.drawer || !S.authed || document.querySelector('.scrim');
-  document.addEventListener('touchstart', e => { if (blocked() || window.scrollY > 0 || e.touches.length !== 1) { y0 = null; return; } y0 = e.touches[0].clientY; dy = 0; pulling = false; }, {passive: true});
+  let x0 = 0; document.addEventListener('touchstart', e => { if (blocked() || window.scrollY > 0 || e.touches.length !== 1 || (e.target.closest && e.target.closest('#wk-swipe, .tbl-wrap, .tabs, .ticker, .chips'))) { y0 = null; return; } y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; dy = 0; pulling = false; }, {passive: true}); // yatay kaydırılan alanlarda yenileme çekmesi devreye girmez
   document.addEventListener('touchmove', e => {
     if (y0 === null) return;
     const d = e.touches[0].clientY - y0;
+    if (!pulling && Math.abs(e.touches[0].clientX - x0) > Math.abs(d)) { y0 = null; return; } // yatay hareket: sayfa kaydırması
     if (d <= 0 || window.scrollY > 0) { if (pulling) hide(); y0 = null; pulling = false; return; }
     pulling = true; dy = d * 0.55; set(dy, false);
     if (e.cancelable) e.preventDefault();
