@@ -308,7 +308,14 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .hk .up{color:var(--good)}.hk .dn{color:var(--bad)}
 body[data-tab="home"] .act-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 body[data-tab="home"] .sc-grid .act.sc{height:44px;min-width:0;overflow:hidden}body[data-tab="home"] .sc-grid .act.sc .l{min-width:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical} /* bütün kısayollar aynı boyda */
-body[data-tab="home"] .act-grid .act{padding:6px 3px}body[data-tab="home"] .act-grid .act .l{font-size:10px;line-height:1.2}body[data-tab="home"] .act-grid .act .n{font-size:14px}
+body[data-tab="home"] .act-grid .act{padding:6px 3px}
+/* Ana ekran telefon boyuna göre büyür: altta boşluk kalmasın (ekran yüksekliğinin payı) */
+body[data-tab="home"] .hk{height:clamp(39px,calc(39px + (100dvh - 820px) * .12),62px)}
+body[data-tab="home"] .hk .v{font-size:clamp(14.5px,calc(14.5px + (100dvh - 820px) * .025),18px)}
+body[data-tab="home"] .hlist .item{padding-top:clamp(3px,calc(3px + (100dvh - 820px) * .05),10px);padding-bottom:clamp(3px,calc(3px + (100dvh - 820px) * .05),10px)}
+body[data-tab="home"] .act-grid .act:not(.sc){min-height:clamp(56px,calc(56px + (100dvh - 820px) * .12),80px);align-content:center}
+body[data-tab="home"] .sc-grid .act.sc{height:clamp(44px,calc(44px + (100dvh - 820px) * .15),66px)}
+body[data-tab="home"] .act-grid .act .l{font-size:10px;line-height:1.2}body[data-tab="home"] .act-grid .act .n{font-size:14px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0} /* uzun tek satırlık metin kartı ekrandan taşırmasın */
 .card>*{min-width:0;max-width:100%}
 .seg{display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
