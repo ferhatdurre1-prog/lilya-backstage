@@ -4178,6 +4178,12 @@ ${catalog}` });
     } catch (e) {}
     return json({ ok: true, page, size, total: tot ? tot.n : 0, orders: results.map(r => ({ ...mapOrder(r), prof: prof[r.id] || null })) });
   }
+  if (path === '/api/orders/profdet') {
+    // Tek siparişin kâr dökümü (sipariş detayında gelir / gider kalemleri; Kâr ekranıyla aynı hesap)
+    const id = String(body.id || ''); const r = await env.DB.prepare('SELECT date FROM orders WHERE id=?1').bind(id).first(); if (!r) return bad('Sipariş bulunamadı.', 404);
+    const d = Date.parse(r.date); const pr = await computeProfit(env, iso(d), iso(d + 1)); const x = (pr.orders || []).find(y => y.id === id);
+    return json({ ok: true, x: x || null, outOfRange: !x });
+  }
   if (path === '/api/orders/prof') {
     // Listede görünen siparişlerin kârı (Kâr ekranıyla aynı hesap)
     const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).slice(0, 100); const prof = {};
