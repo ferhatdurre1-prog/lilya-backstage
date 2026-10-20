@@ -1865,8 +1865,10 @@ async function scanHandle(raw){
   if (it) { it.n += f; sh.items.splice(sh.items.indexOf(it), 1); sh.items.unshift(it); } else { it = {key: p.id, code: p.code, name: p.name, image: p.image, qty: p.qty, cost: p.cost, n: f}; sh.items.unshift(it); }
   sh.last = {code, name: p.name, f}; soList();
 }
-function soMarkup(v){ try { if (v !== undefined) { localStorage.setItem('so_markup', String(v)); return Number(v); } const x = Number(localStorage.getItem('so_markup')); if (x >= 1 && x <= 200) return x; } catch(e) {} return 25; }
-const soTotals = (items, disc) => { const sub = Math.round(items.reduce((a, x) => a + (x.cost > 0 ? soPrice(x.cost) * x.n : 0), 0) * 100) / 100, d = Math.round(sub * (Number(disc) || 0)) / 100; return {sub, d, total: Math.round((sub - d) * 100) / 100}; };
+function soMarkup(v){ try { if (v !== undefined) { localStorage.setItem('so_markup', String(v)); return Number(v); } const x = Number(localStorage.getItem('so_markup')); if (x >= 0 && x <= 1000) return x; } catch(e) {} return 25; }
+// Müşteriye satış (net) = alış + kâr; liste fiyatı = net ÷ (1 − iskonto). Örn. alış 100, %100 kâr → 200; %50 iskonto → liste 400, iskonto −200, toplam 200
+const soLP = (cost, disc) => { const d = Math.min(95, Math.max(0, Number(disc) || 0)); return Math.round(soPrice(cost) / (1 - d / 100) * 100) / 100; };
+const soTotals = (items, disc) => { const r2 = (v) => Math.round(v * 100) / 100, F = items.filter(x => x.cost > 0), sub = r2(F.reduce((a, x) => a + soLP(x.cost, disc) * x.n, 0)), total = r2(F.reduce((a, x) => a + soPrice(x.cost) * x.n, 0)); return {sub, d: r2(sub - total), total}; };
 let SO_MK = null; // geçmiş listenin PDF'i yeniden alınırken o listenin kâr oranı
 const soPrice = (cost) => Math.round((Number(cost) || 0) * (1 + (SO_MK !== null ? SO_MK : soMarkup()) / 100) * 100) / 100;
 // Satış listesi PDF'i (A4): resim, kod, ürün, adet, birim fiyat (alış + seçilen kâr), tutar; ara toplam, iskonto, genel toplam
@@ -1876,7 +1878,7 @@ async function soSalesPdf(items, disc, note){
   const doc = new MiniPdf(210, 297), mm = (v) => v * 8, PW = mm(210), PH = mm(297), m = mm(14), cw = PW - 2 * m;
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica`; };
   const IMG = mm(15);
-  const cols = [['#', mm(7), 'l'], ['', IMG + mm(3), 'l'], ['KOD', mm(22), 'l'], ['ÜRÜN', 0, 'l'], ['ADET', mm(13), 'r'], ['BİRİM FİYAT', mm(26), 'r'], ['TUTAR', mm(28), 'r']];
+  const cols = [['#', mm(7), 'l'], ['', IMG + mm(3), 'l'], ['KOD', mm(22), 'l'], ['ÜRÜN', 0, 'l'], ['ADET', mm(13), 'r'], [disc ? 'LİSTE FİYATI' : 'BİRİM FİYAT', mm(26), 'r'], ['TUTAR', mm(28), 'r']];
   cols[3][1] = cw - cols.reduce((a, x) => a + x[1], 0);
   const xs = []; { let x = m; for (const cc of cols) { xs.push(x); x += cc[1]; } }
   const now = new Date(), dstr = now.toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'numeric'}) + ' ' + now.toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit'});
@@ -1894,7 +1896,7 @@ async function soSalesPdf(items, disc, note){
   head();
   let tq = 0;
   items.forEach((x, k) => {
-    const price = x.cost > 0 ? soPrice(x.cost) : null, amt = price === null ? null : price * x.n; tq += x.n;
+    const price = x.cost > 0 ? soLP(x.cost, disc) : null, amt = price === null ? null : price * x.n; tq += x.n;
     font(c, 3.4, false); const nl = wrapText(c, x.name || '', cols[3][1] - mm(3)).slice(0, 3); const rh = Math.max(Math.max(nl.length, 1) * mm(4.6) + mm(2.4), IMG + mm(2.4));
     if (y + rh > PH - m - mm(30)) head();
     const ty = y + (rh - mm(1.2) - Math.max(nl.length, 1) * mm(4.6)) / 2;
@@ -1909,7 +1911,7 @@ async function soSalesPdf(items, disc, note){
   y += mm(1); line(c, y, 0.4); y += mm(3);
   const right = (t, yy, size, bold) => { font(c, size, bold); c.fillText(t, PW - m - c.measureText(t).width, yy); };
   font(c, 3.6, false); c.fillText('Toplam adet: ' + fmtN(tq), m, y);
-  if (disc) { right('Ara toplam: ' + tl2(T.sub), y, 3.8, false); y += mm(5.5); right(`İskonto (%${disc}): -${tl2(T.d)}`, y, 3.8, false); y += mm(6.5); }
+  if (disc) { right('Liste toplamı: ' + tl2(T.sub), y, 3.8, false); y += mm(5.5); right(`İskonto (%${disc}): -${tl2(T.d)}`, y, 3.8, false); y += mm(6.5); }
   right('GENEL TOPLAM: ' + tl2(T.total), y - mm(0.6), 5, true);
   if (items.some(x => !(x.cost > 0))) { y += mm(8); font(c, 3, false); c.fillText('— : fiyatı tanımlı olmayan ürün (toplama dahil değil)', m, y); }
   return doc.output();
@@ -1918,8 +1920,8 @@ function soList(){
   const sh = S.sheet, el = $('#so-list'); if (!el || !sh) return;
   const units = sh.items.reduce((a, x) => a + x.n, 0);
   const last = sh.last ? (sh.last.bad ? `<div class="banner bad small" style="margin:0 0 8px"><div>Bulunamadı: <b class="mono">${esc(sh.last.code)}</b></div></div>` : `<div class="small" style="margin:0 0 8px;color:var(--good)">✓ ${esc(sh.last.name)}${sh.last.f > 1 ? ` (paket: ${fmtN(sh.last.f)} adet)` : ''}</div>`) : '';
-  el.innerHTML = last + (sh.items.length ? `<div class="list">${sh.items.map((x, i) => `<div class="item" style="align-items:center">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code)}</span><span>· stokta ${fmtN(x.qty)}</span>${x.n > x.qty ? '<span class="pill p-bad">Stok yetmiyor</span>' : ''}</div><div class="meta">${x.cost > 0 ? `<span>alış ${tl2(x.cost)} → satış <b>${tl2(soPrice(x.cost))}</b></span><span>· tutar ${tl2(soPrice(x.cost) * x.n)}</span>` : '<span class="pill p-warn">Alış fiyatı yok</span>'}</div></div><div class="end" style="display:flex;align-items:center;gap:6px"><button class="btn sm" type="button" data-act="scan-dec" data-id="${i}" aria-label="Azalt">−</button><b class="num" style="min-width:28px;text-align:center;font-size:18px">${fmtN(x.n)}</b><button class="btn sm" type="button" data-act="scan-inc" data-id="${i}" aria-label="Arttır">+</button><button class="btn sm ghost" type="button" data-act="scan-del" data-id="${i}" aria-label="Sil">✕</button></div></div>`).join('')}</div>` : '<div class="card"><p class="muted small" style="margin:0">Henüz ürün okutulmadı. Koli etiketini ya da ürünün barkodunu okut.</p></div>');
-  const tt = $('#so-total'); if (tt) { const T = soTotals(sh.items, sh.disc), miss = sh.items.filter(x => !(x.cost > 0)).length; tt.innerHTML = sh.items.length ? `Ara toplam ${tl2(T.sub)} (%${soMarkup()} kâr)${sh.disc ? ` · iskonto %${sh.disc}: −${tl2(T.d)}` : ''} · <b>Genel toplam ${tl2(T.total)}</b>${miss ? ` · <span style="color:var(--bad)">${fmtN(miss)} üründe alış fiyatı yok, listede fiyatsız çıkar</span>` : ''}` : ''; }
+  el.innerHTML = last + (sh.items.length ? `<div class="list">${sh.items.map((x, i) => `<div class="item" style="align-items:center">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code)}</span><span>· stokta ${fmtN(x.qty)}</span>${x.n > x.qty ? '<span class="pill p-bad">Stok yetmiyor</span>' : ''}</div><div class="meta">${x.cost > 0 ? `<span>alış ${tl2(x.cost)} → müşteriye <b>${tl2(soPrice(x.cost))}</b>${sh.disc ? ` (liste ${tl2(soLP(x.cost, sh.disc))})` : ''}</span><span>· tutar ${tl2(soPrice(x.cost) * x.n)}</span>` : '<span class="pill p-warn">Alış fiyatı yok</span>'}</div></div><div class="end" style="display:flex;align-items:center;gap:6px"><button class="btn sm" type="button" data-act="scan-dec" data-id="${i}" aria-label="Azalt">−</button><b class="num" style="min-width:28px;text-align:center;font-size:18px">${fmtN(x.n)}</b><button class="btn sm" type="button" data-act="scan-inc" data-id="${i}" aria-label="Arttır">+</button><button class="btn sm ghost" type="button" data-act="scan-del" data-id="${i}" aria-label="Sil">✕</button></div></div>`).join('')}</div>` : '<div class="card"><p class="muted small" style="margin:0">Henüz ürün okutulmadı. Koli etiketini ya da ürünün barkodunu okut.</p></div>');
+  const tt = $('#so-total'); if (tt) { const T = soTotals(sh.items, sh.disc), miss = sh.items.filter(x => !(x.cost > 0)).length; tt.innerHTML = sh.items.length ? `${sh.disc ? `Listede: liste toplamı ${tl2(T.sub)} · iskonto %${sh.disc}: −${tl2(T.d)} · ` : ''}<b>Genel toplam ${tl2(T.total)}</b> (alışa %${soMarkup()} kâr)${miss ? ` · <span style="color:var(--bad)">${fmtN(miss)} üründe alış fiyatı yok, listede fiyatsız çıkar</span>` : ''}` : ''; }
   const sv = $('#so-save'); if (sv) { sv.disabled = !sh.items.length; sv.textContent = sh.items.length ? `Çıkışı kaydet · ${fmtN(sh.items.length)} ürün, ${fmtN(units)} adet` : 'Çıkışı kaydet'; }
 }
 async function scanStart(){
@@ -1971,8 +1973,8 @@ function sheetScanOut(){
     </div>
     <div class="card" style="gap:8px;margin-top:12px">
       <label class="chk"><input type="checkbox" id="so-pdf" ${sh.pdf ? 'checked' : ''}><span><b>Satış listesi PDF'i hazırla</b> (kaydedince açılır)</span></label>
-      <label class="small">Fiyat: alış fiyatına <select class="input" id="so-mk" style="display:inline-block;width:auto;padding:2px 6px">${Array.from({length: 200}, (_, i) => i + 1).map(n => `<option value="${n}" ${n === soMarkup() ? 'selected' : ''}>%${n}</option>`).join('')}</select> kâr eklensin</label>
-      <label class="small">Müşteri iskontosu <select class="input" id="so-disc" style="display:inline-block;width:auto;padding:2px 6px">${Array.from({length: 91}, (_, i) => i).map(n => `<option value="${n}" ${n === (sh.disc || 0) ? 'selected' : ''}>${n ? '%' + n : 'Yok'}</option>`).join('')}</select> <span class="muted">(PDF'te gösterilir)</span></label>
+      <label class="small">Alışın 100'ünde kaç kâr? <input class="input num" id="so-mk" type="number" inputmode="decimal" min="0" max="1000" value="${soMarkup()}" style="display:inline-block;width:80px;padding:2px 6px"> <span class="muted">(100 → alış 100, satış 200)</span></label>
+      <label class="small">Listede 100'de kaç iskonto? <input class="input num" id="so-disc" type="number" inputmode="decimal" min="0" max="95" value="${sh.disc || 0}" style="display:inline-block;width:80px;padding:2px 6px"> <span class="muted">(50 → liste 400, iskonto −200, toplam 200)</span></label>
       <div class="small" id="so-total"></div>
     </div>
     <button class="btn primary" type="button" id="so-save" data-act="scan-save" style="width:100%;margin-top:12px" disabled>Çıkışı kaydet</button>`};
@@ -4376,6 +4378,8 @@ document.addEventListener('input', e => {
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
   if (t.id === 'oq') { S.oq = t.value; S.opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 300); }
   if (t.id === 'bdq') { if (S.sheet) S.sheet.q = t.value; applyBdFilter(); }
+  if (t.id === 'so-disc' && S.sheet) { S.sheet.disc = Math.min(95, Math.max(0, Number(t.value) || 0)); soList(); }
+  if (t.id === 'so-mk' && t.value !== '') { soMarkup(Math.min(1000, Math.max(0, Number(t.value) || 0))); soList(); }
   if (t.id === 'pq') { profS().q = t.value; profS().opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.dataset.act) { e.preventDefault(); e.target.click(); return; } });
@@ -4383,8 +4387,8 @@ document.addEventListener('keydown', e => { const t = e.target; if (t && t.id ==
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.id === 'pur-in' && t.files && t.files.length) { purRead(t.files); t.value = ''; }
-  if (t.id === 'so-disc' && S.sheet) { S.sheet.disc = Number(t.value) || 0; soList(); scanFocus(); }
-  if (t.id === 'so-mk') { soMarkup(Number(t.value)); soList(); scanFocus(); }
+  if (t.id === 'so-disc' && S.sheet) { S.sheet.disc = Math.min(95, Math.max(0, Number(t.value) || 0)); soList(); }
+  if (t.id === 'so-mk') { soMarkup(Math.min(1000, Math.max(0, Number(t.value) || 0))); soList(); }
   if (t.id === 'so-pdf' && S.sheet) { S.sheet.pdf = t.checked; scanFocus(); }
   if (t.dataset && t.dataset.cost) saveCost(t);
   if (t.id === 'imp-file') onImportFile(t.files[0]);
