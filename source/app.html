@@ -996,7 +996,7 @@ function viewCari(){
     for (const k of ['late', 'today', 'week']) { const g = A.filter(x => x.st === k); if (!g.length) continue;
       h += `<div class="small" style="margin-top:6px;font-weight:600;color:${k === 'late' ? 'var(--bad)' : 'inherit'}">${ST[k][0]} · ${tl2(g.reduce((t, x) => t + tlv(x, 'left', 'leftTL'), 0))}</div>` + g.map(x => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:6px 0;border-top:1px dashed var(--line)"><div style="min-width:0"><b style="overflow-wrap:anywhere">${esc(x.supplier)}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(cDay(x.due))} · ${esc(x.label)}${x.paid > 0.004 ? ` · ${curAmt(x.paid, x.cur)} ödendi` : ''}</div></div><b style="white-space:nowrap">${curAmt(x.left, x.cur)}${x.cur && x.cur !== 'TL' && x.leftTL ? `<div class="small muted">≈ ${tl2(x.leftTL)}</div>` : ''}</b><button class="btn sm primary" data-act="cari-pay" data-id="${esc(x.supplier)}" data-amt="${x.left}">Öde</button></div>`).join(''); }
     h += `</div>`; }
-  h += tyCariCard() + srCariCard() + ptCariCard();
+  { const cards = tyCariCard() + srCariCard() + ptCariCard(); h += cariWeekCard(D) + cards; }
   h += `<div class="row" style="justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn" data-act="cari-addnew">+ Cari ekle</button><label class="btn" style="cursor:pointer">📤 Excel'den cari yükle<input type="file" id="cari-xls" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button><button class="btn ghost" data-act="cari-imps">${C.imps ? 'Yüklemeleri kapat' : '↩︎ Yüklemeler / geri al'}</button></div>`;
   if (C.imps) h += cariImpsHtml(C.imps);
   if (C.open === '__add') h += cariNewForm();
@@ -1126,6 +1126,31 @@ function cariDetail(x){
 // Döviz cari tutarı: $5.635,00 · TL cari: tl2
 const FXS = {USD: '$', EUR: '€'};
 function curAmt(v, c){ if (!c || c === 'TL') return tl2(v); const n = Number(v) || 0; return (n < 0 ? '−' : '') + FXS[c] + Math.abs(n).toLocaleString('tr-TR', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+// Haftalık nakit planı: hafta hafta kime ne ödenecek (cari vadeleri, cuma) ve nereden ne gelecek (Trendyol hakediş, PayTR, Sürat kapıda tahsilat)
+function cariWeekCard(D){
+  const C = cS(), today = todayTR(), add = (d, n) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+  const mon = (d) => { const t = new Date(d + 'T12:00:00Z'), w = (t.getUTCDay() + 6) % 7; return add(d, -w); }, w0 = mon(today), NW = C.wkN || 6;
+  const weeks = []; for (let i = 0; i < NW; i++) weeks.push({ a: add(w0, i * 7), b: add(w0, i * 7 + 6), pay: [], inc: [] });
+  const wOf = (d) => weeks.find(w => d >= w.a && d <= w.b), late = [];
+  for (const x of (D.dues || [])) { const tl = x.cur && x.cur !== 'TL' ? x.leftTL : x.left, it = { who: x.supplier, day: x.due, amt: x.left, cur: x.cur, tl: tl || 0, label: x.label };
+    if (x.due < w0) late.push(it); else { const w = wOf(x.due); if (w) w.pay.push(it); } }
+  const T = C.ty; if (T && T.schedule) for (const g of T.schedule) if (g.future && g.net > 0) { const w = wOf(g.day); if (w) w.inc.push({ who: 'Trendyol hakediş', day: g.day, amt: g.net, tl: g.net, note: `${fmtN(g.n)} sipariş` }); }
+  const P = C.pt; if (P && P.dueList) for (const g of P.dueList) if (!g.late) { const w = wOf(g.day); if (w) w.inc.push({ who: 'PayTR', day: g.day, amt: g.net, tl: g.net, note: `${fmtN(g.n)} sipariş` }); }
+  const R0 = C.sr; if (R0 && R0.schedule) for (const g of R0.schedule) if (g.st === 'future') { const w = wOf(g.day); if (w) w.inc.push({ who: 'Sürat kapıda tahsilat', day: g.day, amt: g.amount, tl: g.amount, note: `${fmtN(g.n)} gönderi` }); }
+  const sumT = (L) => L.reduce((a, x) => a + (x.tl || 0), 0), wd = (d) => ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'][new Date(d + 'T12:00:00Z').getUTCDay()];
+  const credits = (D.list || []).filter(x => x.bal < -0.004);
+  const line = (x, neg) => `<div class="spread small" style="gap:8px;padding:2px 0"><span style="min-width:0;overflow-wrap:anywhere">${esc(wd(x.day))} ${esc(cDay(x.day).slice(0, 5))} · <b>${esc(x.who)}</b>${x.note ? ` <span class="muted">· ${esc(x.note)}</span>` : ''}</span><span class="num" style="white-space:nowrap;color:${neg ? 'var(--bad)' : 'var(--good)'}">${neg ? '−' : '+'}${curAmt(x.amt, x.cur)}${x.cur && x.cur !== 'TL' ? ` <span class="muted">≈ ${tl2(x.tl)}</span>` : ''}</span></div>`;
+  const grp = (L) => { const m = new Map(); for (const x of L) { const k = x.who + '|' + x.day + '|' + (x.cur || ''); const g = m.get(k) || { ...x, amt: 0, tl: 0, n: 0 }; g.amt += x.amt; g.tl += x.tl; g.n++; m.set(k, g); } return [...m.values()].sort((a, b) => a.day < b.day ? -1 : a.day > b.day ? 1 : b.tl - a.tl); };
+  let h = `<div class="card" style="gap:8px;padding:12px;margin-bottom:12px;border-color:var(--accent)"><div class="spread"><b>📆 Haftalık ödeme / tahsilat planı</b><span class="small muted">ödemeler vade sonrası ilk cuma</span></div>`;
+  if (late.length) h += `<div style="border:1px solid var(--bad);border-radius:10px;padding:8px"><div class="spread small"><b style="color:var(--bad)">Gecikmiş ödemeler</b><b style="color:var(--bad)">−${tl2(sumT(late))}</b></div>${grp(late).map(x => line(x, true)).join('')}</div>`;
+  for (const [i, w] of weeks.entries()) { const po = sumT(w.pay), pi = sumT(w.inc), net = pi - po;
+    h += `<div style="border-top:1px solid var(--line);padding-top:8px"><div class="spread" style="gap:8px;flex-wrap:wrap"><b class="small">${esc(cDay(w.a).slice(0, 5))} – ${esc(cDay(w.b))}${i === 0 ? ' · bu hafta' : i === 1 ? ' · gelecek hafta' : ''}</b><span class="small">Ödenecek <b style="color:var(--bad)">${tl2(po)}</b> · Gelecek <b style="color:var(--good)">${tl2(pi)}</b> · Net <b style="color:${net >= 0 ? 'var(--good)' : 'var(--bad)'}">${net >= 0 ? '+' : '−'}${tl2(Math.abs(net))}</b></span></div>
+      ${w.pay.length ? grp(w.pay).map(x => line(x, true)).join('') : ''}${w.inc.length ? grp(w.inc).map(x => line(x, false)).join('') : ''}${!w.pay.length && !w.inc.length ? '<div class="small muted">Bu hafta ödeme ya da tahsilat yok.</div>' : ''}</div>`; }
+  h += `<div class="row" style="gap:6px"><button class="btn sm ghost" data-act="cari-wkmore">${NW < 12 ? 'Daha fazla hafta göster' : 'Daha az göster'}</button></div>`;
+  if (credits.length) h += `<p class="small muted" style="margin:0">Tarihi olmayan alacakların (fazla ödeme / müşteri borcu): ${credits.map(x => `${esc(x.supplier)} ${curAmt(-x.bal, x.cur)}`).join(' · ')}</p>`;
+  if (!T || !P || !R0) h += '<p class="small muted" style="margin:0">Trendyol / PayTR / Sürat tahsilatları yükleniyor…</p>';
+  return h + '</div>';
+}
 function cariImpsHtml(I){
   if (I.loading) return loading(); if (I.err) return `<div class="banner bad"><div>${esc(I.err)}</div></div>`;
   if (!I.list.length) return '<div class="card" style="padding:10px;margin-bottom:10px"><span class="small muted">Excel\'den yapılmış yükleme yok.</span></div>';
@@ -3875,6 +3900,7 @@ document.addEventListener('click', async e => {
     case 'cari-terms': { const C = cS(); C.terms = !C.terms; C.tk = null; render(); break; }
     case 'go-cari': setTab('cari'); break;
     case 'cari-addnew': { const C = cS(); C.open = C.open === '__add' ? '' : '__add'; C.det = null; render(); break; }
+    case 'cari-wkmore': { const C = cS(); C.wkN = (C.wkN || 6) < 12 ? 12 : 6; render(); break; }
     case 'cari-imps': { const C = cS(); if (C.imps) { C.imps = null; render(); break; } C.imps = {loading: true}; render(); try { C.imps = await api('/api/cari/imports', {}); } catch (err) { C.imps = {err: errText(err)}; } render(); break; }
     case 'cari-undo': if (!(await confirmBox('Bu yüklemeyle gelen bütün hareketler silinsin mi?', 'Geri al', true))) break;
       await run(async () => { const r = await api('/api/cari/undo', {batch: id}); toast(`${fmtN(r.n)} hareket geri alındı.`); const C = cS(); C.det = null; C.imps = await api('/api/cari/imports', {}); loadCari(true); if (C.open && !C.open.startsWith('__')) loadCariDet(C.open); }); break;

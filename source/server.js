@@ -3118,15 +3118,15 @@ ${catalog}` });
   }
   if (path === '/api/cari/list') {
     // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç; ödeme şekline göre vadesi gelenler uyarı olarak döner
-    const all = await cariLoad(env), today = trToday(), list = [], alerts = [], fx = all.some(c => c.cur !== 'TL') ? await fxRates(env) : { TL: 1 };
+    const all = await cariLoad(env), today = trToday(), list = [], alerts = [], dues = [], fx = all.some(c => c.cur !== 'TL') ? await fxRates(env) : { TL: 1 };
     for (const c of all) { const sc = cariSchedule(c, today), rate = fx[c.cur] || null, T = (v) => rate ? r2(v * rate) : null;
       for (const x of sc.items) { x.cur = c.cur; x.leftTL = T(x.left); }
       list.push({ cur: c.cur, rate, balTL: T(c.bal), overdueTL: T(sc.overdue), dueTodayTL: T(sc.today), dueWeekTL: T(sc.week), supplier: c.supplier, terms: c.terms, buys: c.buys.length, buy: c.buy, pays: c.pays.length, paid: c.paid, bal: c.bal, last: c.last, next: sc.next, overdue: sc.overdue, dueToday: sc.today, dueWeek: sc.week });
-      for (const x of sc.items) if (x.left > 0.004 && x.due <= addDayStr(today, 7)) alerts.push({ supplier: c.supplier, ...x }); }
+      for (const x of sc.items) { if (x.left > 0.004 && x.due <= addDayStr(today, 7)) alerts.push({ supplier: c.supplier, ...x }); if (x.left > 0.004 && x.due <= addDayStr(today, 60)) dues.push({ supplier: c.supplier, due: x.due, left: x.left, cur: c.cur, leftTL: x.leftTL, label: x.label }); } }
     list.sort((a, b) => (b.overdue + b.dueToday > 0.004) - (a.overdue + a.dueToday > 0.004) || b.bal - a.bal || a.supplier.localeCompare(b.supplier, 'tr'));
     alerts.sort((a, b) => a.due.localeCompare(b.due) || b.left - a.left);
     const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name);
-    return json({ ok: true, today, list, alerts, suppliers: sups, fx });
+    return json({ ok: true, today, list, alerts, dues, suppliers: sups, fx });
   }
   if (path === '/api/cari/get') {
     const sup = String(body.supplier || '').trim(); if (!sup) return bad('Tedarikçi seç.');
