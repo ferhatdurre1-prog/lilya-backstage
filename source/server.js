@@ -3261,15 +3261,15 @@ ${catalog}` });
     const A = new Map(aR.results.map(x => [x.order_no, x])), PO = new Map(pR.results.map(x => [x.day, x])), out = [];
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} if (!lines.some(l => l.status !== 'cancelled')) continue;
       const g = S.get(r.order_no), a = A.get(r.order_no), deliv = (a && a.d) || (g && g.sale ? trDay(g.sale) : null), rule = tyPayDay(deliv), tyDue = g && g.due ? trDay(g.due) : null, day = rule || tyDue; // kural (teslim + 28 gün → ilk salı/perşembe) esas; Trendyol vadesi yalnızca bilgi
-      const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : g.po ? 'paid' : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending'; // ekstre satırında ödeme emri no varsa ödenmiştir
+      const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : g.po ? (tyDue && rule && tyDue < rule ? 'early' : 'paid') : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending'; // ekstre satırında ödeme emri no varsa ödenmiştir
       out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, po: g ? g.po : null, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
     const sch = new Map(); for (const x of out) if (x.day && x.net > 0 && x.st !== 'transit') { const g = sch.get(x.day) || { day: x.day, net: 0, n: 0 }; g.net = r2(g.net + x.net); g.n++; sch.set(x.day, g); }
     const schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const p = PO.get(g.day); return { ...g, paid: p ? r2(p.amount) : null, diff: p ? r2(p.amount - g.net) : null, future: g.day >= today }; });
     for (const [d, p] of PO) if (!sch.has(d)) schedule.push({ day: d, net: 0, n: 0, paid: r2(p.amount), diff: r2(p.amount), future: false, extra: true }); schedule.sort((a, b) => a.day < b.day ? -1 : 1);
-    const sum = (f) => r2(out.filter(f).reduce((a, x) => a + (x.net || 0), 0)), cnt = (k) => out.filter(x => x.st === k).length;
+    const sum = (f) => r2(out.filter(f).reduce((a, x) => a + (x.net || 0), 0)), cnt = (k) => out.filter(x => x.st === k || (k === 'paid' && x.st === 'early')).length;
     return json({ ok: true, items: out, n: out.length, schedule, next: schedule.find(x => x.future && x.net > 0) || null,
-      tot: { pending: sum(x => x.st === 'pending'), late: sum(x => x.st === 'late'), paidNet: sum(x => x.st === 'paid'), poTotal: r2(pR.results.reduce((a, x) => a + (x.amount || 0), 0)), transit: cnt('transit') + cnt('nosale') },
-      counts: { pending: cnt('pending'), late: cnt('late'), paid: cnt('paid'), transit: cnt('transit'), nosale: cnt('nosale'), diffDay: out.filter(x => x.diffDay).length }, at: (await getSetting(env, 'ty_settle_at')) || '' });
+      tot: { pending: sum(x => x.st === 'pending'), late: sum(x => x.st === 'late'), paidNet: sum(x => x.st === 'paid' || x.st === 'early'), earlyNet: sum(x => x.st === 'early'), poTotal: r2(pR.results.reduce((a, x) => a + (x.amount || 0), 0)), transit: cnt('transit') + cnt('nosale') },
+      counts: { early: out.filter(x => x.st === 'early').length, pending: cnt('pending'), late: cnt('late'), paid: cnt('paid'), transit: cnt('transit'), nosale: cnt('nosale'), diffDay: out.filter(x => x.diffDay).length }, at: (await getSetting(env, 'ty_settle_at')) || '' });
   }
   if (path === '/api/paytr/recon') {
     // PayTR mutabakatı: Shopify online siparişlerde beklenen tutar (ürün + 700 TL altı 100 TL kargo) ile PayTR'nin işlediği tutar, komisyonu, neti ve hesaba yattığı gün
