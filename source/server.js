@@ -929,6 +929,15 @@ async function shFulfill(env, c, gid, number) {
   const ue = r.fulfillmentCreate.userErrors || []; if (ue.length) throw new Error('Shopify: ' + ue.map(e => e.message).join(' · '));
   return { ok: true };
 }
+// Daha önce yanlış numarayla "kargolandı" yapılmış siparişin takip numarasını Shopify'da düzeltir (müşteriye yeni bildirim gider)
+async function shFixTracking(env, c, gid, number) {
+  const d = await shGql(env, c, `query($id:ID!){order(id:$id){fulfillments(first:10){id status trackingInfo{number company}}}}`, { id: gid });
+  const fs = ((d.order || {}).fulfillments || []).filter(f => f.status !== 'CANCELLED'); if (!fs.length) return { none: true };
+  for (const f of fs) { if ((f.trackingInfo || []).some(t => t.number === number)) continue;
+    const r = await shGql(env, c, `mutation($id:ID!,$t:FulfillmentTrackingInput!){fulfillmentTrackingInfoUpdate(fulfillmentId:$id,trackingInfoInput:$t,notifyCustomer:true){fulfillment{id}userErrors{field message}}}`, { id: f.id, t: { company: 'Sürat Kargo', number, url: SR_TRACK_URL(number) } });
+    const ue = r.fulfillmentTrackingInfoUpdate.userErrors || []; if (ue.length) throw new Error('Shopify: ' + ue.map(e => e.message).join(' · ')); }
+  return { ok: true };
+}
 // Bir gönderinin takip numarasını sor; geldiyse Shopify'a işle
 async function srTrackOne(env, row, cr, c) {
   let tr = row.tracking || '', msg = row.track_msg || '';
@@ -3133,13 +3142,17 @@ ${catalog}` });
     const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 3000).filter(r => r && typeof r === 'object');
     if (!rows.length) return bad('Dosyada satır bulunamadı.');
     const cr = await srCreds(env), c = await shCreds(env);
-    const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
-    const out = [], miss = [];
+    const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
+    const out = [], miss = [], fixed = [];
     for (const r of results) { const m = srMatch(rows, r), tn = m && srRowTrack(m);
-      if (!tn) { miss.push(r.order_no); continue; }
+      if (!tn) { if (!r.fulfilled_at) miss.push(r.order_no); continue; }
+      if (r.fulfilled_at) { // zaten kargolandı: numara farklıysa (eski hatalı okuma) düzelt
+        if (r.tracking === tn) continue;
+        try { if (shConfigured(c)) await shFixTracking(env, c, r.gid, tn); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(r.ref, tn, 'Sürat raporundan düzeltildi (önceki: ' + (r.tracking || '-') + ')', iso()).run(); fixed.push(r.order_no); out.push({ ref: r.ref, tracking: tn, fulfilled: true, fixed: true }); }
+        catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } continue; }
       r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat raporundan';
       try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
-    return json({ ok: true, rows: rows.length, pending: results.length, tracked: out.length, fulfilled: out.filter(x => x.fulfilled).length, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
+    return json({ ok: true, rows: rows.length, pending: results.filter(r => !r.fulfilled_at).length, tracked: out.filter(x => !x.fixed).length, fulfilled: out.filter(x => x.fulfilled && !x.fixed).length, fixed: fixed.length, fixedList: fixed.slice(0, 30), errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
   }
   if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
