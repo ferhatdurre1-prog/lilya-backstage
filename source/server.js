@@ -2726,14 +2726,18 @@ async function computeHome(env) {
   const f30 = addDay(today, -29), fromD = [m0d, w0d, f30].sort()[0], yday = addDay(today, -1);
   const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
   // Ay toplamı Kâr ekranıyla birebir aynı olsun diye kayıtlı günlerden toplanmaz, aynı hesapla canlı alınır
-  const [T, YS, statsR, pdR, M, YD, M30] = await Promise.all([
+  // Karşılaştırma için: geçen ayın aynı gününe kadarı ve önceki 30 gün
+  const pm0 = (() => { const d = new Date(m0d + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); })(), pmEnd = Math.min(dayStartTR(m0d), dayStartTR(pm0) + (t00 - dayStartTR(m0d)));
+  const [T, YS, statsR, pdR, M, YD, M30, PM, P30] = await Promise.all([
     computeProfit(env, iso(t0), iso(t0 + 86400000)),
     computeProfit(env, iso(t0 - 86400000), iso(ySame)),
     env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all(),
     env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all(),
     computeProfit(env, iso(dayStartTR(m0d)), iso(t0 + 86400000)),
     computeProfit(env, iso(t0 - 86400000), iso(t0)),
-    computeProfit(env, iso(dayStartTR(f30)), iso(t0 + 86400000))]);
+    computeProfit(env, iso(dayStartTR(f30)), iso(t0 + 86400000)),
+    computeProfit(env, iso(dayStartTR(pm0)), iso(pmEnd)).catch(() => null),
+    computeProfit(env, iso(dayStartTR(addDay(f30, -30))), iso(dayStartTR(f30))).catch(() => null)]);
   const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
   // Kaydı olmayan geçmiş gün varsa canlı hesaplanıp kaydedilir
   let snaps = 0;
@@ -2747,7 +2751,8 @@ async function computeHome(env) {
   const chOf = (P) => { const o = {}; for (const c of ['trendyol', 'shopify']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
       const prof = L.reduce((a, x) => a + (x.profit || 0), 0) - ads - (c === 'trendyol' ? (P.summary.otherFees || 0) - (P.summary.compensation || 0) : 0);
       o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; };
-  const out = { day: today, at: Date.now(), ch: { today: chOf(T), ys: chOf(YS), yday: chOf(YD), month: chOf(M), d30: chOf(M30) }, todayN: T.summary.orders, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
+  const out = { day: today, at: Date.now(), ch: { today: chOf(T), ys: chOf(YS), yday: chOf(YD), month: chOf(M), d30: chOf(M30), pm: PM ? chOf(PM) : null, p30: P30 ? chOf(P30) : null }, todayN: T.summary.orders, ysN: YS.summary.orders,
+    pm: PM ? { revenue: R2(PM.summary.revenue), profit: R2(PM.summary.profit) } : null, p30: P30 ? { revenue: R2(P30.summary.revenue), profit: R2(P30.summary.profit) } : null, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
     month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
     // Kâr ekranındaki "Dün" ve "Son 30 gün" ile birebir aynı hesap
     yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null },
