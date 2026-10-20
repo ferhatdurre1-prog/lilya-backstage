@@ -1144,6 +1144,9 @@ function cariDetail(x){
   // ödeme planı
   const open = Dt.plan.filter(r => r.st !== 'paid'), paid = Dt.plan.filter(r => r.st === 'paid').slice(-3);
   if (Dt.plan.length) h += `<div class="small" style="font-weight:600;margin-top:4px">Ödeme planı</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Vade</th><th>Açıklama</th><th class="r">Tutar</th><th class="r">Kalan</th><th>Durum</th></tr></thead><tbody>${[...paid, ...open].map(r => `<tr${r.st === 'late' || r.st === 'today' ? ' style="background:var(--accent-soft)"' : ''}><td style="white-space:nowrap">${esc(cDay(r.due))}${r.vade && r.vade !== r.due ? `<div class="small muted">vade ${esc(cDay(r.vade))}</div>` : ''}</td><td style="overflow-wrap:anywhere">${esc(r.label)}</td><td class="r">${curAmt(r.amount, x.cur)}</td><td class="r"><b>${curAmt(r.left, x.cur)}</b></td><td><span class="pill ${ST[r.st][1]}">${ST[r.st][0]}</span></td></tr>`).join('')}</tbody></table></div>`;
+  // tahsilat planı (cari bize borçluysa): sattıklarımızın vadesi, kalanı
+  const io = (Dt.inc || []).filter(r => r.st !== 'paid');
+  if (io.length) h += `<div class="small" style="font-weight:600;margin-top:4px;color:var(--good)">Tahsilat planı (${esc(x.supplier)} sana ödeyecek)</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Vade</th><th>Açıklama</th><th class="r">Tutar</th><th class="r">Kalan</th></tr></thead><tbody>${io.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.due))}${r.st === 'late' ? ' <span class="pill p-bad">gecikti</span>' : ''}</td><td style="overflow-wrap:anywhere">${esc(r.label)}</td><td class="r">${curAmt(r.amount, x.cur)}</td><td class="r"><b style="color:var(--good)">${curAmt(r.left, x.cur)}</b></td></tr>`).join('')}</tbody></table></div>`;
   // ekstre
   if (!Dt.rows.length) h += '<p class="muted small" style="margin:0">Hareket yok.</p>';
   else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? curAmt(r.amount, x.cur) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? curAmt(r.amount, x.cur) : ''}</td><td class="r"><b>${curAmt(r.bal, x.cur)}</b></td><td class="r">${r.mov ? `<button class="btn sm" data-act="cari-movdel" data-id="${esc(String(r.id))}" title="Hareketi sil">Sil</button>` : r.kind === 'pay' ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="Ödemeyi sil">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
@@ -1156,11 +1159,14 @@ function curAmt(v, c){ if (!c || c === 'TL') return tl2(v); const n = Number(v) 
 // Haftalık ödeme / tahsilat: sağa-sola kaydırılan haftalar. Her hafta: firma başına toplam ödeme (vade sonrası ilk cuma) ve gelecek paralar (Trendyol, PayTR, Sürat)
 function cariWeekCard(D){
   const C = cS(), today = todayTR(), add = (d, n) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
-  const mon = (d) => { const t = new Date(d + 'T12:00:00Z'), w = (t.getUTCDay() + 6) % 7; return add(d, -w); }, w0 = mon(today), NW = 12;
-  const weeks = []; for (let i = 0; i < NW; i++) weeks.push({ a: add(w0, i * 7), b: add(w0, i * 7 + 6), pay: [], inc: [] });
-  const wOf = (d) => weeks.find(w => d >= w.a && d <= w.b), late = [];
+  const mon = (d) => { const t = new Date(d + 'T12:00:00Z'), w = (t.getUTCDay() + 6) % 7; return add(d, -w); }, w0 = mon(today), PW = 8, NW = PW + 12; // 8 geçmiş hafta + bu hafta + 11 sonraki
+  const weeks = []; for (let i = 0; i < NW; i++) weeks.push({ a: add(w0, (i - PW) * 7), b: add(w0, (i - PW) * 7 + 6), pay: [], inc: [], hp: [], hi: [] });
+  const wOf = (d) => weeks.find(w => d >= w.a && d <= w.b), late = [], lateIn = [];
   for (const x of (D.dues || [])) { const tl = x.cur && x.cur !== 'TL' ? x.leftTL : x.left, it = { who: x.supplier, day: x.due, amt: x.left, cur: x.cur, tl: tl || 0 };
+    if (x.dir === 'in') { if (x.due < today) lateIn.push(it); else { const w = wOf(x.due); if (w) w.inc.push(it); } continue; }
     if (x.due < today) late.push(it); else { const w = wOf(x.due); if (w) w.pay.push(it); } }
+  // geçmiş haftalar: o haftanın vadeleri (ödendi / kalan)
+  for (const x of (D.hist || [])) { const w = wOf(x.due); if (!w || x.due >= w0) continue; const it = { who: x.supplier, day: x.due, amt: x.amount, cur: x.cur, tl: (x.cur && x.cur !== 'TL' ? x.amountTL : x.amount) || 0, left: x.left }; (x.dir === 'in' ? w.hi : w.hp).push(it); }
   const T = true; // Trendyol hakediş kaldırıldı
   const P = C.pt; if (P && P.dueList) for (const g of P.dueList) if (!g.late) { const w = wOf(g.day); if (w) w.inc.push({ who: 'PayTR', day: g.day, amt: g.net, tl: g.net, note: `${fmtN(g.n)} sipariş` }); }
   const R0 = C.sr; if (R0 && R0.schedule) for (const g of R0.schedule) if (g.st === 'future') { const w = wOf(g.day); if (w) w.inc.push({ who: 'Sürat kapıda tahsilat', day: g.day, amt: g.amount, tl: g.amount, note: `${fmtN(g.n)} gönderi` }); }
@@ -1172,8 +1178,17 @@ function cariWeekCard(D){
   // Kompakt tek satır: ad · gün · (adet) | tutar | Öde
   const payRow = (x) => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px;align-items:center;padding:3px 0;border-top:1px dashed var(--line)"><div class="small" style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b>${esc(x.who)}</b> <span class="muted">${dd(x)}${x.n > 1 ? ' · ' + x.n + ' ödeme' : ''}</span></div><b class="small" style="white-space:nowrap;text-align:right">${curAmt(x.amt, x.cur)}${x.cur && x.cur !== 'TL' ? ` <span class="muted" style="font-weight:400">≈${tl2(x.tl)}</span>` : ''}</b><button class="btn sm primary" style="padding:2px 9px;min-height:0" data-act="cari-pay" data-id="${esc(x.who)}" data-amt="${x.amt}">Öde</button></div>`;
   const incRow = (x) => `<div class="spread small" style="gap:6px;padding:3px 0;border-top:1px dashed var(--line)"><span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b>${esc(x.who)}</b> <span class="muted">${dd(x)}</span></span><b style="white-space:nowrap;color:var(--good)">+${tl2(x.amt)}</b></div>`;
-  const credits = (D.list || []).filter(x => x.bal < -0.004), I = Math.min(C.wkI || 0, NW - 1);
-  const panels = weeks.map((w, i) => { const lp = i === 0 ? grp(late, true) : [], pp = grp(w.pay, true), ii = grp(w.inc, true), po = sumT(w.pay) + (i === 0 ? sumT(late) : 0), pi = sumT(w.inc), net = pi - po;
+  const credits = (D.list || []).filter(x => x.bal < -0.004 && !(D.dues || []).some(d => d.dir === 'in' && d.supplier === x.supplier)), I = Math.min(C.wkI ?? PW, NW - 1);
+  const histRow = (x, inn) => `<div class="spread small" style="gap:6px;padding:3px 0;border-top:1px dashed var(--line)"><span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b>${esc(x.who)}</b> <span class="muted">${dd(x)}</span></span><span style="white-space:nowrap"><b style="color:${inn ? 'var(--good)' : 'var(--bad)'}">${inn ? '+' : '−'}${curAmt(x.amt, x.cur)}</b> ${x.left > 0.004 ? `<span class="pill p-bad">kalan ${curAmt(x.left, x.cur)}</span>` : `<span class="pill p-good">${inn ? 'alındı' : 'ödendi'}</span>`}</span></div>`;
+  const panels = weeks.map((w, k) => { const i = k - PW;
+    if (i < 0) { const hp = w.hp.sort((a, b) => a.day < b.day ? -1 : 1), hi = w.hi.sort((a, b) => a.day < b.day ? -1 : 1);
+      return `<section class="wk-pane" style="flex:0 0 100%;width:100%;box-sizing:border-box;scroll-snap-align:start;min-width:0;padding:0 2px">
+      <div class="spread small" style="gap:6px;flex-wrap:wrap"><span><b>${esc(cDay(w.a).slice(0, 5))}–${esc(cDay(w.b).slice(0, 5))}</b> <span class="muted">${i === -1 ? 'geçen hafta' : -i + ' hafta önce'}</span></span><span class="muted">geçmiş</span></div>
+      ${hp.length ? `<div class="small" style="margin-top:4px;font-weight:600">Vadesi gelen ödemeler · ${tl2(sumT(hp))}</div>${hp.map(x => histRow(x, false)).join('')}` : ''}
+      ${hi.length ? `<div class="small" style="margin-top:4px;font-weight:600;color:var(--good)">Vadesi gelen tahsilatlar · ${tl2(sumT(hi))}</div>${hi.map(x => histRow(x, true)).join('')}` : ''}
+      ${!hp.length && !hi.length ? '<div class="small muted" style="margin-top:6px">Bu hafta cari vadesi yoktu.</div>' : ''}</section>`; }
+    if (i === 0 && lateIn.length) w.inc.push(...lateIn.map(x => ({ ...x, who: x.who + ' (gecikmiş)' })));
+    const lp = i === 0 ? grp(late, true) : [], pp = grp(w.pay, true), ii = grp(w.inc, true), po = sumT(w.pay) + (i === 0 ? sumT(late) : 0), pi = sumT(w.inc), net = pi - po;
     return `<section class="wk-pane" style="flex:0 0 100%;width:100%;box-sizing:border-box;scroll-snap-align:start;min-width:0;padding:0 2px">
       <div class="spread small" style="gap:6px;flex-wrap:wrap"><span><b>${esc(cDay(w.a).slice(0, 5))}–${esc(cDay(w.b).slice(0, 5))}</b> <span class="muted">${i === 0 ? 'bu hafta' : i === 1 ? 'gelecek hafta' : i + '. hafta'}</span></span><span>Net <b style="color:${net >= 0 ? 'var(--good)' : 'var(--bad)'}">${net >= 0 ? '+' : '−'}${tl2(Math.abs(net))}</b></span></div>
       ${lp.length ? `<div class="small" style="margin-top:4px;font-weight:600;color:var(--bad)">Gecikmiş · ${tl2(sumT(late))}</div>${lp.map(payRow).join('')}` : ''}
@@ -1187,8 +1202,8 @@ function cariWeekCard(D){
   return h;
 }
 // Haftalık kartın kaydırma konumu: yeniden çizimde korunur, noktalar ve oklar güncellenir
-function wkSync(){ const sw = document.getElementById('wk-swipe'); if (!sw) return; const C = cS(), w = sw.clientWidth || 1; sw.scrollLeft = (C.wkI || 0) * w;
-  if (!sw.dataset.on) { sw.dataset.on = '1'; let tm = null; sw.addEventListener('scroll', () => { clearTimeout(tm); tm = setTimeout(() => { const i = Math.round(sw.scrollLeft / (sw.clientWidth || 1)); if (i !== (cS().wkI || 0)) { cS().wkI = i; const dots = document.querySelectorAll('#wk-dots span'); dots.forEach((d, k) => { d.style.width = (k === i ? 16 : 7) + 'px'; d.style.background = k === i ? 'var(--accent)' : 'var(--line)'; }); const bs = sw.parentElement.querySelectorAll('[data-act="wk-go"]'); if (bs[0]) bs[0].disabled = i === 0; if (bs[1]) bs[1].disabled = i >= dots.length - 1; } }, 90); }, { passive: true }); } }
+function wkSync(){ const sw = document.getElementById('wk-swipe'); if (!sw) return; const C = cS(), w = sw.clientWidth || 1; sw.scrollLeft = (C.wkI ?? 8) * w;
+  if (!sw.dataset.on) { sw.dataset.on = '1'; let tm = null; sw.addEventListener('scroll', () => { clearTimeout(tm); tm = setTimeout(() => { const i = Math.round(sw.scrollLeft / (sw.clientWidth || 1)); if (i !== (cS().wkI ?? 8)) { cS().wkI = i; const dots = document.querySelectorAll('#wk-dots span'); dots.forEach((d, k) => { d.style.width = (k === i ? 16 : 7) + 'px'; d.style.background = k === i ? 'var(--accent)' : 'var(--line)'; }); const bs = sw.parentElement.querySelectorAll('[data-act="wk-go"]'); if (bs[0]) bs[0].disabled = i === 0; if (bs[1]) bs[1].disabled = i >= dots.length - 1; } }, 90); }, { passive: true }); } }
 function cariImpsHtml(I){
   if (I.loading) return loading(); if (I.err) return `<div class="banner bad"><div>${esc(I.err)}</div></div>`;
   if (!I.list.length) return '<div class="card" style="padding:10px;margin-bottom:10px"><span class="small muted">Excel\'den yapılmış yükleme yok.</span></div>';
