@@ -84,6 +84,7 @@ async function init0(env) {
     env.DB.prepare(`UPDATE products SET qty=0, updated_at=?1 WHERE qty<>0 AND key IN (SELECT pkey FROM bundles)`).bind(now)]); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN terms TEXT').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN cost_date TEXT').run(); } catch (e) {} // maliyetin geldiği fiş tarihi // cari ödeme şekli (vade)
+  try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN tx TEXT').run(); } catch (e) {} // Shopify ödeme işlem kimlikleri (PayTR eşleşmesi)
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN mto INTEGER').run(); } catch (e) {} // stoksuz satış (sipariş üzerine)
   for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -141,6 +142,7 @@ async function init0(env) {
       await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_costreset1','1')`), setStmt(env, 'cost_backup_mig1', JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })),
         env.DB.prepare('UPDATE products SET cost=NULL, cost_date=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shtx1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shtx1','1')`), setStmt(env, 'sh_pay_done', ''), setStmt(env, 'sh_pay_after', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpack2'`).first())) {
     // Shopify kuralları ve ayrı paketleme ücreti (sipariş başı 4 TL + ürün başı 1 TL): kayıtlı rapor günleri yeniden hesaplanır
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shpack2','1')`), setStmt(env, 'fee_sh_comm', '3'), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'stats_first', ''), setStmt(env, 'stats_cursor', ''), setStmt(env, 'home_cache', ''), REV(env)]); } catch (e) {}
@@ -1051,7 +1053,7 @@ async function shGql(env, c, query, variables) {
   }
   throw new Error('Shopify isteği tamamlanamadı.');
 }
-const SH_ORDERS_Q = `query($q:String!,$after:String){orders(first:40,after:$after,sortKey:UPDATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt updatedAt cancelledAt test displayFulfillmentStatus paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}}
+const SH_ORDERS_Q = `query($q:String!,$after:String){orders(first:40,after:$after,sortKey:UPDATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt updatedAt cancelledAt test displayFulfillmentStatus paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}} transactions(first:5){paymentId authorizationCode}
   lineItems(first:60){nodes{id sku name quantity currentQuantity unfulfilledQuantity variant{id sku barcode image{url}} image{url} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} originalUnitPriceSet{shopMoney{amount}}}}
   refunds{refundLineItems(first:60){nodes{quantity restockType lineItem{id}}}}}}}`;
 const shId = (gid) => { const m = /(\d+)\s*$/.exec(String(gid || '')); return m ? m[1] : ''; };
@@ -1086,14 +1088,15 @@ function shPayRow(o) {
   const cod = /kap[ıi]da|cash on delivery|\bcod\b|teslimatta|nakit/.test(gl) ? 1 : 0;
   const card = cod && /kart|card|pos|kredi/.test(gl) ? 1 : 0;
   const M = (x) => x && x.shopMoney ? Number(x.shopMoney.amount) || 0 : null;
-  return { no: String(o.name || '').replace(/\D/g, ''), gateway: g.slice(0, 200), cod, card, subtotal: M(o.subtotalPriceSet), ship: M(o.totalShippingPriceSet), total: M(o.totalPriceSet) };
+  const tx = (o.transactions || []).flatMap(t => [t.paymentId, t.authorizationCode]).filter(Boolean).map(String).join(' ').slice(0, 400);
+  return { no: String(o.name || '').replace(/\D/g, ''), gateway: g.slice(0, 200), cod, card, subtotal: M(o.subtotalPriceSet), ship: M(o.totalShippingPriceSet), total: M(o.totalPriceSet), tx };
 }
 async function shPaySave(env, nodes) {
-  const st = nodes.filter(o => o && o.name && Array.isArray(o.paymentGatewayNames)).map(o => { const x = shPayRow(o); return env.DB.prepare('INSERT INTO sh_pay(no, gateway, cod, card, subtotal, ship, total, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(no) DO UPDATE SET gateway=excluded.gateway, cod=excluded.cod, card=excluded.card, subtotal=excluded.subtotal, ship=excluded.ship, total=excluded.total, at=excluded.at').bind(x.no, x.gateway, x.cod, x.card, x.subtotal, x.ship, x.total, iso()); });
+  const st = nodes.filter(o => o && o.name && Array.isArray(o.paymentGatewayNames)).map(o => { const x = shPayRow(o); return env.DB.prepare('INSERT INTO sh_pay(no, gateway, cod, card, subtotal, ship, total, at, tx) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(no) DO UPDATE SET gateway=excluded.gateway, cod=excluded.cod, card=excluded.card, subtotal=excluded.subtotal, ship=excluded.ship, total=excluded.total, at=excluded.at, tx=excluded.tx').bind(x.no, x.gateway, x.cod, x.card, x.subtotal, x.ship, x.total, iso(), x.tx || ''); });
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
 }
 // Geçmiş siparişlerin ödeme yöntemi bir kez (rapor başlangıcından bu yana) sayfa sayfa okunur
-const SH_PAY_Q = `query($q:String!,$after:String){orders(first:100,after:$after,sortKey:CREATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{name paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}}}}}`;
+const SH_PAY_Q = `query($q:String!,$after:String){orders(first:100,after:$after,sortKey:CREATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{name paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}} transactions(first:5){paymentId authorizationCode}}}}`;
 async function shPayBackfill(env, maxPages = 4) {
   const s = await getSettings(env, ['sh_pay_done', 'sh_pay_after', 'report_start']); if (s.sh_pay_done === '1') return null;
   const c = await shCreds(env); if (!shConfigured(c)) return null;
@@ -2208,8 +2211,9 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare(`SELECT * FROM paytr_tx WHERE tip='S' AND tarih >= ?1 AND tarih <= ?2`).bind(addDay(dayFrom, -1), addDay(dayTo, 1)),
     env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
   const ptTx = ptR.results, ptUsed = new Set(), ptRate = ptTx.filter(x => x.oran > 0).reduce((a, x, i, arr) => a + x.oran / arr.length, 0);
-  const ptFind = (no, total, day) => { let m = ptTx.find(x => !ptUsed.has(x.k) && String(x.siparis_no || '').replace(/\D/g, '') === no);
-    if (!m) { const c = ptTx.filter(x => !ptUsed.has(x.k) && Math.abs((x.tutar || 0) - total) < 0.06 && x.tarih === day); if (c.length === 1) m = c[0]; }
+  const ptFind = (no, total, day, txIds) => { let m = ptTx.find(x => !ptUsed.has(x.k) && String(x.siparis_no || '').replace(/\D/g, '') === no);
+    if (!m && txIds && txIds.length) m = ptTx.find(x => !ptUsed.has(x.k) && x.siparis_no && txIds.some(t => t && (t === x.siparis_no || t.includes(x.siparis_no))));
+    if (!m) { const c = ptTx.filter(x => !ptUsed.has(x.k) && Math.abs((x.tutar || 0) - total) < 0.06 && x.tarih === day); if (c.length) m = c[0]; } // aynı gün aynı tutar: komisyon da aynı olduğundan herhangi biri
     if (m) ptUsed.add(m.k); return m; };
   const shPay = new Map(spR.results.map(x => [x.no, x])), srCost = new Map(scR.results.map(x => [x.no, x])), shRet = new Map(srtR.results.map(x => [x.no, x]));
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
@@ -2308,7 +2312,7 @@ async function computeProfit(env, from, to, ch0) {
       let cod = null, card = false; if (bk && !post) { cod = !!bk.cod; card = bk.cod_type === 'CREDIT_CARD'; } else if (pay) { cod = !!pay.cod; card = !!pay.card; }
       const shipInc = gross > 0 && gross < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codInc = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0; shInc = shipInc + codInc;
       const pm = cod === null ? 'ödeme yöntemi bilinmiyor (online sayıldı)' : cod ? (card ? 'kapıda kart' : 'kapıda nakit') : 'online';
-      if (cod === false || (cod === null && pay)) { const m = ptFind(no, r2(gross + shInc), trDay(Date.parse(ord.date))); if (m && m.kesinti !== null) { ptFee = r2(m.kesinti); ptTxt = ` · PayTR komisyonu ${ptFee} TL`; } else if (ptRate > 0) { ptFee = r2((gross + shInc) * ptRate / 100); ptTxt = ` · PayTR komisyonu tahmini %${r2(ptRate)} (${ptFee} TL)`; } }
+      if (cod === false || (cod === null && pay)) { const m = ptFind(no, r2(gross + shInc), trDay(Date.parse(ord.date)), pay && pay.tx ? String(pay.tx).split(' ') : null); if (m && m.kesinti !== null) { ptFee = r2(m.kesinti); ptTxt = ` · PayTR komisyonu ${ptFee} TL`; } else if (ptRate > 0) { ptFee = r2((gross + shInc) * ptRate / 100); ptTxt = ` · PayTR komisyonu tahmini %${r2(ptRate)} (${ptFee} TL)`; } }
       const incTxt = shInc ? ` · müşteriden ${[shipInc ? 'kargo ' + shipInc + ' TL' : '', codInc ? 'kapıda ödeme ' + codInc + ' TL' : ''].filter(Boolean).join(' + ')} satışa eklendi` : '';
       if (post) { // 17.10.2026 10:00 sonrası: anlaşmalı Sürat. Sürat raporu yüklendiyse gerçek ücret (KDV + posta vergisi dahil), yoksa tarife (+%2,35 posta vergisi sadece kargoya) + kapıda ödeme bedeli
         let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null; if (dz === null) { miss++; d += q; } else d += dz * q; }
