@@ -283,6 +283,7 @@ async function cariLoad(env, only) {
     c.last = [...c.buys, ...c.pays].reduce((a, x) => x.date > a ? x.date : a, ''); return c; });
 }
 // Ödeme planı: her taksitin vadesi, tutarı ve kalanı (ödemeler en eski vadeden başlayarak düşülür). Haftalık % şeklinde her hafta kalan borcun yüzdesi istenir.
+function nextWday(d, wd) { let t = Date.parse(d + 'T12:00:00Z'); if (!t) return d; while (new Date(t).getUTCDay() !== wd) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
 function cariSchedule(c, today) {
   const T = c.terms, items = [];
   if (T.kind === 'pct') {
@@ -305,6 +306,8 @@ function cariSchedule(c, today) {
       else if (T.kind === 'days') inst.push({ due: T.unit === 'ay' ? addMonthStr(b.date, T.n) : addDayStr(b.date, T.n), amount: b.amount, label: `${tag} · ${T.n} ${T.unit} vade` });
       else inst.push({ due: b.date, amount: b.amount, label: `${tag} · peşin` });
     }
+    // Ödeme günü: vade dolduktan sonraki ilk cuma (vade cumaya denk gelirse o gün)
+    for (const x of inst) { x.vade = x.due; x.due = nextWday(x.due, 5); }
     inst.sort((a, b) => a.due.localeCompare(b.due));
     let pool = c.paid; for (const x of inst) { const p = Math.min(pool, x.amount); pool = r2(pool - p); x.paid = r2(p); x.left = r2(x.amount - p); items.push(x); }
   }
