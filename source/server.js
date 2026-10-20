@@ -314,7 +314,7 @@ async function bkSync(env) {
   if (page >= pages && uniq.length) await env.DB.prepare('DELETE FROM bk_ship WHERE at < ?1').bind(new Date(T0).toISOString()).run();
   // Kapıda ödeme bedeli siparişte yazmıyorsa, gönderen kargo firmasının ücret listesinden alınır
   const hc = new Map(uniq.map(x => [x.no, x.hcode]));
-  const need = (await env.DB.prepare('SELECT no, bk_id, handler FROM bk_ship WHERE cod=1 AND cod_fee IS NULL LIMIT 120').all()).results; let filled = 0;
+  const need = (await env.DB.prepare('SELECT no, bk_id, handler FROM bk_ship WHERE cod=1 AND cod_fee IS NULL LIMIT 400').all()).results; let filled = 0;
   for (let i = 0; i < need.length && Date.now() - T0 < 26000; i += 6) {
     const part = need.slice(i, i + 6), res = await Promise.all(part.map(x => bkCall(env, 'GET', `/v2/order/${encodeURIComponent(x.bk_id)}/fee`).then(r => r.list).catch(() => null)));
     const up = [];
