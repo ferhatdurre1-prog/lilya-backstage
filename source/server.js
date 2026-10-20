@@ -35,8 +35,6 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS guard(x INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS ty_set(id TEXT PRIMARY KEY, order_no TEXT, type TEXT, tx_ms INTEGER, due_ms INTEGER, net REAL, amt REAL, po TEXT, at TEXT)`,
-  `CREATE TABLE IF NOT EXISTS ty_early(order_no TEXT PRIMARY KEY, fee REAL, inv TEXT, at TEXT)`,
-  `CREATE TABLE IF NOT EXISTS ty_early_inv(id TEXT PRIMARY KEY, amount REAL, matched INTEGER, po TEXT, day TEXT, n INTEGER, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS ty_po(id TEXT PRIMARY KEY, day TEXT, amount REAL, descr TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS audit_pkg(pkg_id TEXT PRIMARY KEY, order_no TEXT, day TEXT, units INTEGER, revenue REAL, paid REAL, status TEXT, seen_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS audit_pkg_day ON audit_pkg(day)`,
@@ -403,32 +401,6 @@ function trOff(ms) { const x = new Date(ms), k = x.toISOString().slice(0, 10); r
 function ptPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 8 * 86400000; while (trOff(t)) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
 // Trendyol: teslimden 28 gün sonraki ilk salı ya da perşembe (tatilse sonraki salı/perşembe)
 function tyPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 28 * 86400000; for (let i = 0; i < 30; i++) { const w = new Date(t).getUTCDay(); if ((w === 2 || w === 4) && !trOff(t)) break; t += 86400000; } return new Date(t).toISOString().slice(0, 10); }
-// Erken ödeme bedeli faturaları: fatura tarihine en yakın (±3, yoksa ±7 gün) erken ödemeye (ödeme emri) bağlanır ve o ödemedeki
-// erken ödenen siparişlere (Trendyol vadesi kuraldan önce) netlerine göre dağıtılır. Eşleşen fatura "Diğer Trendyol kesintileri"nden çıkar, siparişlere yazılır.
-const EARLY_RE = /erken|early/i;
-async function tyEarlyAlloc(env) {
-  const rs = (await reportStart(env)) || '2026-10-01', D = 86400000;
-  const [iR, sR, aR] = await env.DB.batch([env.DB.prepare(`SELECT id, date, amount, type, descr FROM fin_misc WHERE order_no IS NULL AND amount > 0 AND date >= ?1 ORDER BY date`).bind(iso(Date.parse(rs + 'T00:00:00+03:00') - 45 * D)),
-    env.DB.prepare('SELECT order_no, type, tx_ms, due_ms, net, po FROM ty_set'), env.DB.prepare('SELECT order_no, MIN(delivered) d FROM audit_pkg WHERE delivered IS NOT NULL GROUP BY order_no')]);
-  const inv = iR.results.filter(x => EARLY_RE.test(String(x.type || '') + ' ' + String(x.descr || ''))), dl = new Map(aR.results.map(x => [x.order_no, x.d]));
-  const O = new Map(); for (const x of sR.results) { const g = O.get(x.order_no) || { no: x.order_no, net: 0, po: null, sale: null, due: null }; g.net += x.net || 0; if (x.po) g.po = x.po; if (x.type === 'Sale') { if (x.tx_ms && (!g.sale || x.tx_ms < g.sale)) g.sale = x.tx_ms; if (x.due_ms && (!g.due || x.due_ms > g.due)) g.due = x.due_ms; } O.set(x.order_no, g); }
-  const G = new Map(); for (const g of O.values()) { if (!g.po || g.net <= 0) continue; const tyDue = g.due ? trDay(g.due) : null, rule = tyPayDay(dl.get(g.no) || (g.sale ? trDay(g.sale) : null));
-    const e = G.get(g.po) || { po: g.po, day: null, orders: [] }; if (tyDue && (!e.day || tyDue > e.day)) e.day = tyDue; e.orders.push({ no: g.no, net: g.net, early: !!(tyDue && rule && tyDue < rule) }); G.set(g.po, e); }
-  const groups = [...G.values()].filter(g => g.day && g.orders.some(o => o.early)), used = new Set(), fee = new Map(), invRows = [];
-  for (const x of inv) { const d0 = Date.parse(String(x.date).slice(0, 10) + 'T12:00:00Z'); let best = null;
-    for (const lim of [3, 7]) { for (const g of groups) { if (used.has(g.po)) continue; const dd = Math.abs(Date.parse(g.day + 'T12:00:00Z') - d0) / D; if (dd > lim) continue; const en = g.orders.filter(o => o.early).reduce((a, o) => a + o.net, 0);
-      if (!best || dd < best.dd || (dd === best.dd && en > best.en)) best = { g, dd, en }; } if (best) break; }
-    if (!best) { invRows.push([x.id, x.amount, 0, null, null, 0]); continue; } used.add(best.g.po);
-    const ls = best.g.orders.filter(o => o.early), tot = ls.reduce((a, o) => a + o.net, 0) || 1;
-    for (const o of ls) { const f = fee.get(o.no) || { fee: 0, inv: [] }; f.fee += x.amount * o.net / tot; f.inv.push(x.id); fee.set(o.no, f); }
-    invRows.push([x.id, x.amount, 1, best.g.po, best.g.day, ls.length]); }
-  const sig = JSON.stringify([...fee.entries()].map(([k, v]) => [k, r2(v.fee)]).sort());
-  const st = [env.DB.prepare('DELETE FROM ty_early'), env.DB.prepare('DELETE FROM ty_early_inv'), ...[...fee.entries()].map(([k, v]) => env.DB.prepare('INSERT INTO ty_early(order_no, fee, inv, at) VALUES(?1,?2,?3,?4)').bind(k, r2(v.fee), v.inv.join(' ').slice(0, 300), iso())),
-    ...invRows.map(a => env.DB.prepare('INSERT OR REPLACE INTO ty_early_inv(id, amount, matched, po, day, n, at) VALUES(?1,?2,?3,?4,?5,?6,?7)').bind(...a, iso()))];
-  if (sig !== ((await getSetting(env, 'ty_early_sig')) || '')) st.push(setStmt(env, 'ty_early_sig', sig), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(rs), setStmt(env, 'home_cache', ''), REV(env));
-  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
-  return { invoices: inv.length, matched: invRows.filter(a => a[2]).length, orders: fee.size };
-}
 // Trendyol cari ekstresi (satış/iade/indirim satırları, vade tarihi) ve hakediş ödemeleri rapor başlangıcından itibaren 14 günlük dilimlerle okunur
 async function tySettleSync(env, maxWin = 2) {
   const sid = env.TRENDYOL_SELLER_ID; if (!sid) return null; const rs = (await reportStart(env)) || '2026-10-01', now = Date.now(), D = 86400000;
@@ -447,8 +419,7 @@ async function tySettleSync(env, maxWin = 2) {
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     cur = to >= now ? now - 15 * D : to + 1; if (to >= now) break; }
   await env.DB.batch([setStmt(env, 'ty_settle_cur', String(cur)), setStmt(env, 'ty_settle_at', iso())]);
-  let early = null; try { early = await tyEarlyAlloc(env); } catch (e) { await setSetting(env, 'ty_early_err', iso() + ' · ' + String(e.message || e).slice(0, 160)); }
-  return { windows: w, rows: n, po, early };
+  return { windows: w, rows: n, po };
 }
 function bkRow(o) {
   const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
@@ -2366,14 +2337,6 @@ async function computeProfit(env, from, to, ch0) {
   const compensation = miscAll.filter(x => isCompensation(x.type)).reduce((a, x) => a + Math.abs(x.amount || 0), 0);
   // Reklam: harcandığı günün gideri (elle ya da Trendyol reklam raporundan girilen günlük harcama)
   const adRows = adR.results;
-  // Siparişlere dağıtılan erken ödeme bedelleri (Trendyol); bunların faturaları "Diğer kesintiler"den çıkarılır
-  const earlyMap = new Map(), earlyInvByType = new Map();
-  if (!ch0 || ch0 === 'trendyol') { try { const [eR, eiR] = await env.DB.batch([env.DB.prepare(`SELECT order_no, fee FROM ty_early WHERE order_no IN (${SUBQ})`).bind(from, to),
-      env.DB.prepare(`SELECT m.type, SUM(m.amount) amount FROM fin_misc m JOIN ty_early_inv e ON e.id = m.id WHERE e.matched = 1 AND m.date >= ?1 AND m.date < ?2 GROUP BY m.type`).bind(from, to)]);
-    for (const x of eR.results) earlyMap.set(x.order_no, x.fee || 0); for (const x of eiR.results) earlyInvByType.set(x.type, x.amount || 0); } catch (e) {} }
-  for (const x of miscFree) { const a = earlyInvByType.get(x.type); if (a) x.amount = (x.amount || 0) - a; }
-  for (let i = miscFree.length - 1; i >= 0; i--) if (earlyInvByType.has(miscFree[i].type) && Math.abs(miscFree[i].amount || 0) < 0.01) miscFree.splice(i, 1);
-  let earlyTot = 0, earlyN = 0;
   mark('misc'); const R2 = (n) => Math.round(n * 100) / 100;
   const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, pack: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
@@ -2486,8 +2449,7 @@ async function computeProfit(env, from, to, ch0) {
     const cost = undel ? 0 : rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
     // Paketleme: gönderilen her sipariş için sabit + gönderilen her ürün adedi için (iade dönse de düşmez)
     const shipped = units + retUnits; const pack = shipped > 0 ? (ch === 'shopify' ? (fee.packOrderSh || 0) + (fee.packUnitSh || 0) * shipped : (fee.packOrder || 0) + (fee.packUnit || 0) * shipped) : 0; // Shopify ayrı paketleme ücreti
-    const ef = ch === 'trendyol' && !undel ? r2(earlyMap.get(ord.order_no) || 0) : 0; if (ef) { earlyTot += ef; earlyN++; cargoInfo.push(`Erken ödeme bedeli payı ${ef} TL`); }
-    const profit = revenue - commission - cargo - retCargo - penalty - service - stopaj - cost - pack - ef;
+    const profit = revenue - commission - cargo - retCargo - penalty - service - stopaj - cost - pack;
     const oRes = { revenue, commission, cargo, retCargo, penalty, service, stopaj, cost, pack, profit, units, retUnits };
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
@@ -2507,7 +2469,7 @@ async function computeProfit(env, from, to, ch0) {
       if (!bp) { bp = { key: k, sku: x.l.sku, barcode: (x.pr && x.pr.barcode) || '', name: (x.pr && x.pr.name) || x.l.name, image: x.pr ? x.pr.image : '', costKnown: !!(x.pr && x.pr.cost !== null), ...blank(), orders: 0 }; byProduct.set(k, bp); }
       const lr = revenue * share, lc = commission * share, ls = stopaj * share;
       const res = { revenue: lr, commission: lc, cargo: cargo * fshare, retCargo: retCargo * (retTot ? rv(x) / retTot : x.retQ / retQTot), penalty: (penalty - unsAlloc) * (dTot ? dv(x) / dTot : fshare), service: service * fshare, stopaj: ls, cost: x.cost, pack: pack * (x.l.qty / qtyTot), units: x.qty, retUnits: x.retQ };
-      res.profit = lr - lc - res.cargo - res.retCargo - res.penalty - res.service - ls - x.cost - res.pack - ef * fshare;
+      res.profit = lr - lc - res.cargo - res.retCargo - res.penalty - res.service - ls - x.cost - res.pack;
       add(bp, res); bp.orders++;
     }
   }
@@ -2522,8 +2484,7 @@ async function computeProfit(env, from, to, ch0) {
   const adInvoices = miscFree.filter(x => isAd(x.type)).reduce((a, x) => a + (x.amount || 0), 0);
   const adTracked = ((adAnyR.results[0] || {}).n || 0) > 0; // günlük reklam takibi varsa faturalar hiçbir dönemde ayrıca düşülmez (günler toplamı = ay)
   const otherFees = miscFree.filter(x => !(adTracked && isAd(x.type))).map(x => ({ type: x.type, amount: R2(x.amount || 0), n: x.n }));
-  if (earlyTot) otherFees.unshift({ type: `Erken ödeme bedeli (${earlyN} siparişe dağıtıldı)`, amount: R2(earlyTot), n: earlyN, perOrder: true });
-  sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices); sum.earlyFee = R2(earlyTot);
+  sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices);
   // Elle girilen işletme giderleri (paketleme malzemesi vb.): girildiği günün gideri
   const expenses = expR.results.map(x => ({ id: x.id, day: x.day, name: x.name, amount: R2(x.amount || 0), kind: x.kind === 'gelir' ? 'gelir' : 'gider' }));
   // Günlük sabit gider / gelir: dönemdeki her güne (başlangıç–bitiş arası) yazılır
@@ -2539,7 +2500,7 @@ async function computeProfit(env, from, to, ch0) {
   } catch (e) {}
   sum.expenses = expenses.filter(x => x.kind === 'gider').reduce((a, x) => a + x.amount, 0);
   sum.extraIncome = R2(expenses.filter(x => x.kind === 'gelir').reduce((a, x) => a + x.amount, 0));
-  sum.compensation = R2(Math.abs(compensation)); sum.profit -= (sum.otherFees - earlyTot) + sum.ads + sum.expenses; // erken ödeme bedeli sipariş kârlarından zaten düşüldü sum.profit += sum.compensation + sum.extraIncome;
+  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses; sum.profit += sum.compensation + sum.extraIncome;
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   for (const bp of byProduct.values()) if (!prods.has(bp.key)) bp.orphan = true; // ürün silinmiş: satış hiçbir ürüne bağlı değil
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
@@ -3292,7 +3253,6 @@ ${catalog}` });
   if (path === '/api/tycari/recon') {
     // Trendyol mutabakatı: her siparişin neti (satıcı hakedişi), teslim günü, kurala göre vade (teslim + 28 gün sonraki ilk salı/perşembe), Trendyol'un yazdığı vade ve hakediş ödemeleri
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs)), today = trToday();
-    const efR = await env.DB.batch([env.DB.prepare('SELECT order_no, fee FROM ty_early'), env.DB.prepare('SELECT * FROM ty_early_inv')]); const EF = new Map(efR[0].results.map(x => [x.order_no, x.fee])), EI = efR[1].results;
     const [oR, sR, aR, pR] = await env.DB.batch([env.DB.prepare(`SELECT id, order_no, date, lines FROM orders WHERE channel='trendyol' AND date >= ?1 ORDER BY date DESC`).bind(from),
       env.DB.prepare(`SELECT order_no, type, tx_ms, due_ms, net, po FROM ty_set WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1)`).bind(from),
       env.DB.prepare(`SELECT order_no, MIN(delivered) d, GROUP_CONCAT(DISTINCT status) st FROM audit_pkg WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1) GROUP BY order_no`).bind(from),
@@ -3302,14 +3262,14 @@ ${catalog}` });
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} if (!lines.some(l => l.status !== 'cancelled')) continue;
       const g = S.get(r.order_no), a = A.get(r.order_no), deliv = (a && a.d) || (g && g.sale ? trDay(g.sale) : null), rule = tyPayDay(deliv), tyDue = g && g.due ? trDay(g.due) : null, day = rule || tyDue; // kural (teslim + 28 gün → ilk salı/perşembe) esas; Trendyol vadesi yalnızca bilgi
       const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : g.po ? (tyDue && rule && tyDue < rule ? 'early' : 'paid') : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending'; // ekstre satırında ödeme emri no varsa ödenmiştir
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, po: g ? g.po : null, efee: EF.get(r.order_no) || 0, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, po: g ? g.po : null, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
     const sch = new Map(); for (const x of out) if (x.day && x.net > 0 && x.st !== 'transit') { const g = sch.get(x.day) || { day: x.day, net: 0, n: 0 }; g.net = r2(g.net + x.net); g.n++; sch.set(x.day, g); }
-    const schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const p = PO.get(g.day); return { ...g, efee: r2(EI.filter(e => e.matched && e.day === g.day).reduce((a, e) => a + (e.amount || 0), 0)), paid: p ? r2(p.amount) : null, diff: p ? r2(p.amount - g.net) : null, future: g.day >= today }; });
+    const schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const p = PO.get(g.day); return { ...g, paid: p ? r2(p.amount) : null, diff: p ? r2(p.amount - g.net) : null, future: g.day >= today }; });
     for (const [d, p] of PO) if (!sch.has(d)) schedule.push({ day: d, net: 0, n: 0, paid: r2(p.amount), diff: r2(p.amount), future: false, extra: true }); schedule.sort((a, b) => a.day < b.day ? -1 : 1);
     const sum = (f) => r2(out.filter(f).reduce((a, x) => a + (x.net || 0), 0)), cnt = (k) => out.filter(x => x.st === k || (k === 'paid' && x.st === 'early')).length;
     return json({ ok: true, items: out, n: out.length, schedule, next: schedule.find(x => x.future && x.net > 0) || null,
       tot: { pending: sum(x => x.st === 'pending'), late: sum(x => x.st === 'late'), paidNet: sum(x => x.st === 'paid' || x.st === 'early'), earlyNet: sum(x => x.st === 'early'), poTotal: r2(pR.results.reduce((a, x) => a + (x.amount || 0), 0)), transit: cnt('transit') + cnt('nosale') },
-      counts: { early: out.filter(x => x.st === 'early').length, pending: cnt('pending'), late: cnt('late'), paid: cnt('paid'), transit: cnt('transit'), nosale: cnt('nosale'), diffDay: out.filter(x => x.diffDay).length }, at: (await getSetting(env, 'ty_settle_at')) || '', early: { total: r2(EI.reduce((a, e) => a + (e.amount || 0), 0)), matched: r2(EI.filter(e => e.matched).reduce((a, e) => a + (e.amount || 0), 0)), n: EI.length, un: EI.filter(e => !e.matched).length } });
+      counts: { early: out.filter(x => x.st === 'early').length, pending: cnt('pending'), late: cnt('late'), paid: cnt('paid'), transit: cnt('transit'), nosale: cnt('nosale'), diffDay: out.filter(x => x.diffDay).length }, at: (await getSetting(env, 'ty_settle_at')) || '' });
   }
   if (path === '/api/paytr/recon') {
     // PayTR mutabakatı: Shopify online siparişlerde beklenen tutar (ürün + 700 TL altı 100 TL kargo) ile PayTR'nin işlediği tutar, komisyonu, neti ve hesaba yattığı gün
