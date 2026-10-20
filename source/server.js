@@ -4181,7 +4181,13 @@ ${catalog}` });
     const size = Math.max(1, Math.min(100, intOr(body.size, 100))), page = Math.max(1, intOr(body.page, 1));
     const where = [], args = [];
     const f = String(body.filter || 'all');
-    if (f === 'delivered') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')`); else if (f === 'new' || f === 'printed') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}' AND ${f === 'printed' ? '' : 'NOT '}EXISTS(SELECT 1 FROM label_printed lp WHERE lp.pkg_id=a.pkg_id))`); else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`(o.status='returned' OR o.id IN (SELECT order_id FROM returns WHERE order_id<>'' AND status<>'rejected'))`); // İadeler ekranındaki talepler de
+    // Durum süzgeçleri (Trendyol paket durumu; Shopify: gönderilmemiş / yolda / teslim)
+    const SH_UNF = `o.order_no IN (SELECT order_no FROM sh_unf WHERE data IS NOT NULL AND data<>'{}')`, SH_DLV = `(EXISTS(SELECT 1 FROM sh_pay p WHERE p.no=replace(o.order_no,'#','') AND p.delivered IS NOT NULL) OR EXISTS(SELECT 1 FROM sr_cost c WHERE c.no=replace(o.order_no,'#','') AND c.teslim IS NOT NULL AND c.teslim<>''))`;
+    if (f === 'delivered') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')) OR (o.channel='shopify' AND ${SH_DLV}))`);
+    else if (f === 'transit') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status IN ('Shipped','AtCollectionPoint'))) OR (o.channel='shopify' AND o.status<>'cancelled' AND NOT ${SH_UNF} AND NOT ${SH_DLV} AND o.date >= '${iso(Date.now() - 30 * 86400000)}'))`);
+    else if (f === 'new') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}')) OR (o.channel='shopify' AND o.status<>'cancelled' AND ${SH_UNF}))`);
+    else if (f === 'printed') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}' AND EXISTS(SELECT 1 FROM label_printed lp WHERE lp.pkg_id=a.pkg_id))`);
+    else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`(o.status='returned' OR o.id IN (SELECT order_id FROM returns WHERE order_id<>'' AND status<>'rejected'))`);
     if (body.channel) { args.push(String(body.channel)); where.push(`o.channel=?${args.length}`); }
     const q = String(body.q || '').trim();
     if (q) {
