@@ -910,7 +910,11 @@ function srMatch(rows, ship) {
     if (nm && vals.some(([k, v]) => /alici|unvan|kisi/i.test(k) && srNorm(v) === nm)) byName.push(r); }
   return byName.length === 1 ? byName[0] : null;
 }
-const srRowTrack = (r) => { for (const [k, v] of Object.entries(r)) if (/takip|barkod/i.test(k) && /^\d{8,20}$/.test(String(v).trim())) return String(v).trim(); return ''; };
+// Takip no sütunu: önce "Kargo Takip No" benzeri, sonra diğer takip/barkod sütunları; bizim/müşterinin referans sütunları (web, özel, müşteri, sipariş) kullanılmaz. Excel'de sayı 1,23E+12 / 123.0 gibi gelebilir
+const srCellNo = (v) => { let t = String(v ?? '').trim().replace(/\s/g, ''); if (/^\d+(\.0+)?$/.test(t)) t = t.replace(/\.0+$/, ''); return /^\d{8,20}$/.test(t) ? t : ''; };
+const srRowTrack = (r) => { const E = Object.entries(r), K = (k) => srNorm(k), bad = /WEB|OZEL|ÖZEL|MUSTERI|MÜŞTERI|SIPARIS|SİPARİŞ|REFERANS|IRSALIYE/;
+  for (const re of [/KARGOTAKIP|^TAKIPNO|^TAKIPNUMARA/, /TAKIP/, /BARKOD/]) for (const [k, v] of E) { const kk = K(k); if (re.test(kk) && !bad.test(kk)) { const n = srCellNo(v); if (n) return n; } }
+  return ''; };
 const srRowState = (r) => { for (const [k, v] of Object.entries(r)) if (/durum|islem|hareket/i.test(k) && v) return String(v).slice(0, 120); return ''; };
 // Shopify'da siparişi "kargolandı" yapar ve takip numarasını müşteriye bildirir
 // Gerekli yetkiler: read_merchant_managed_fulfillment_orders, write_merchant_managed_fulfillment_orders

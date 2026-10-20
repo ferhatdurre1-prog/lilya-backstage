@@ -3546,7 +3546,7 @@ document.addEventListener('input', e => { const t = e.target, N = S.addr && S.ad
 document.addEventListener('change', async e => { const t = e.target; if (!t || t.id !== 'sr-rep' || !t.files || !t.files[0]) return; const A = aS(), file = t.files[0]; t.value = '';
   A.trk = 1; render();
   try { const wb = XLSX.read(await file.arrayBuffer(), {type: 'array'}); let rows = [];
-    for (const sn of wb.SheetNames) { const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header: 1, defval: '', raw: false});
+    for (const sn of wb.SheetNames) { const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header: 1, defval: '', raw: true}).map(r => r.map(c => typeof c === 'number' ? (Number.isInteger(c) ? BigInt(c).toString() : String(c)) : c instanceof Date ? c.toISOString() : String(c ?? ''))); // ham değer: uzun takip no 1,23E+12'ye dönüşmesin
       const hi = aoa.findIndex(r => r.some(c => /^(barkod|referansno|kargotakipno|webtakipno)$/.test(trFold(c)))); if (hi < 0) continue;
       const H = aoa[hi].map(c => trFold(c)); rows = rows.concat(aoa.slice(hi + 1).filter(r => r.some(c => String(c).trim())).map(r => { const o = {}; H.forEach((h, i) => { if (h) o[h] = String(r[i] ?? '').trim(); }); return o; })); }
     if (!rows.length) throw new Error('Dosyada Barkod / Referans No sütunu bulunamadı. Sürat eKargo → Gönderi Raporu → Getir → Excel\'e aktar dosyasını seç.');
