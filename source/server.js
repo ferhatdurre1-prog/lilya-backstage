@@ -21,6 +21,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS bundles(pkey TEXT NOT NULL, comp TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(pkey, comp))`,
   `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sr_cost(no TEXT PRIMARY KEY, tracking TEXT, cost REAL, desi REAL, cod_amount REAL, undelivered INTEGER, durum TEXT, teslim TEXT, at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sh_ret(id INTEGER PRIMARY KEY AUTOINCREMENT, no TEXT NOT NULL, tracking TEXT, desi REAL, cost REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS sh_pay(no TEXT PRIMARY KEY, gateway TEXT, cod INTEGER, card INTEGER, subtotal REAL, ship REAL, total REAL, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS bk_ship(no TEXT PRIMARY KEY, bk_id TEXT, created TEXT, handler TEXT, status TEXT, fee REAL, cod INTEGER, cod_type TEXT, cod_amount REAL, cod_fee REAL, cod_status TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sup_pay(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier TEXT NOT NULL COLLATE NOCASE, date TEXT, amount REAL NOT NULL, method TEXT, note TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
@@ -918,6 +920,12 @@ const srCellNo = (v) => { let t = String(v ?? '').trim().replace(/\s/g, ''); if 
 const srRowTrack = (r) => { const E = Object.entries(r), K = (k) => srNorm(k), bad = /WEB|OZEL|ÖZEL|MUSTERI|MÜŞTERI|SIPARIS|SİPARİŞ|REFERANS|IRSALIYE/;
   for (const re of [/KARGOTAKIP|^TAKIPNO|^TAKIPNUMARA/, /TAKIP/, /BARKOD/]) for (const [k, v] of E) { const kk = K(k); if (re.test(kk) && !bad.test(kk)) { const n = srCellNo(v); if (n) return n; } }
   return ''; };
+// Sürat raporu satırından gerçek ücret (Tutar: KDV ve posta vergisi dahil), desi, kapıda tahsilat ve teslim edilemedi bilgisi
+const srPick = (r) => { const E = Object.entries(r).map(([k, v]) => [srNorm(k), String(v ?? '').trim()]), get = (re) => { const x = E.find(([k]) => re.test(k)); return x ? x[1] : ''; };
+  const num = (t) => { if (!t) return null; const n = Number(/,\d{1,2}$/.test(t) ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '')); return Number.isFinite(n) ? n : null; };
+  const iade = get(/^IADEDURUM$/), tes = get(/^TESLIMATDURUM$/), yer = get(/^BULUNDUGUYER$/);
+  const undelivered = /^(EVET|E|1|TRUE)$/i.test(srNorm(iade)) || /IADE|TESLIMEDILEMEDI|GERIDON/.test(srNorm(tes + ' ' + yer));
+  return { cost: num(get(/^TUTAR$/)), desi: num(get(/^TOPLAMDESI$/)), cod: num(get(/^KAPIDANTAHSILATTUTARI$/)) || 0, undelivered, durum: (tes || yer || '').slice(0, 80), teslim: get(/^TESLIMTARIHI$/).slice(0, 30) }; };
 const srRowState = (r) => { for (const [k, v] of Object.entries(r)) if (/durum|islem|hareket/i.test(k) && v) return String(v).slice(0, 120); return ''; };
 // Shopify'da siparişi "kargolandı" yapar ve takip numarasını müşteriye bildirir
 // Gerekli yetkiler: read_merchant_managed_fulfillment_orders, write_merchant_managed_fulfillment_orders
@@ -2150,7 +2158,7 @@ async function computeProfit(env, from, to, ch0) {
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
-  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR]] = await Promise.all([loadFees(env), env.DB.batch([
+  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR, scR, srtR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day, desi FROM products`),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note, kept, inspect, insp_ok FROM returns WHERE order_id<>'' AND status<>'rejected'`),
@@ -2162,8 +2170,10 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare('SELECT COUNT(*) n FROM ad_spend'),
     env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT no, fee, cod_fee, handler, cod, cod_type FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10)),
-    env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to)])]);
-  const shPay = new Map(spR.results.map(x => [x.no, x]));
+    env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
+    env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
+    env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
+  const shPay = new Map(spR.results.map(x => [x.no, x])), srCost = new Map(scR.results.map(x => [x.no, x])), shRet = new Map(srtR.results.map(x => [x.no, x]));
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
   // Kanal seçiliyse sadece o kanalın siparişleri; Trendyol fatura kesintileri yalnız Trendyol'da, genel giderler kanal seçilince düşülmez
   if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); expR.results = []; }
@@ -2247,7 +2257,7 @@ async function computeProfit(env, from, to, ch0) {
     }
     const pkgs = new Map();
     for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true }; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
-    let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0;
+    let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0, undel = false;
     const cargoInfo = [];
     if (ch === 'trendyol') for (const g of pkgs.values()) { const c = tyCargo(fee, g.amount, g.desi, g.carrier); cargo += c.cost;
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
@@ -2261,11 +2271,15 @@ async function computeProfit(env, from, to, ch0) {
       const shipInc = gross > 0 && gross < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codInc = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0; shInc = shipInc + codInc;
       const pm = cod === null ? 'ödeme yöntemi bilinmiyor (online sayıldı)' : cod ? (card ? 'kapıda kart' : 'kapıda nakit') : 'online';
       const incTxt = shInc ? ` · müşteriden ${[shipInc ? 'kargo ' + shipInc + ' TL' : '', codInc ? 'kapıda ödeme ' + codInc + ' TL' : ''].filter(Boolean).join(' + ')} satışa eklendi` : '';
-      if (post) { // 17.10.2026 10:00 sonrası: anlaşmalı Sürat tarifesi (+%2,35 posta vergisi sadece kargoya) + kapıda ödeme bedeli
+      if (post) { // 17.10.2026 10:00 sonrası: anlaşmalı Sürat. Sürat raporu yüklendiyse gerçek ücret (KDV + posta vergisi dahil), yoksa tarife (+%2,35 posta vergisi sadece kargoya) + kapıda ödeme bedeli
         let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null; if (dz === null) { miss++; d += q; } else d += dz * q; }
-        const desi = Math.max(0, Math.ceil(d - 1e-9)), base = suratDirectPrice(desi), cf = cod ? suratDirectCod(gross + shInc) : 0;
-        cargo = r2(base * (1 + SURAT_POST_TAX) + cf); shReal = !miss && cod !== null;
-        cargoInfo.push(`Sürat (anlaşmalı) · ${desi} desi${miss ? ` (${miss} ürünün desisi yok, 1 sayıldı)` : ''}${desi > 20 ? ' · 20 desi üstü!' : ''} · ${base} TL + %2,35 posta vergisi${cf ? ` + kapıda ödeme bedeli ${cf} TL` : ''} · ${pm}${incTxt}`); }
+        const sc = srCost.get(no), real = sc && sc.cost !== null && sc.cost > 0;
+        const desi = sc && sc.desi !== null ? Math.ceil(sc.desi) : Math.max(0, Math.ceil(d - 1e-9)), base = real ? r2(sc.cost) : r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX));
+        if (sc && sc.undelivered) { // teslim edilemedi: gidiş tam + dönüş yarı fiyat; kapıda ödeme bedeli ve müşteriden gelir yok
+          undel = true; cargo = r2(base * 1.5); shInc = 0; shReal = real;
+          cargoInfo.push(`TESLİM EDİLEMEDİ · Sürat ${real ? 'gerçek ücret' : 'tarife'} ${base} TL + dönüş yarı fiyat ${r2(base / 2)} TL · ${sc.durum || ''}`); }
+        else { const cf = cod ? suratDirectCod(gross + shInc) : 0; cargo = r2(base + cf); shReal = real ? cod !== null : (!miss && cod !== null);
+          cargoInfo.push(`Sürat (anlaşmalı) · ${desi} desi${!real && miss ? ` (${miss} ürünün desisi yok, 1 sayıldı)` : ''}${desi > 20 ? ' · 20 desi üstü!' : ''} · ${real ? `gerçek ücret ${base} TL (Sürat raporu)` : `${suratDirectPrice(desi)} TL + %2,35 posta vergisi`}${cf ? ` + kapıda ödeme bedeli ${cf} TL` : ''} · ${pm}${incTxt}`); } }
       else if (bk && bk.fee !== null) { const cc = card && /s[üu]rat/i.test(bk.handler || '') ? r2((gross + shInc) * 0.045) : 0;
         cargo = r2(bk.fee + (bk.cod_fee || 0) + cc); shReal = true;
         cargoInfo.push(`Basit Kargo${bk.handler ? ' · ' + bk.handler : ''} · gerçek ücret${bk.cod_fee ? ' (kapıda ödeme bedeli ' + bk.cod_fee + ' TL dahil)' : ''}${cc ? ` + kart komisyonu %4,5 (${cc} TL)` : ''} · ${pm}${incTxt}`); }
@@ -2290,13 +2304,15 @@ async function computeProfit(env, from, to, ch0) {
       if (fa.service !== null) { service = fa.service; svcActual = true; }
     }
     if (!physRet) retCargo = 0;
+    if (ch === 'shopify') { const rr = shRet.get(String(ord.order_no || '').replace(/\D/g, '')); if (rr && rr.cost) { retCargo = r2(retCargo + rr.cost); retCargoEst = false; } }
+    if (undel) { revenue = 0; commission = 0; } // teslim edilemeyen: satış yok, komisyon yok
     penalty += unsPenalty;
     // Gerçek kesinti faturası (ceza, kupon vb.) varsa tahmin yerine o kullanılır
     const mo = ch === 'trendyol' ? miscByOrder.get(ord.order_no) : null;
     const penaltyEst = !mo && penalty > 0;
     if (mo) penalty = mo.amount;
     const stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0);
-    const cost = rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
+    const cost = undel ? 0 : rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
     // Paketleme: gönderilen her sipariş için sabit + gönderilen her ürün adedi için (iade dönse de düşmez)
     const shipped = units + retUnits; const pack = shipped > 0 ? (ch === 'shopify' ? (fee.packOrderSh || 0) + (fee.packUnitSh || 0) * shipped : (fee.packOrder || 0) + (fee.packUnit || 0) * shipped) : 0; // Shopify ayrı paketleme ücreti
     const profit = revenue - commission - cargo - retCargo - penalty - service - stopaj - cost - pack;
@@ -3109,6 +3125,24 @@ ${catalog}` });
     return json({ ok: true });
   }
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
+  if (path === '/api/shret/list') {
+    const no = String(body.no || '').replace(/\D/g, ''); const { results } = await env.DB.prepare('SELECT * FROM sh_ret WHERE no=?1 AND deleted=0 ORDER BY id').bind(no).all();
+    const sc = await env.DB.prepare('SELECT * FROM sr_cost WHERE no=?1').bind(no).first();
+    return json({ ok: true, items: results, cost: sc });
+  }
+  if (path === '/api/shret/add') {
+    // Elle iade kargosu: müşteri bizim cari kodumuzla gönderdi; ücret = Sürat tarifesi (desi) + %2,35 posta vergisi, tam fiyat (ya da girilen tutar)
+    const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş no yok.');
+    const desi = Math.max(0, Number(String(body.desi ?? '').replace(',', '.')) || 0); const amt = Number(String(body.cost ?? '').replace(',', '.'));
+    const cost = Number.isFinite(amt) && amt > 0 ? r2(amt) : r2(suratDirectPrice(Math.ceil(desi || 1)) * (1 + SURAT_POST_TAX));
+    await env.DB.prepare('INSERT INTO sh_ret(no, tracking, desi, cost, note, at) VALUES(?1,?2,?3,?4,?5,?6)').bind(no, String(body.tracking || '').trim().slice(0, 40), desi || null, cost, String(body.note || '').slice(0, 120), iso()).run();
+    await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-01'), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true, cost });
+  }
+  if (path === '/api/shret/del') {
+    await env.DB.batch([env.DB.prepare('UPDATE sh_ret SET deleted=1 WHERE id=?1').bind(intOr(body.id, 0)), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-01'), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true });
+  }
   if (path === '/api/surat/trackdiag') {
     // Teşhis: bir siparişin Sürat'taki takip sorgusu ve listede eşleşen satır (kişisel bilgiler gizli)
     const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş no yaz.');
@@ -3147,7 +3181,9 @@ ${catalog}` });
     const cr = await srCreds(env), c = await shCreds(env);
     const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
     const out = [], miss = [], fixed = []; let already = 0;
+    const costSt = [];
     for (const r of results) { const m = srMatch(rows, r), tn = m && srRowTrack(m);
+      if (m) { const g = srPick(m); if (g.cost !== null || g.undelivered) costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(no) DO UPDATE SET tracking=excluded.tracking, cost=COALESCE(excluded.cost, sr_cost.cost), desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=excluded.cod_amount, undelivered=excluded.undelivered, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn || null, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso())); }
       if (!tn) { if (!r.fulfilled_at) miss.push(r.order_no); continue; }
       if (r.fulfilled_at) { // zaten kargolandı: numara farklıysa (eski hatalı okuma) düzelt
         if (r.tracking === tn) { already++; continue; }
@@ -3155,7 +3191,9 @@ ${catalog}` });
         catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } continue; }
       r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat raporundan';
       try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
-    return json({ ok: true, rows: rows.length, pending: results.filter(r => !r.fulfilled_at).length, tracked: out.filter(x => !x.fixed).length, fulfilled: out.filter(x => x.fulfilled && !x.fixed).length, fixed: fixed.length, fixedList: fixed.slice(0, 30), already, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
+    for (let i = 0; i < costSt.length; i += 90) await env.DB.batch(costSt.slice(i, i + 90));
+    if (costSt.length) await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-17'), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true, costs: costSt.length, undelivered: 0, rows: rows.length, pending: results.filter(r => !r.fulfilled_at).length, tracked: out.filter(x => !x.fixed).length, fulfilled: out.filter(x => x.fulfilled && !x.fixed).length, fixed: fixed.length, fixedList: fixed.slice(0, 30), already, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
   }
   if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }

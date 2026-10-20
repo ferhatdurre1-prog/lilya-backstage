@@ -1969,6 +1969,7 @@ function sheetOrder(){
   const body = `<div class="card"><dl class="kv"><dt>Kanal</dt><dd>${chBadge(o.channel)}</dd><dt>Sipariş tarihi</dt><dd>${esc(fmtDate(o.date))}</dd><dt>Durum</dt><dd><span class="pill ${st[1]}">${st[0]}</span></dd><dt>Kaynak</dt><dd>${o.source==='manual'?'Elle girildi':o.source==='trendyol'?'Trendyol (otomatik)':'Dosyadan aktarıldı'}</dd>${o.baseline?'<dt>Not</dt><dd>Başlangıç tarihinden önce; stoğu etkilemedi</dd>':''}</dl></div>
   ${customerCard(o)}
   ${orderProfitCard(o)}
+  ${o.channel === 'shopify' ? shRetCard(o) : ''}
   ${o.channel === 'trendyol' ? tyDiagCard(o) : ''}
   <div class="card"><h3>Kalemler</h3><div class="lines">${rows}</div></div>
   ${anyActive ? `<div class="card"><h3>İptal</h3><p class="muted small" style="margin:0">Siparişi iptal edersen, stoktan düşülmüş bütün adetler ortak stoğa geri eklenir.</p><div class="row"><button class="btn danger" data-act="cancel-order">Siparişi iptal et</button></div></div>` : ''}`;
@@ -3048,6 +3049,22 @@ function tyDiagCard(o){
     ${(ap.returns || []).map(r => `<div class="row"><button class="btn sm${r.kept ? '' : ' primary'}" data-act="ret-kept" data-id="${esc(r.id)}" data-kept="${r.kept ? 0 : 1}">${r.kept ? 'Ürün geri geldi (iade stoğa)' : 'Ürün müşteride kaldı (geri gelmeyecek)'}</button></div>`).join('')}
     ${d.errors.length ? `<div class="small" style="color:var(--bad)">${d.errors.map(esc).join('<br>')}</div>` : ''}</div>`;
 }
+// Shopify siparişine elle iade kargosu (müşteri cari kodumuzla Sürat'tan gönderdi)
+function shRetCard(o){
+  const no = String(o.orderNo || '').replace(/\D/g, ''); S.shret = S.shret || {}; const R = S.shret[no];
+  if (!R) { S.shret[no] = {loading: true}; api('/api/shret/list', {no}).then(d => { S.shret[no] = d; if (S.sheet) renderSheet(false); }).catch(() => { S.shret[no] = {items: []}; }); return ''; }
+  if (R.loading) return '';
+  const it = R.items || [], c = R.cost;
+  return `<div class="card" style="gap:8px"><h3 style="margin:0">İade kargosu</h3>
+    ${c ? `<p class="small muted" style="margin:0">Sürat raporu: ${c.undelivered ? '<b style="color:var(--bad)">teslim edilemedi</b>' : esc(c.durum || '')}${c.cost ? ` · gönderi ücreti ${tl2(c.cost)}` : ''}${c.desi ? ` · ${String(c.desi).replace('.', ',')} desi` : ''}</p>` : ''}
+    ${it.length ? `<div class="list" style="box-shadow:none">${it.map(x => `<div class="item"><div class="main"><div class="ttl">${tl2(x.cost)}${x.desi ? ` · ${String(x.desi).replace('.', ',')} desi` : ''}</div><div class="meta">${x.tracking ? `<span class="mono">${esc(x.tracking)}</span>` : ''}${x.note ? `<span>${esc(x.note)}</span>` : ''}<span>${esc(fmtDate(x.at))}</span></div></div><div class="end"><button class="btn sm ghost" data-act="shret-del" data-id="${x.id}" data-no="${no}" style="color:var(--bad)">Sil</button></div></div>`).join('')}</div>` : '<p class="small muted" style="margin:0">Müşteri iade ettiyse (Sürat\'a bizim cari kodumuzla verdiyse) buradan ekle; ücret bu siparişin kârından düşülür.</p>'}
+    <form id="f-shret" data-no="${no}" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;align-items:end">
+      <label class="f" style="margin:0"><span class="small">Takip no</span><input class="input mono" id="shr-trk" autocomplete="off"></label>
+      <label class="f" style="margin:0"><span class="small">Desi</span><input class="input num" id="shr-desi" inputmode="decimal" placeholder="1"></label>
+      <label class="f" style="margin:0"><span class="small">Tutar (boşsa tarifeden)</span><input class="input num" id="shr-amt" inputmode="decimal" placeholder="otomatik"></label>
+      <button class="btn sm primary" type="submit">İade kargosu ekle</button></form>
+    <p class="small muted" style="margin:0">Tutar boşsa: desiye göre Sürat tarifesi + %2,35 posta vergisi (tam fiyat).</p></div>`;
+}
 function orderProfitCard(o){
   const D = S.prof && S.prof.data; const x = D && D.orders.find(y => y.id === o.id);
   if (!x) return '';
@@ -3611,6 +3628,7 @@ document.addEventListener('click', async e => {
       await run(async () => { await api('/api/products/bundle', {key: sh.id, items}); await refresh(true); toast(clear ? 'Set kaldırıldı.' : 'Set kaydedildi. Trendyol stoğu birkaç saniye içinde güncellenir.'); openSheet('product', {id: sh.id}); }); break; }
     case 'need-open': openSheet('need', {}); break;
     case 'pch': { const P = profS(); P.ch = id || ''; P.key = ''; render(); loadProfit(true); break; }
+    case 'shret-del': { const no = b.dataset.no; if (!(await confirmBox('Bu iade kargosu silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/shret/del', {id: Number(id)}); delete S.shret[no]; const P = profS(); P.cache = {}; P.key = ''; loadProfit(true); toast('Silindi.'); renderSheet(false); }); break; }
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'cari-paynew': { const C = cS(); C.open = C.open === '__new' ? '' : '__new'; C.det = null; render(); break; }
     case 'cari-open': { const C = cS(); C.terms = false; C.tk = null; C.pre = null; if (C.open === id) { C.open = ''; C.det = null; } else { C.open = id; if (id !== '__new') loadCariDet(id); } render(); break; }
@@ -3929,6 +3947,7 @@ document.addEventListener('submit', async e => {
     await run(async () => { await api('/api/cari/pay', {supplier: sup, amount: amt, date: $('#cp-date').value, method: $('#cp-method').value, note: $('#cp-note').value}); const C = cS(); toast(`Ödeme kaydedildi: ${sup}.`); C.pre = null; if (C.open === '__new') C.open = sup; loadCari(true); loadCariDet(C.open); }); return; }
   if (id === 'f-bkord') { await run(async () => { const r = await api('/api/bk/order', {no: $('#bk-no').value}); S.bkSample = JSON.stringify({kayitli: r.saved, gonderiler: r.shipments}, null, 1).slice(0, 8000); renderSheet(false); }); return; }
   if (id === 'f-srtd') { S.srTd = 'Sorgulanıyor…'; renderSheet(false); try { S.srTd = JSON.stringify(await api('/api/surat/trackdiag', {no: $('#srtd-no').value}), null, 1).slice(0, 9000); } catch (err) { S.srTd = errText(err); } renderSheet(false); return; }
+  if (id === 'f-shret') { const no = e.target.dataset.no; await run(async () => { const r = await api('/api/shret/add', {no, tracking: $('#shr-trk').value, desi: $('#shr-desi').value, cost: $('#shr-amt').value}); delete S.shret[no]; const P = profS(); P.cache = {}; P.key = ''; loadProfit(true); toast(`İade kargosu eklendi: ${tl2(r.cost)}.`); renderSheet(false); }); return; }
   if (id === 'f-bk') { await run(async () => { await api('/api/bk/connect', {token: $('#bk-token').value}); S.bkEdit = false; S.bk = null; toast('Basit Kargo bağlandı. Şimdi "Gönderileri çek"e bas.'); renderSheet(false); }); return; }
   if (id === 'f-srweb') { await run(async () => { await api('/api/surat/settings', {desi: (S.surat || {}).desi || 2, web: $('#sr-web2').value}); S.surat = null; renderSheet(false); toast('Web servis şifresi kaydedildi.'); }); return; }
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
