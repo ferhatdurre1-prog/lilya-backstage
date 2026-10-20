@@ -307,7 +307,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .hk .up{color:var(--good)}.hk .dn{color:var(--bad)}
 body[data-tab="home"] .act-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 body[data-tab="home"] .act-grid .act{padding:6px 3px}body[data-tab="home"] .act-grid .act .l{font-size:10px;line-height:1.2}body[data-tab="home"] .act-grid .act .n{font-size:14px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px;display:grid;gap:12px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0} /* uzun tek satırlık metin kartı ekrandan taşırmasın */
 .seg{display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
 .seg button{border:0;background:none;border-radius:8px;padding:8px 6px;cursor:pointer;color:var(--ink-2);font-weight:500;font-size:14px}
 .seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.1)}

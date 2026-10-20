@@ -2837,6 +2837,8 @@ async function api(req, env, path, ctx) {
   if (path === '/api/qna/list') {
     const st = body.status === 'answered' ? `status IN ('answered','answered_elsewhere')` : `status IN ('waiting','sent_failed')`;
     const { results } = await env.DB.prepare(`SELECT q.*, p.note pnote, (p.descr IS NOT NULL AND p.descr<>'') has_info FROM qna q LEFT JOIN product_info p ON p.main_id=q.main_id WHERE ${st} ORDER BY ${body.status === 'answered' ? 'COALESCE(q.answered_at,q.updated_at) DESC LIMIT 100' : 'q.created_at ASC LIMIT 200'}`).all();
+    // Taslağı olmayan bekleyen sorular ekran açılınca arka planda yazılır (zamanlanmış iş gecikirse "taslak hazırlanıyor" takılı kalmasın)
+    if (body.status !== 'answered' && env.ANTHROPIC_API_KEY && results.some(q => !q.draft && !q.draft_err) && ctx && ctx.waitUntil) ctx.waitUntil(draftPendingQna(env, 4).catch(() => {}));
     return json({ ai: !!env.ANTHROPIC_API_KEY, general: (await getSetting(env, 'qa_general')) || '', items: results });
   }
   if (path === '/api/qna/draft') { try { return json(await draftQna(env, body.id, body.hint)); } catch (e) { return bad(e.message || String(e)); } }
