@@ -997,7 +997,9 @@ function viewCari(){
       h += `<div class="small" style="margin-top:6px;font-weight:600;color:${k === 'late' ? 'var(--bad)' : 'inherit'}">${ST[k][0]} · ${tl2(g.reduce((t, x) => t + x.left, 0))}</div>` + g.map(x => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:6px 0;border-top:1px dashed var(--line)"><div style="min-width:0"><b style="overflow-wrap:anywhere">${esc(x.supplier)}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(cDay(x.due))} · ${esc(x.label)}${x.paid > 0.004 ? ` · ${tl2(x.paid)} ödendi` : ''}</div></div><b style="white-space:nowrap">${tl2(x.left)}</b><button class="btn sm primary" data-act="cari-pay" data-id="${esc(x.supplier)}" data-amt="${x.left}">Öde</button></div>`).join(''); }
     h += `</div>`; }
   h += tyCariCard() + srCariCard() + ptCariCard();
-  h += `<div class="row" style="justify-content:flex-end;margin-bottom:10px"><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button></div>`;
+  h += `<div class="row" style="justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn" data-act="cari-addnew">+ Cari ekle</button><label class="btn" style="cursor:pointer">📤 Excel'den cari yükle<input type="file" id="cari-xls" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button></div>`;
+  if (C.open === '__add') h += cariNewForm();
+  if (C.imp) h += cariImpHtml(C.imp);
   if (C.open === '__new') h += cariPayForm('', D.suppliers || []);
   if (!L.length) return h + `<div class="panel empty"><h4>Henüz cari kaydı yok</h4><p>Stoklar → <b>Alış listeleri</b>'nde bir faturayı açıp <b>Cariye işle</b> de; tedarikçi burada borcuyla görünür.</p></div>`;
   for (const x of L) { const op = C.open === x.supplier, nx = x.next;
@@ -1103,13 +1105,41 @@ function cariDetail(x){
   h += `<div class="spread" style="gap:8px;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;padding:8px 10px"><div><span class="small muted">Çalışma şekli:</span> <b>${esc(termsText(Dt.terms))}</b></div><button class="btn sm" data-act="cari-terms">${C.terms ? 'Kapat' : 'Değiştir'}</button></div>`;
   if (C.terms) h += cariTermsForm(Dt.supplier, C.tk || Dt.terms);
   h += cariPayForm(x.supplier, []);
+  h += `<form id="f-carimov" data-sup="${esc(x.supplier)}" class="card" style="gap:8px;padding:10px"><b class="small">Elle hareket ekle · ${esc(x.supplier)}</b>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px">
+    <label class="f" style="margin:0"><span class="small">Tür</span><select class="input" id="cm-kind"><option value="debt">Borç (fatura / alış)</option><option value="credit">Alacak (iade / indirim)</option><option value="open">Devir bakiye</option></select></label>
+    <label class="f" style="margin:0"><span class="small">Tutar (TL)</span><input class="input num" id="cm-amt" inputmode="decimal" placeholder="0,00" required></label>
+    <label class="f" style="margin:0"><span class="small">Tarih</span><input class="input" id="cm-date" type="date" value="${todayTR()}"></label>
+    <label class="f" style="margin:0"><span class="small">Açıklama</span><input class="input" id="cm-note" placeholder="ör. fatura no"></label></div>
+    <div class="row" style="justify-content:flex-end"><button class="btn sm primary" type="submit">Ekle</button></div></form>`;
   // ödeme planı
   const open = Dt.plan.filter(r => r.st !== 'paid'), paid = Dt.plan.filter(r => r.st === 'paid').slice(-3);
   if (Dt.plan.length) h += `<div class="small" style="font-weight:600;margin-top:4px">Ödeme planı</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Vade</th><th>Açıklama</th><th class="r">Tutar</th><th class="r">Kalan</th><th>Durum</th></tr></thead><tbody>${[...paid, ...open].map(r => `<tr${r.st === 'late' || r.st === 'today' ? ' style="background:var(--accent-soft)"' : ''}><td style="white-space:nowrap">${esc(cDay(r.due))}</td><td style="overflow-wrap:anywhere">${esc(r.label)}</td><td class="r">${tl2(r.amount)}</td><td class="r"><b>${tl2(r.left)}</b></td><td><span class="pill ${ST[r.st][1]}">${ST[r.st][0]}</span></td></tr>`).join('')}</tbody></table></div>`;
   // ekstre
   if (!Dt.rows.length) h += '<p class="muted small" style="margin:0">Hareket yok.</p>';
-  else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? tl2(r.amount) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? tl2(r.amount) : ''}</td><td class="r"><b>${tl2(r.bal)}</b></td><td class="r">${r.kind === 'pay' ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="Ödemeyi sil">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+  else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? tl2(r.amount) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? tl2(r.amount) : ''}</td><td class="r"><b>${tl2(r.bal)}</b></td><td class="r">${r.mov ? `<button class="btn sm" data-act="cari-movdel" data-id="${esc(String(r.id))}" title="Hareketi sil">Sil</button>` : r.kind === 'pay' ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="Ödemeyi sil">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
   return h;
+}
+// Elle cari aç: firma + devir bakiye (önceki borç)
+function cariNewForm(){
+  return `<form id="f-carinew" class="card" style="gap:8px;padding:10px;background:var(--accent-soft)"><b class="small">Yeni cari</b>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
+    <label class="f" style="margin:0"><span class="small">Firma adı</span><input class="input" id="cn-name" required placeholder="ör. Mimoza Home"></label>
+    <label class="f" style="margin:0"><span class="small">Devir bakiye (TL)</span><input class="input num" id="cn-open" inputmode="decimal" placeholder="ör. 40.500,00"></label>
+    <label class="f" style="margin:0"><span class="small">Bakiye tarihi</span><input class="input" id="cn-date" type="date" value="${todayTR()}"></label>
+    <label class="f" style="margin:0"><span class="small">Not</span><input class="input" id="cn-note" placeholder="İsteğe bağlı"></label></div>
+    <p class="small muted" style="margin:0">Devir bakiye: bu firmaya şu ana kadarki borcun. Firma sana borçluysa (alacaklıysan) başına eksi yaz: −1.500. Sonraki alışlar ve ödemeler bunun üstüne işlenir.</p>
+    <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm" type="button" data-act="cari-addnew">Vazgeç</button><button class="btn sm primary" type="submit">Cariyi aç</button></div></form>`;
+}
+// Excel'den cari: sütunlar otomatik bulunur (firma, bakiye/borç/alacak, tarih, açıklama); önizleme sonrası yüklenir
+function cariImpHtml(I){
+  if (I.loading) return loading(); if (I.err) return `<div class="banner bad"><div>${esc(I.err)}</div><button class="btn sm" data-act="cari-impx">Kapat</button></div>`;
+  const tot = I.rows.reduce((a, x) => a + (x.kind === 'credit' ? -Math.abs(x.amount) : x.amount), 0);
+  return `<div class="card" style="gap:8px;padding:10px;border-color:var(--accent)"><b>📤 ${esc(I.file)} · ${fmtN(I.rows.length)} satır · ${fmtN(new Set(I.rows.map(x => x.supplier.toLocaleLowerCase('tr'))).size)} firma · toplam ${tl2(tot)}</b>
+    <div class="small muted">Bulunan sütunlar: firma = <b>${esc(I.cols.name || '—')}</b> · tutar = <b>${esc([I.cols.amt, I.cols.debt && 'borç: ' + I.cols.debt, I.cols.cred && 'alacak: ' + I.cols.cred].filter(Boolean).join(' / ') || '—')}</b>${I.cols.date ? ` · tarih = <b>${esc(I.cols.date)}</b>` : ''}${I.cols.note ? ` · açıklama = <b>${esc(I.cols.note)}</b>` : ''}. Her satır o firmaya ${I.cols.date ? 'tarihli ' : ''}<b>devir bakiye</b> olarak yazılır (+ borcun, − alacağın).</div>
+    <div class="tbl-wrap" style="max-height:320px;overflow:auto"><table class="t"><thead><tr><th>Firma</th><th>Tarih</th><th>Açıklama</th><th class="r">Tutar</th></tr></thead><tbody>${I.rows.slice(0, 300).map(x => `<tr><td style="overflow-wrap:anywhere">${esc(x.supplier)}</td><td class="small">${esc(cDay(x.date))}</td><td class="small" style="overflow-wrap:anywhere">${esc(x.note || '')}</td><td class="r" style="color:${x.amount < 0 ? 'var(--good)' : 'inherit'}">${tl2(x.amount)}</td></tr>`).join('')}</tbody></table></div>
+    <label class="f" style="margin:0;max-width:220px"><span class="small">Tarih sütunu yoksa bakiye tarihi</span><input class="input" id="ci-date" type="date" value="${esc(I.date || todayTR())}"></label>
+    <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn sm" data-act="cari-impx">Vazgeç</button><button class="btn sm primary" data-act="cari-impgo">Carileri oluştur ve yükle</button></div></div>`;
 }
 function cariTermsForm(sup, t){
   const k = t.kind || 'cash', f = (lab, inner) => `<label class="f" style="margin:0"><span class="small">${lab}</span>${inner}</label>`, num = (id, v, ph) => `<input class="input num" id="${id}" value="${esc(String(v ?? ''))}" inputmode="numeric" placeholder="${ph || ''}">`;
@@ -3713,6 +3743,26 @@ document.addEventListener('input', e => { const t = e.target, N = S.addr && S.ad
   if (t.id === 'no-ship') N.ship = t.value; if (t.id === 'no-note') N.note = t.value;
   if (t.id === 'no-q') { N.q = t.value; clearTimeout(noTimer); const q = t.value.trim(); if (q.length < 2) { N.res = []; const box = $('#no-res'); if (box) box.hidden = true; return; }
     noTimer = setTimeout(() => api('/api/shorder/products', {q}).then(d => { if (S.addr.no !== N || N.q.trim() !== q) return; N.res = d.items || []; const box = $('#no-res'); if (box) { box.innerHTML = noResHtml(N); box.hidden = false; } }).catch(() => {}), 250); } });
+document.addEventListener('change', async e => { const t = e.target; if (!t || t.id !== 'cari-xls' || !t.files || !t.files[0]) return; const C = cS(), file = t.files[0]; t.value = '';
+  C.imp = {loading: true}; render();
+  try { if (typeof XLSX === 'undefined') throw new Error('Excel okuyucu yüklenemedi. Sayfayı yenileyip tekrar dene.');
+    const wb = XLSX.read(await file.arrayBuffer(), {type: 'array', cellDates: true}); let best = null;
+    const num = (v) => { if (typeof v === 'number') return v; let x = String(v ?? '').replace(/[^\d,.\-]/g, ''); if (!x) return 0; if (x.includes(',')) x = x.replace(/\./g, '').replace(',', '.'); else if ((x.match(/\./g) || []).length > 1 || /\.\d{3}$/.test(x)) x = x.replace(/\./g, ''); return Number(x) || 0; };
+    const day = (v) => { if (v instanceof Date) return new Date(v.getTime() - v.getTimezoneOffset() * 60000).toISOString().slice(0, 10); const m = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/.exec(String(v || '').trim()); if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; return /^\d{4}-\d{2}-\d{2}/.test(String(v || '')) ? String(v).slice(0, 10) : ''; };
+    for (const sn of wb.SheetNames) { const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header: 1, defval: '', raw: true});
+      const hi = aoa.slice(0, 15).findIndex(r => r.some(c => /firma|cari|tedarik|unvan|musteri|hesapad|isim/.test(trFold(c)))); if (hi < 0) continue;
+      const H = aoa[hi].map(c => trFold(c)), col = (re, not) => { const i = H.findIndex(h => h && re.test(h) && !(not && not.test(h))); return i; };
+      const ci = { name: col(/firma|cariad|cariunvan|unvan|tedarik|musteri|hesapad|isim|^cari$/, /kod|no$/), amt: col(/bakiye|kalan|tutar|net/), debt: col(/^borc|borctutar/), cred: col(/^alacak|alacaktutar/), date: col(/tarih/), note: col(/aciklama|not|belge|fatura/) };
+      if (ci.name < 0 || (ci.amt < 0 && ci.debt < 0 && ci.cred < 0)) continue;
+      const rows = aoa.slice(hi + 1).map(r => { const name = String(r[ci.name] ?? '').trim(); if (!name || /^(toplam|genel ?toplam|total)/i.test(name)) return null;
+        let a = ci.amt >= 0 ? num(r[ci.amt]) : 0; if (ci.amt < 0 || (!a && (ci.debt >= 0 || ci.cred >= 0))) a = (ci.debt >= 0 ? num(r[ci.debt]) : 0) - (ci.cred >= 0 ? num(r[ci.cred]) : 0);
+        return { supplier: name, amount: Math.round(a * 100) / 100, kind: 'open', date: ci.date >= 0 ? day(r[ci.date]) : '', note: ci.note >= 0 ? String(r[ci.note] ?? '').trim().slice(0, 150) : 'Excel devir' }; }).filter(Boolean);
+      if (rows.length && (!best || rows.length > best.rows.length)) best = { rows, cols: Object.fromEntries(Object.entries(ci).map(([k, i]) => [k, i >= 0 ? String(aoa[hi][i]) : ''])) }; }
+    if (!best) throw new Error('Dosyada firma adı ve tutar (bakiye / borç / alacak) sütunu bulunamadı. Başlık satırında "Firma" ve "Bakiye" gibi sütun adları olmalı.');
+    C.imp = { file: file.name, ...best };
+  } catch (err) { C.imp = { err: errText(err) }; }
+  render();
+});
 document.addEventListener('change', async e => { const t = e.target; if (!t || (t.id !== 'sr-rep' && t.id !== 'sr-rep2') || !t.files || !t.files[0]) return; const A = aS(), file = t.files[0]; t.value = '';
   A.trk = 1; render();
   try { const wb = XLSX.read(await file.arrayBuffer(), {type: 'array'}); let rows = [];
@@ -3813,6 +3863,12 @@ document.addEventListener('click', async e => {
     case 'cari-pay': { const C = cS(); C.terms = false; C.tk = null; C.pre = {sup: id, amt: b.dataset.amt}; if (C.open !== id) { C.open = id; loadCariDet(id); } render(); setTimeout(() => { const el = $('#cp-amt'); if (el) { el.scrollIntoView({block: 'center'}); el.focus(); } }, 400); break; }
     case 'cari-terms': { const C = cS(); C.terms = !C.terms; C.tk = null; render(); break; }
     case 'go-cari': setTab('cari'); break;
+    case 'cari-addnew': { const C = cS(); C.open = C.open === '__add' ? '' : '__add'; C.det = null; render(); break; }
+    case 'cari-impx': cS().imp = null; render(); break;
+    case 'cari-impgo': { const C = cS(), I = C.imp; if (!I || !I.rows) break; const d0 = ($('#ci-date') || {}).value || todayTR();
+      await run(async () => { const r = await api('/api/cari/import', {rows: I.rows.map(x => ({...x, date: x.date || d0}))}); toast(`${fmtN(r.suppliers)} cari oluşturuldu, ${fmtN(r.moves)} bakiye yüklendi.`); C.imp = null; loadCari(true); }); break; }
+    case 'cari-movdel': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break;
+      await run(async () => { await api('/api/cari/movdel', {id}); const C = cS(); toast('Hareket silindi.'); loadCari(true); if (C.open && C.open !== '__new' && C.open !== '__add') loadCariDet(C.open); }); break;
     case 'cari-paydel': if (!(await confirmBox('Bu ödeme silinsin mi? Kalan borç tekrar artar.', 'Sil', true))) break;
       await run(async () => { await api('/api/cari/paydel', {id: Number(id)}); const C = cS(); toast('Ödeme silindi.'); loadCari(true); if (C.open && C.open !== '__new') loadCariDet(C.open); }); break;
     case 'insp-open': openSheet('insp', {}); break;
@@ -4129,6 +4185,10 @@ document.addEventListener('submit', async e => {
   if (id === 'f-cariterms') { const sup = e.target.dataset.sup, v = (x) => ($('#' + x) || {}).value;
     const t = {kind: v('ct-kind'), n: v('ct-n'), unit: v('ct-unit'), parts: v('ct-parts'), every: v('ct-every'), first: v('ct-first'), pct: v('ct-pct'), wday: v('ct-wday')};
     await run(async () => { await api('/api/cari/terms', {supplier: sup, terms: t}); const C = cS(); C.terms = false; C.tk = null; toast(`${sup}: çalışma şekli kaydedildi.`); loadCari(true); loadCariDet(sup); }); return; }
+  if (id === 'f-carinew') { const sup = ($('#cn-name').value || '').trim();
+    await run(async () => { const r = await api('/api/cari/new', {supplier: sup, open: $('#cn-open').value, date: $('#cn-date').value, note: $('#cn-note').value}); const C = cS(); toast(`Cari açıldı: ${r.supplier}.`); C.open = r.supplier; loadCari(true); loadCariDet(r.supplier); }); return; }
+  if (id === 'f-carimov') { const sup = e.target.dataset.sup;
+    await run(async () => { await api('/api/cari/mov', {supplier: sup, kind: $('#cm-kind').value, amount: $('#cm-amt').value, date: $('#cm-date').value, note: $('#cm-note').value}); toast('Hareket eklendi.'); loadCari(true); loadCariDet(sup); }); return; }
   if (id === 'f-caripay') { const sup = ($('#cp-sup').value || '').trim(), amt = $('#cp-amt').value;
     await run(async () => { await api('/api/cari/pay', {supplier: sup, amount: amt, date: $('#cp-date').value, method: $('#cp-method').value, note: $('#cp-note').value}); const C = cS(); toast(`Ödeme kaydedildi: ${sup}.`); C.pre = null; if (C.open === '__new') C.open = sup; loadCari(true); loadCariDet(C.open); }); return; }
   if (id === 'f-bkord') { await run(async () => { const r = await api('/api/bk/order', {no: $('#bk-no').value}); S.bkSample = JSON.stringify({kayitli: r.saved, gonderiler: r.shipments}, null, 1).slice(0, 8000); renderSheet(false); }); return; }
