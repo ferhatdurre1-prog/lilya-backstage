@@ -3169,7 +3169,15 @@ ${catalog}` });
       if (m) used.add(m.k);
       const lag = m && m.paid_day ? Math.round((Date.parse(m.paid_day) - Date.parse(m.tarih)) / 86400000) : null;
       out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff' }); }
-    const orphan = sales.filter(x => !used.has(x.k)).map(x => ({ siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day }));
+    const orphan = sales.filter(x => !used.has(x.k)).map(x => ({ siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day, odeme: x.odeme_tipi || '' }));
+    // Eşleşmeyen her PayTR işlemi için aday Shopify siparişleri (±1 gün, tutar ±%15): neden eşleşmediği yazılır
+    if (orphan.length) { const { results: cand } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, p.gateway FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1`).bind(iso(dayStartTR(addDayStr(rs, -2)))).all();
+      for (const x of orphan.slice(0, 50)) { const t0 = Date.parse(x.tarih + 'T12:00:00+03:00');
+        x.cands = cand.filter(c => Math.abs(Date.parse(c.date) - t0) <= 36 * 3600000).map(c => { let lines = []; try { lines = JSON.parse(c.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'), tot = c.total !== null && c.total !== undefined ? r2(c.total) : null;
+          const sub = r2(c.subtotal !== null && c.subtotal !== undefined ? c.subtotal : lines.reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0)), exp = r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0));
+          const amt = tot !== null ? tot : exp; if (Math.abs(amt - x.tutar) > x.tutar * 0.15 + 1) return null;
+          const why = !act.length ? 'Shopify\'da iptal / tamamen iade edilmiş' : c.cod ? `Shopify'da kapıda ödeme görünüyor (${c.gateway || ''})` : c.total === null || c.total === undefined ? 'Shopify ödeme bilgisi henüz okunmamış' : Date.parse(c.date) < Date.parse(from) ? 'rapor başlangıcından (1 Ekim) önce verilmiş' : Math.abs(amt - x.tutar) >= 1 ? `tutar farklı (Shopify ${amt} TL)` : 'başka bir PayTR işlemiyle eşleşmiş olabilir';
+          return { id: c.id, orderNo: c.order_no, date: c.date, amt, why }; }).filter(Boolean).slice(0, 4); } }
     const lags = out.filter(x => x.lag !== null).map(x => x.lag).sort((a, b) => a - b), mm = (k, f = () => true) => r2(out.filter(x => x.st !== 'nodata' && f(x)).reduce((a, x) => a + (x[k] || 0), 0));
     const pend = mm('net', x => !x.paid), paidTot = r2(pR.results.reduce((a, x) => a + (x.net || 0), 0));
     return json({ ok: true, items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
