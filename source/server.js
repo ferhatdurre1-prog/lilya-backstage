@@ -293,11 +293,11 @@ function bkRow(o) {
     fee: fee === null ? null : r2(fee), cod, codType: ci.type || '', codAmount: N(ci.amount), codFee: N(ci.fee), codStatus: ci.collectionStatusText || ci.collectionStatus || '' };
 }
 async function bkSync(env) {
-  const T0 = Date.now(), rows = []; let page = 0, pages = 1;
+  const T0 = Date.now(), rows = [], seenId = new Set(); let page = 0, pages = 1;
   while (page < pages && page < 60 && Date.now() - T0 < 20000) {
     const r = await bkCall(env, 'POST', '/v2/order/filter', { startDate: '2024-01-01T00:00:00', endDate: bkTime(BK_CUTOFF_MS), page, size: 100, sortBy: 'CREATED_TIME' });
     const L = Array.isArray(r.list) ? r.list : (r.list && (r.list.content || r.list.data || r.list.items)) || [];
-    for (const o of L) { const x = bkRow(o); if (x.no) rows.push(x); }
+    for (const o of L) { const x = bkRow(o); if (x.no && !(x.id && seenId.has(x.id))) { if (x.id) seenId.add(x.id); rows.push(x); } } // sayfalar arası tekrar eden gönderi bir kez
     pages = r.pages || (L.length === 100 ? page + 2 : page + 1); page++;
   }
   // Aynı siparişin birden fazla gönderisi (iade, tekrar gönderim) varsa iptal/taslak olmayanların ücreti toplanır
