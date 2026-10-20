@@ -3183,6 +3183,32 @@ ${catalog}` });
     return json({ ok: true });
   }
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
+  if (path === '/api/shcheck') {
+    // Shopify hesap kontrolü: beklenen tutar (ürün + 700 TL altı 100 TL kargo + kapıda nakit 50 / kart 100) ile Shopify'ın tahsil ettiği ve kargonun topladığı tutar karşılaştırılır
+    let from = String(body.from || ''), to = String(body.to || ''); if (!from || !to) return bad('Tarih aralığı yok.');
+    const rs = await reportStart(env); if (/^\d{4}-\d{2}-\d{2}$/.test(rs || '')) { const a = iso(dayStartTR(rs)); if (from < a) from = a; }
+    const { results } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.gateway, p.cod, p.card, p.subtotal, p.ship, p.total, c.cod_amount sr_cod, c.undelivered, b.cod bk_cod, b.cod_type bk_type, b.cod_amount bk_amt
+      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN bk_ship b ON b.no = replace(o.order_no,'#','')
+      WHERE o.channel='shopify' AND o.date >= ?1 AND o.date < ?2 ORDER BY o.date DESC`).bind(from, to).all();
+    const out = []; let checked = 0, noData = 0;
+    for (const r of results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {}
+      if (!lines.some(l => l.status !== 'cancelled')) continue; // iptal
+      if (r.total === null || r.total === undefined) { noData++; continue; }
+      const post = String(r.date || '') >= SURAT_DIRECT_FROM;
+      const cod = !post && r.bk_cod !== null && r.bk_cod !== undefined ? !!r.bk_cod : !!r.cod, card = !post && r.bk_type ? r.bk_type === 'CREDIT_CARD' : !!r.card;
+      const sub = r2(r.subtotal !== null ? r.subtotal : lines.filter(l => l.status !== 'cancelled').reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0));
+      const shipE = sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codE = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0, exp = r2(sub + shipE + codE);
+      const got = r2(r.total), collected = cod ? (post ? (r.sr_cod > 0 ? r2(r.sr_cod) : null) : (r.bk_amt > 0 ? r2(r.bk_amt) : null)) : null;
+      checked++;
+      const issues = [];
+      if (Math.abs(got - exp) > 0.5) issues.push(`Shopify ${got} TL tahsil etmiş, olması gereken ${exp} TL (fark ${r2(got - exp)} TL)`);
+      if (collected !== null && Math.abs(collected - exp) > 0.5) issues.push(`Kargo kapıda ${collected} TL tahsil etmiş/edecek, olması gereken ${exp} TL (fark ${r2(collected - exp)} TL)`);
+      if (!issues.length) continue;
+      const shipGot = r.ship !== null ? r2(r.ship) : null;
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', gateway: r.gateway || '', sub, shipE, codE, exp, got, shipGot, collected, diff: r2((collected !== null ? collected : got) - exp), issues, undelivered: !!r.undelivered });
+    }
+    return json({ ok: true, checked, noData, items: out, sum: r2(out.reduce((a, x) => a + x.diff, 0)) });
+  }
   if (path === '/api/shret/list') {
     const no = String(body.no || '').replace(/\D/g, ''); const { results } = await env.DB.prepare('SELECT * FROM sh_ret WHERE no=?1 AND deleted=0 ORDER BY id').bind(no).all();
     const sc = await env.DB.prepare('SELECT * FROM sr_cost WHERE no=?1').bind(no).first();

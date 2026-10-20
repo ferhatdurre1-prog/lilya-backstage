@@ -2730,12 +2730,13 @@ function viewProfit(){
   ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
   if (P.err) return h + `<div class="banner bad"><div>${esc(P.err)}</div></div>`;
   if (!D) return h + loading();
-  const subs = [['products','Ürünler'],['orders','Siparişler'],['expenses','Gider / gelir'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi'],['audit','Kontrol'],['settings','Ayarlar']];
+  const subs = [['products','Ürünler'],['orders','Siparişler'],['expenses','Gider / gelir'],['winners','Kâr edenler'],['losers','Zarar edenler'],['pricing','Fiyat analizi'],['audit','Kontrol'],['shcheck','Shopify hesap kontrolü'],['settings','Ayarlar']];
   const subsHtml = () => `<div class="filters"><div class="chips">${subs.map(([id,l]) => `<button class="chip" data-act="psub" data-id="${id}" aria-pressed="${P.sub===id}">${l}${id==='losers'?` · ${D.products.filter(x=>x.profit<0).length}`:id==='winners'?` · ${D.products.filter(x=>x.profit>0).length}`:''}</button>`).join('')}</div></div>`;
   // Reklam girişi, fatura detayı yükleme ve kesinti varsayımları ayrı "Ayarlar" sekmesinde
   if (P.sub === 'settings') return h + subsHtml() + adsCard(D) + detailsCard() + feesCard(fees);
   if (P.sub === 'expenses') return h + subsHtml() + expensesCard(D) + recurringCard(D);
   if (P.sub === 'audit') return h + subsHtml() + viewAudit();
+  if (P.sub === 'shcheck') return h + subsHtml() + viewShCheck(P);
   if (!s.orders) return h + `<div class="panel empty"><h4>Bu dönemde satış yok</h4><p>Seçtiğin tarih aralığında iptal edilmemiş sipariş bulunamadı. Başka bir dönem seç.</p></div>` + subsHtml();
   const rows = [['Satış (ciro)', s.revenue, false, 'revenue'], ['Komisyon', s.commission, true, 'commission'], ['Kargo', s.cargo, true, 'cargo'], ...(s.retCargo ? [['İade kargosu', s.retCargo, true, 'retCargo']] : []), ...(s.penalty ? [['Ceza ve müşteri kuponu', s.penalty, true, 'penalty']] : []), ['Hizmet bedeli', s.service, true, 'service'], ['Stopaj', s.stopaj, true, 'stopaj'], ['Ürün maliyeti', s.cost, true, 'cost'], ...(s.pack ? [['Paketleme', s.pack, true, 'pack']] : []), ...(s.ads ? [['Reklam', s.ads, true, 'ads']] : []), ...(s.expenses ? [['Giderler (elle girilen)', s.expenses, true, 'expenses']] : []), ...(s.otherFees ? [['Diğer Trendyol kesintileri', s.otherFees, true, 'other']] : [])];
   if (s.compensation) rows.push(['+ Kayıp kargo tazmini (Trendyol ödedi)', s.compensation, false, '']);
@@ -3064,6 +3065,20 @@ function shRetCard(o){
       <label class="f" style="margin:0"><span class="small">Tutar (boşsa tarifeden)</span><input class="input num" id="shr-amt" inputmode="decimal" placeholder="otomatik"></label>
       <button class="btn sm primary" type="submit">İade kargosu ekle</button></form>
     <p class="small muted" style="margin:0">Tutar boşsa: desiye göre Sürat tarifesi + %2,35 posta vergisi (tam fiyat).</p></div>`;
+}
+function viewShCheck(P){
+  const [f, t] = periodRange(P.period, P.cf, P.ct), key = f.toISOString() + '|' + t.toISOString() + '|' + S.rev, C = P.shc || {};
+  if (C.key !== key && !C.loading) { P.shc = {key, loading: true}; api('/api/shcheck', {from: f.toISOString(), to: t.toISOString()}).then(d => { P.shc = {key, data: d}; if (S.tab === 'profit') render(); }).catch(e => { P.shc = {key, err: errText(e)}; if (S.tab === 'profit') render(); }); }
+  const D = (P.shc || {}).data;
+  let h = `<div class="card" style="gap:6px;margin-top:12px"><h3 style="margin:0">Shopify hesap kontrolü</h3><p class="small muted" style="margin:0">Her siparişte olması gereken tutar = ürünler + 700 TL altıysa 100 TL kargo + kapıda nakit 50 TL / kapıda kart 100 TL. Shopify'ın tahsil ettiği tutar ve kargonun kapıda topladığı tutar bununla karşılaştırılır; farklı olanlar aşağıda listelenir.</p></div>`;
+  if ((P.shc || {}).err) return h + `<div class="banner bad"><div>${esc(P.shc.err)}</div></div>`;
+  if (!D) return h + loading();
+  h += `<p class="small muted" style="margin:10px 2px">${fmtN(D.checked)} sipariş kontrol edildi${D.noData ? ` · ${fmtN(D.noData)} siparişin Shopify tutarı henüz okunmadı` : ''} · <b style="color:${D.items.length ? 'var(--bad)' : 'var(--good)'}">${D.items.length ? fmtN(D.items.length) + ' hatalı sipariş · toplam fark ' + tl2(D.sum) : 'hata yok'}</b></p>`;
+  if (!D.items.length) return h;
+  return h + `<div class="list">${D.items.map(x => `<button class="item" data-act="order" data-id="${esc(x.id)}" style="align-items:flex-start"><div class="main"><div class="ttl"><span class="mono">#${esc(String(x.orderNo || '').replace(/^#/, ''))}</span> · ${esc(x.method)}${x.undelivered ? ' · <span style="color:var(--bad)">teslim edilemedi</span>' : ''}</div>
+    <div class="meta"><span>${esc(fmtDate(x.date))}</span><span>ürün ${tl2(x.sub)} + kargo ${tl2(x.shipE)} + kapıda ${tl2(x.codE)} = <b>${tl2(x.exp)}</b></span></div>
+    ${x.issues.map(i => `<div class="meta" style="color:var(--bad)"><span>${esc(i)}</span></div>`).join('')}${x.shipGot !== null ? `<div class="meta"><span class="muted">Shopify'daki kargo/ek ücret satırı: ${tl2(x.shipGot)}${x.gateway ? ' · ' + esc(x.gateway) : ''}</span></div>` : ''}</div>
+    <div class="end"><b class="num" style="color:${x.diff < 0 ? 'var(--bad)' : 'var(--warn)'}">${x.diff > 0 ? '+' : ''}${tl2(x.diff)}</b></div></button>`).join('')}</div>`;
 }
 function orderProfitCard(o){
   const D = S.prof && S.prof.data; const x = D && D.orders.find(y => y.id === o.id);
