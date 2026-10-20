@@ -21,6 +21,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS bundles(pkey TEXT NOT NULL, comp TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(pkey, comp))`,
   `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sr_rows(takip TEXT PRIMARY KEY, day TEXT, alici TEXT, fee REAL, cod REAL, collected INTEGER, coll_amt REAL, iade TEXT, durum TEXT, at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sr_mov(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, kind TEXT, amount REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS paytr_tx(k TEXT PRIMARY KEY, siparis_no TEXT, tip TEXT, tutar REAL, kesinti REAL, net REAL, oran REAL, tarih TEXT, odeme_tipi TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_cost(no TEXT PRIMARY KEY, tracking TEXT, cost REAL, desi REAL, cod_amount REAL, undelivered INTEGER, durum TEXT, teslim TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sh_ret(id INTEGER PRIMARY KEY AUTOINCREMENT, no TEXT NOT NULL, tracking TEXT, desi REAL, cost REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
@@ -3183,6 +3185,22 @@ ${catalog}` });
     return json({ ok: true });
   }
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
+  if (path === '/api/srcari/summary') {
+    // Sürat cari: alacak = kapıda tahsil edilen; borç = kargo ücretleri; hareketler = Sürat'ın aktardığı (in) / bizim ödediğimiz (out) / düzeltme
+    const t = await env.DB.prepare(`SELECT COUNT(*) n, SUM(fee) fee, SUM(CASE WHEN cod>0 THEN cod END) codAll, SUM(CASE WHEN cod>0 THEN 1 END) codN, SUM(CASE WHEN cod>0 AND collected=1 THEN COALESCE(NULLIF(coll_amt,0), cod) END) coll, SUM(CASE WHEN cod>0 AND collected=1 THEN 1 END) collN, SUM(CASE WHEN cod>0 AND collected=0 THEN cod END) pend, MIN(day) a, MAX(day) b FROM sr_rows`).first();
+    const mv = (await env.DB.prepare('SELECT * FROM sr_mov WHERE deleted=0 ORDER BY day DESC, id DESC LIMIT 200').all()).results;
+    const sumK = (k) => r2(mv.filter(x => x.kind === k).reduce((a, x) => a + (x.amount || 0), 0));
+    const fee = r2(t.fee || 0), coll = r2(t.coll || 0), inn = sumK('in'), out = sumK('out'), adj = sumK('adj');
+    const bal = r2(coll - fee - inn + out + adj); // + : Sürat bize borçlu, − : biz Sürat'a borçluyuz
+    return json({ ok: true, n: t.n || 0, fee, codAll: r2(t.codAll || 0), codN: t.codN || 0, coll, collN: t.collN || 0, pend: r2(t.pend || 0), from: t.a || '', to: t.b || '', inn, out, adj, bal, moves: mv });
+  }
+  if (path === '/api/srcari/add') {
+    const kind = ['in', 'out', 'adj'].includes(body.kind) ? body.kind : 'in', a0 = String(body.amount ?? '').trim(), amount = r2(Number(a0.includes(',') ? a0.replace(/\./g, '').replace(',', '.') : a0) || 0);
+    if (!amount) return bad('Tutar yaz.'); const day = /^\d{4}-\d{2}-\d{2}$/.test(body.day || '') ? body.day : trToday();
+    await env.DB.prepare('INSERT INTO sr_mov(day, kind, amount, note, at) VALUES(?1,?2,?3,?4,?5)').bind(day, kind, amount, String(body.note || '').slice(0, 160), iso()).run();
+    return json({ ok: true });
+  }
+  if (path === '/api/srcari/del') { await env.DB.prepare('UPDATE sr_mov SET deleted=1 WHERE id=?1').bind(intOr(body.id, 0)).run(); return json({ ok: true }); }
   if (path === '/api/shcheck') {
     // Shopify hesap kontrolü: beklenen tutar (ürün + 700 TL altı 100 TL kargo + kapıda nakit 50 / kart 100) ile Shopify'ın tahsil ettiği ve kargonun topladığı tutar karşılaştırılır
     let from = String(body.from || ''), to = String(body.to || ''); if (!from || !to) return bad('Tarih aralığı yok.');
@@ -3262,6 +3280,12 @@ ${catalog}` });
   if (path === '/api/surat/report') {
     const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 3000).filter(r => r && typeof r === 'object');
     if (!rows.length) return bad('Dosyada satır bulunamadı.');
+    // Sürat cari hesabı: rapordaki her gönderi (ücret, kapıda tahsilat, tahsil edildi mi) saklanır
+    { const st = []; for (const m of rows) { const tn = srRowTrack(m); if (!tn) continue; const E = Object.entries(m).map(([k, v]) => [srNorm(k), String(v ?? '').trim()]), get = (re) => { const x = E.find(([k]) => re.test(k)); return x ? x[1] : ''; }, num = (t) => { const n = Number(String(t).replace(',', '.')); return Number.isFinite(n) ? n : 0; };
+        const fd = get(/^FATURATARIHI$/), day = /^\d{4}-\d{2}-\d{2}/.test(fd) ? fd.slice(0, 10) : (/^(\d{2})\.(\d{2})\.(\d{4})/.exec(fd) || []).slice(1).reverse().join('-') || null, coll = /^(EVET|E|1|TRUE)$/.test(srNorm(get(/^TAHSILEDILDIMI$/)));
+        st.push(env.DB.prepare('INSERT INTO sr_rows(takip, day, alici, fee, cod, collected, coll_amt, iade, durum, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(takip) DO UPDATE SET day=COALESCE(excluded.day, sr_rows.day), fee=excluded.fee, cod=excluded.cod, collected=excluded.collected, coll_amt=excluded.coll_amt, iade=excluded.iade, durum=excluded.durum, at=excluded.at')
+          .bind(tn, day, get(/^ALICI$/).slice(0, 80), num(get(/^TUTAR$/)), num(get(/^KAPIDANTAHSILATTUTARI$/)), coll ? 1 : 0, num(get(/^TAHSILATTUTARI$/)), get(/^IADEDURUM$/).slice(0, 20), (get(/^TESLIMATDURUM$/) || get(/^BULUNDUGUYER$/)).slice(0, 60), iso())); }
+      for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
     const cr = await srCreds(env), c = await shCreds(env);
     const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
     const out = [], miss = [], fixed = []; let already = 0;

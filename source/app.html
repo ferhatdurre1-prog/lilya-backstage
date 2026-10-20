@@ -983,6 +983,7 @@ function viewCari(){
     for (const k of ['late', 'today', 'week']) { const g = A.filter(x => x.st === k); if (!g.length) continue;
       h += `<div class="small" style="margin-top:6px;font-weight:600;color:${k === 'late' ? 'var(--bad)' : 'inherit'}">${ST[k][0]} · ${tl2(g.reduce((t, x) => t + x.left, 0))}</div>` + g.map(x => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:6px 0;border-top:1px dashed var(--line)"><div style="min-width:0"><b style="overflow-wrap:anywhere">${esc(x.supplier)}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(cDay(x.due))} · ${esc(x.label)}${x.paid > 0.004 ? ` · ${tl2(x.paid)} ödendi` : ''}</div></div><b style="white-space:nowrap">${tl2(x.left)}</b><button class="btn sm primary" data-act="cari-pay" data-id="${esc(x.supplier)}" data-amt="${x.left}">Öde</button></div>`).join(''); }
     h += `</div>`; }
+  h += srCariCard();
   h += `<div class="row" style="justify-content:flex-end;margin-bottom:10px"><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button></div>`;
   if (C.open === '__new') h += cariPayForm('', D.suppliers || []);
   if (!L.length) return h + `<div class="panel empty"><h4>Henüz cari kaydı yok</h4><p>Stoklar → <b>Alış listeleri</b>'nde bir faturayı açıp <b>Cariye işle</b> de; tedarikçi burada borcuyla görünür.</p></div>`;
@@ -993,6 +994,23 @@ function viewCari(){
     if (op) h += cariDetail(x);
     h += `</div>`; }
   return h;
+}
+// Sürat Kargo cari: kapıda tahsilatlar (Sürat bize borçlu) − kargo ücretleri (biz Sürat'a) ± aktarılan/ödenen
+function srCariCard(){
+  const C = cS(); if (!C.sr && !C.srLoading) { C.srLoading = true; api('/api/srcari/summary', {}).then(d => { C.sr = d; C.srLoading = false; if (S.tab === 'cari') render(); }).catch(() => { C.srLoading = false; C.sr = {err: true}; }); }
+  const d = C.sr; if (!d || d.err) return '';
+  const pos = d.bal >= 0, open = C.srOpen;
+  return `<div class="card" style="gap:8px;padding:12px;margin-bottom:12px;border-color:var(--accent)"><div class="spread" style="gap:10px;cursor:pointer;align-items:flex-start" data-act="srcari-open"><div style="min-width:0"><div style="font-weight:700"><span class="pill p-brass">Sürat Kargo</span> hesabı</div><div class="small muted">${fmtN(d.n)} gönderi${d.from ? ` · ${esc(cDay(d.from))} – ${esc(cDay(d.to))}` : ''} · rapor yükledikçe güncellenir</div></div>
+    <div style="text-align:right"><div class="small muted">${pos ? 'Sürat bize borçlu' : 'Biz Sürat\'a borçluyuz'}</div><div style="font-weight:700;font-size:17px;color:${pos ? 'var(--good)' : 'var(--bad)'}">${tl2(Math.abs(d.bal))}</div></div></div>
+    ${open ? `<dl class="kv" style="margin:0"><dt>Kapıda tahsil edilen (${fmtN(d.collN)} gönderi)</dt><dd style="color:var(--good)">+${tl2(d.coll)}</dd><dt>Kargo ücretleri</dt><dd style="color:var(--bad)">−${tl2(d.fee)}</dd><dt>Sürat'ın bize aktardığı</dt><dd>−${tl2(d.inn)}</dd><dt>Bizim Sürat'a ödediğimiz</dt><dd>+${tl2(d.out)}</dd>${d.adj ? `<dt>Düzeltme</dt><dd>${tl2(d.adj)}</dd>` : ''}<dt><b>Bakiye</b></dt><dd><b style="color:${pos ? 'var(--good)' : 'var(--bad)'}">${pos ? '+' : '−'}${tl2(Math.abs(d.bal))}</b></dd>${d.pend ? `<dt class="muted">Henüz tahsil edilmemiş kapıda ödeme</dt><dd class="muted">${tl2(d.pend)}</dd>` : ''}</dl>
+    <form id="f-srmov" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end;background:var(--accent-soft);padding:10px;border-radius:10px">
+      <label class="f" style="margin:0"><span class="small">Hareket</span><select class="input" id="srm-kind"><option value="in">Sürat bize para aktardı</option><option value="out">Biz Sürat'a ödedik</option><option value="adj">Düzeltme (+/−)</option></select></label>
+      <label class="f" style="margin:0"><span class="small">Tutar (TL)</span><input class="input num" id="srm-amt" inputmode="decimal" required></label>
+      <label class="f" style="margin:0"><span class="small">Tarih</span><input class="input" id="srm-day" type="date" value="${todayTR()}"></label>
+      <label class="f" style="margin:0"><span class="small">Not</span><input class="input" id="srm-note" placeholder="İsteğe bağlı"></label>
+      <button class="btn sm primary" type="submit">Kaydet</button></form>
+    <label class="btn sm" style="justify-self:start;cursor:pointer">📤 Sürat raporunu yükle<input type="file" id="sr-rep2" accept=".xlsx,.xls,.csv" style="display:none"></label>
+    ${d.moves.length ? `<div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Hareket</th><th class="r">Tutar</th><th></th></tr></thead><tbody>${d.moves.map(m => `<tr><td>${esc(cDay(m.day))}</td><td>${m.kind === 'in' ? 'Sürat aktardı' : m.kind === 'out' ? 'Biz ödedik' : 'Düzeltme'}${m.note ? ' · ' + esc(m.note) : ''}</td><td class="r">${tl2(m.amount)}</td><td class="r"><button class="btn sm ghost" data-act="srmov-del" data-id="${m.id}">Sil</button></td></tr>`).join('')}</tbody></table></div>` : ''}` : ''}</div>`;
 }
 function cariDetail(x){
   const C = cS(), Dt = C.det; let h = `<div class="small muted">Alış ${tl2(x.buy)} − ödenen ${tl2(x.paid)}${x.bal < -0.004 ? ' · <b>fazla ödeme (alacaklısın)</b>' : ''}</div>`;
@@ -3590,14 +3608,14 @@ document.addEventListener('input', e => { const t = e.target, N = S.addr && S.ad
   if (t.id === 'no-ship') N.ship = t.value; if (t.id === 'no-note') N.note = t.value;
   if (t.id === 'no-q') { N.q = t.value; clearTimeout(noTimer); const q = t.value.trim(); if (q.length < 2) { N.res = []; const box = $('#no-res'); if (box) box.hidden = true; return; }
     noTimer = setTimeout(() => api('/api/shorder/products', {q}).then(d => { if (S.addr.no !== N || N.q.trim() !== q) return; N.res = d.items || []; const box = $('#no-res'); if (box) { box.innerHTML = noResHtml(N); box.hidden = false; } }).catch(() => {}), 250); } });
-document.addEventListener('change', async e => { const t = e.target; if (!t || t.id !== 'sr-rep' || !t.files || !t.files[0]) return; const A = aS(), file = t.files[0]; t.value = '';
+document.addEventListener('change', async e => { const t = e.target; if (!t || (t.id !== 'sr-rep' && t.id !== 'sr-rep2') || !t.files || !t.files[0]) return; const A = aS(), file = t.files[0]; t.value = '';
   A.trk = 1; render();
   try { const wb = XLSX.read(await file.arrayBuffer(), {type: 'array'}); let rows = [];
     for (const sn of wb.SheetNames) { const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header: 1, defval: '', raw: true}).map(r => r.map(c => typeof c === 'number' ? (Number.isInteger(c) ? BigInt(c).toString() : String(c)) : c instanceof Date ? c.toISOString() : String(c ?? ''))); // ham değer: uzun takip no 1,23E+12'ye dönüşmesin
       const hi = aoa.findIndex(r => r.some(c => /^(barkod|referansno|kargotakipno|webtakipno)$/.test(trFold(c)))); if (hi < 0) continue;
       const H = aoa[hi].map(c => trFold(c)); rows = rows.concat(aoa.slice(hi + 1).filter(r => r.some(c => String(c).trim())).map(r => { const o = {}; H.forEach((h, i) => { if (h) o[h] = String(r[i] ?? '').trim(); }); return o; })); }
     if (!rows.length) throw new Error('Dosyada Barkod / Referans No sütunu bulunamadı. Sürat eKargo → Gönderi Raporu → Getir → Excel\'e aktar dosyasını seç.');
-    const r = await api('/api/surat/report', {rows}); for (const x of r.items || []) { const sh = (A.data.ships || []).find(y => y.ref === x.ref); if (sh) srApply(sh.gid, x); }
+    const r = await api('/api/surat/report', {rows}); for (const x of r.items || []) { const sh = ((A.data && A.data.ships) || []).find(y => y.ref === x.ref); if (sh) srApply(sh.gid, x); } if (S.cari) { S.cari.sr = null; }
     toast(`Raporda ${fmtN(r.rows)} satır · ${fmtN(r.tracked)} yeni siparişin takip no'su bulundu · ${fmtN(r.fulfilled)} Shopify'a işlendi${r.already ? ` · ${fmtN(r.already)} sipariş zaten doğru takip no'yla kargolanmış` : ''}${r.fixed ? ` · ${fmtN(r.fixed)} siparişin yanlış takip no'su düzeltildi (${r.fixedList.slice(0, 4).join(', ')})` : ''}${r.miss.length ? ` · ${fmtN(r.miss.length)} sipariş bu raporda yok, Sürat'ta henüz kabul edilmemiş olabilir (${r.miss.slice(0, 4).join(', ')}${r.miss.length > 4 ? '…' : ''})` : ''}${r.errs.length ? ' · ' + r.errs[0] : ''}`, !!r.errs.length);
     if (r.fulfilled) { A.at = 0; loadAddr(true); } }
   catch(err) { toast(errText(err), true); }
@@ -3663,6 +3681,8 @@ document.addEventListener('click', async e => {
       const rows = D.items.map(x => ({'Sipariş no': '#' + String(x.orderNo || '').replace(/^#/, ''), 'Tarih': fmtDate(x.date), 'Ödeme': x.method, 'Ödeme yöntemi (Shopify)': x.gateway, 'Ürün tutarı': x.sub, 'Beklenen kargo': x.shipE, 'Beklenen kapıda ödeme': x.codE, 'Olması gereken': x.exp, 'Shopify tahsil': x.got, 'Shopify kargo/ek ücret': x.shipGot, 'Kargo kapıda tahsil': x.collected, 'Fark': x.diff, 'Teslim edilemedi': x.undelivered ? 'Evet' : '', 'Açıklama': x.issues.join(' · ')}));
       const ws = XLSX.utils.json_to_sheet(rows); ws['!cols'] = [10, 16, 12, 22, 11, 11, 13, 13, 12, 14, 14, 10, 10, 70].map(w => ({wch: w}));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Hatalı siparişler'); XLSX.writeFile(wb, `shopify-hesap-kontrolu-${todayTR()}.xlsx`); break; }
+    case 'srcari-open': { const C = cS(); C.srOpen = !C.srOpen; render(); break; }
+    case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'cari-paynew': { const C = cS(); C.open = C.open === '__new' ? '' : '__new'; C.det = null; render(); break; }
     case 'cari-open': { const C = cS(); C.terms = false; C.tk = null; C.pre = null; if (C.open === id) { C.open = ''; C.det = null; } else { C.open = id; if (id !== '__new') loadCariDet(id); } render(); break; }
@@ -3986,6 +4006,7 @@ document.addEventListener('submit', async e => {
   if (id === 'f-srtd') { S.srTd = 'Sorgulanıyor…'; renderSheet(false); try { S.srTd = JSON.stringify(await api('/api/surat/trackdiag', {no: $('#srtd-no').value}), null, 1).slice(0, 9000); } catch (err) { S.srTd = errText(err); } renderSheet(false); return; }
   if (id === 'f-shret') { const no = e.target.dataset.no; await run(async () => { const r = await api('/api/shret/add', {no, tracking: $('#shr-trk').value, desi: $('#shr-desi').value, cost: $('#shr-amt').value}); delete S.shret[no]; const P = profS(); P.cache = {}; P.key = ''; loadProfit(true); toast(`İade kargosu eklendi: ${tl2(r.cost)}.`); renderSheet(false); }); return; }
   if (id === 'f-pt') { await run(async () => { const r = await api('/api/paytr/connect', {id: $('#pt-id').value, key: $('#pt-key').value, salt: $('#pt-salt').value}); S.ptEdit = false; S.pt = null; toast(r.err ? 'PayTR bağlandı; ilk okuma hatası: ' + r.err : `PayTR bağlandı · ${fmtN((r.r || {}).n || 0)} işlem okundu.`, !!r.err); renderSheet(false); }); return; }
+  if (id === 'f-srmov') { await run(async () => { await api('/api/srcari/add', {kind: $('#srm-kind').value, amount: $('#srm-amt').value, day: $('#srm-day').value, note: $('#srm-note').value}); cS().sr = null; toast('Sürat hareketi kaydedildi.'); render(); }); return; }
   if (id === 'f-bk') { await run(async () => { await api('/api/bk/connect', {token: $('#bk-token').value}); S.bkEdit = false; S.bk = null; toast('Basit Kargo bağlandı. Şimdi "Gönderileri çek"e bas.'); renderSheet(false); }); return; }
   if (id === 'f-srweb') { await run(async () => { await api('/api/surat/settings', {desi: (S.surat || {}).desi || 2, web: $('#sr-web2').value}); S.surat = null; renderSheet(false); toast('Web servis şifresi kaydedildi.'); }); return; }
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
