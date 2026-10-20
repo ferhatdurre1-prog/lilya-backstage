@@ -93,6 +93,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN cost_date TEXT').run(); } catch (e) {} // maliyetin geldiği fiş tarihi // cari ödeme şekli (vade)
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN tx TEXT').run(); } catch (e) {} // Shopify ödeme işlem kimlikleri (PayTR eşleşmesi)
   try { await env.DB.prepare('ALTER TABLE paytr_tx ADD COLUMN paid_day TEXT').run(); } catch (e) {} // PayTR parayı hangi gün yatırdı
+  try { await env.DB.prepare('ALTER TABLE ty_set ADD COLUMN period INTEGER').run(); } catch (e) {} // Trendyol vade süresi (gün, kategoriye göre)
   try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN manual INTEGER').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN currency TEXT').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE sup_mov ADD COLUMN src TEXT').run(); } catch (e) {} // 'xls' = Excel'den yüklendi (toplu silinebilir)
@@ -161,6 +162,7 @@ async function init0(env) {
       await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_costreset1','1')`), setStmt(env, 'cost_backup_mig1', JSON.stringify({ at, rows: results.map(r => [r.key, r.cost]) })),
         env.DB.prepare('UPDATE products SET cost=NULL, cost_date=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_typer1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_typer1','1')`), setStmt(env, 'ty_settle_cur', '')]); } catch (e) {} } // vade süresini okumak için ekstre baştan
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_early_off'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_early_off','1')`), env.DB.prepare('DROP TABLE IF EXISTS ty_early'), env.DB.prepare(`DELETE FROM daily_stats WHERE day >= '2026-10-01'`), setStmt(env, 'home_cache', ''), setStmt(env, 'ty_early_sig', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_dlv1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_dlv1','1')`), setStmt(env, 'sh_pay_done', ''), setStmt(env, 'sh_pay_after', ''), setStmt(env, 'bk_sync_at', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_ptdet2'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_ptdet2','1')`), env.DB.prepare('UPDATE pt_payout SET detailed=0')]); } catch (e) {} }
@@ -455,8 +457,8 @@ async function tySettleSync(env, maxWin = 2) {
     for (const type of FIN_TYPES.split(',')) { for (let page = 0; page < 20; page++) {
       const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionType: type, startDate: cur, endDate: to, page, size: 1000, supplierId: sid });
       for (const x of (r.content || [])) { if (!x.orderNumber) continue; n++; const amt = (Number(x.credit) || 0) - (Number(x.debt) || 0);
-        st.push(env.DB.prepare('INSERT INTO ty_set(id, order_no, type, tx_ms, due_ms, net, amt, po, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET due_ms=excluded.due_ms, net=excluded.net, amt=excluded.amt, po=excluded.po, at=excluded.at')
-          .bind(String(x.id || [type, x.orderNumber, x.transactionDate, x.barcode, amt].join('|')), String(x.orderNumber), type, Number(x.transactionDate) || null, Number(x.paymentDate) || null, Number(x.sellerRevenue) || 0, amt, x.paymentOrderId ? String(x.paymentOrderId) : null, iso())); }
+        st.push(env.DB.prepare('INSERT INTO ty_set(id, order_no, type, tx_ms, due_ms, net, amt, po, at, period) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET due_ms=excluded.due_ms, net=excluded.net, amt=excluded.amt, po=excluded.po, at=excluded.at, period=excluded.period')
+          .bind(String(x.id || [type, x.orderNumber, x.transactionDate, x.barcode, amt].join('|')), String(x.orderNumber), type, Number(x.transactionDate) || null, Number(x.paymentDate) || null, Number(x.sellerRevenue) || 0, amt, x.paymentOrderId ? String(x.paymentOrderId) : null, iso(), Number(x.paymentPeriod) || null)); }
       if (page + 1 >= (r.totalPages || 0)) break; } }
     try { for (let page = 0; page < 10; page++) { const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'PaymentOrder', startDate: cur, endDate: to, page, size: 500, supplierId: sid });
       for (const x of (r.content || [])) { po++; st.push(env.DB.prepare('INSERT INTO ty_po(id, day, amount, descr, at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET day=excluded.day, amount=excluded.amount, descr=excluded.descr, at=excluded.at')
@@ -3382,15 +3384,15 @@ ${catalog}` });
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs)), today = trToday();
     const EI = (await env.DB.prepare('SELECT * FROM ty_early_inv').all()).results;
     const [oR, sR, aR, pR] = await env.DB.batch([env.DB.prepare(`SELECT id, order_no, date, lines FROM orders WHERE channel='trendyol' AND date >= ?1 ORDER BY date DESC`).bind(from),
-      env.DB.prepare(`SELECT order_no, type, tx_ms, due_ms, net, po FROM ty_set WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1)`).bind(from),
+      env.DB.prepare(`SELECT order_no, type, tx_ms, due_ms, net, po, period FROM ty_set WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1)`).bind(from),
       env.DB.prepare(`SELECT order_no, MIN(delivered) d, GROUP_CONCAT(DISTINCT status) st FROM audit_pkg WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1) GROUP BY order_no`).bind(from),
       env.DB.prepare('SELECT day, SUM(amount) amount, COUNT(*) n FROM ty_po WHERE day >= ?1 GROUP BY day ORDER BY day').bind(rs)]);
-    const S = new Map(); for (const x of sR.results) { const g = S.get(x.order_no) || { net: 0, sale: null, due: null, ret: 0, po: null }; g.net += x.net || 0; if (x.po) g.po = x.po; if (x.type === 'Sale') { if (x.tx_ms && (!g.sale || x.tx_ms < g.sale)) g.sale = x.tx_ms; if (x.due_ms && (!g.due || x.due_ms > g.due)) g.due = x.due_ms; } if (x.type === 'Return') g.ret += x.net || 0; S.set(x.order_no, g); }
+    const S = new Map(); for (const x of sR.results) { const g = S.get(x.order_no) || { net: 0, sale: null, due: null, ret: 0, po: null }; g.net += x.net || 0; if (x.po) g.po = x.po; if (x.type === 'Sale') { if (x.tx_ms && (!g.sale || x.tx_ms < g.sale)) g.sale = x.tx_ms; if (x.due_ms && (!g.due || x.due_ms > g.due)) g.due = x.due_ms; if (x.period) g.period = x.period; } if (x.type === 'Return') g.ret += x.net || 0; S.set(x.order_no, g); }
     const A = new Map(aR.results.map(x => [x.order_no, x])), PO = new Map(pR.results.map(x => [x.day, x])), out = [];
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} if (!lines.some(l => l.status !== 'cancelled')) continue;
       const g = S.get(r.order_no), a = A.get(r.order_no), deliv = (a && a.d) || (g && g.sale ? trDay(g.sale) : null), rule = tyPayDay(deliv), tyDue = g && g.due ? trDay(g.due) : null, paidPo = !!(g && g.po && tyDue && tyDue <= today), day = paidPo ? tyDue : tyDue ? tyPayout(tyDue) : rule; // Trendyol'un ekstredeki vade tarihi → o haftanın ödeme günü (pazartesi/perşembe); ödendiyse ödendiği gün // ödendiyse Trendyol'un ödediği gün; değilse kural (teslim + 28 gün → ilk salı/perşembe) esas; Trendyol vadesi yalnızca bilgi
       const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : paidPo ? (tyDue && rule && tyDue < rule ? 'early' : 'paid') : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending'; // ekstre satırında ödeme emri no varsa ödenmiştir
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, po: g ? g.po : null, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, period: g ? g.period || null : null, po: g ? g.po : null, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
     const sch = new Map(); for (const x of out) if (x.day && x.net > 0 && x.st !== 'transit') { const g = sch.get(x.day) || { day: x.day, net: 0, n: 0 }; g.net = r2(g.net + x.net); g.n++; sch.set(x.day, g); }
     const schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const p = PO.get(g.day); return { ...g, efee: r2(EI.filter(e => e.matched && e.day === g.day).reduce((a, e) => a + (e.amount || 0), 0)), paid: p ? r2(p.amount) : null, diff: p ? r2(p.amount - g.net) : null, future: g.day >= today }; });
     for (const [d, p] of PO) if (!sch.has(d)) schedule.push({ day: d, net: 0, n: 0, efee: r2(EI.filter(e => e.matched && e.day === d).reduce((a, e) => a + (e.amount || 0), 0)), paid: r2(p.amount), diff: r2(p.amount), future: false, extra: true }); schedule.sort((a, b) => a.day < b.day ? -1 : 1);
