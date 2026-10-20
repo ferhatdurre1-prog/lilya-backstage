@@ -3069,7 +3069,7 @@ function orderProfitCard(o){
   const D = S.prof && S.prof.data; const x = D && D.orders.find(y => y.id === o.id);
   if (!x) return '';
   return `<div class="card"><div class="spread"><h3 style="margin:0">Kâr</h3><span class="pill ${x.actual?'p-good':'p-mute'}">${x.actual ? (x.channel === 'shopify' || /^Basit Kargo|^Sürat/.test(x.cargoInfo || '') ? 'Gerçek kargo ücreti' : 'Trendyol gerçek kesintisi') : 'Tahmini'}</span></div><dl class="kv">
-    <dt>Satış</dt><dd>${fmtTL(x.revenue)}</dd><dt>Komisyon</dt><dd>−${fmtTL(x.commission)}</dd><dt>Kargo${x.cargoInfo?`<div class="muted" style="font-size:11.5px">${esc(x.cargoInfo)}</div>`:''}</dt><dd>−${fmtTL(x.cargo)}</dd>${x.retCargo ? `<dt>İade kargosu${x.retCargoEst ? '<div class="muted" style="font-size:11.5px">Desi fiyatıyla tahmini</div>' : ''}</dt><dd>−${fmtTL(x.retCargo)}</dd>` : ''}${x.penalty ? `<dt>Ceza ve kupon</dt><dd>−${fmtTL(x.penalty)}</dd>` : ''}<dt>Hizmet bedeli</dt><dd>−${fmtTL(x.service)}</dd><dt>Stopaj</dt><dd>−${fmtTL(x.stopaj)}</dd><dt>Ürün maliyeti${x.kept ? '<div class="muted" style="font-size:11.5px">İade edilen ürün müşteride kaldı; maliyeti zarar</div>' : ''}</dt><dd>−${fmtTL(x.cost)}</dd>${x.pack ? `<dt>Paketleme</dt><dd>−${fmtTL(x.pack)}</dd>` : ''}
+    <dt>Satış</dt><dd>${fmtTL(x.revenue)}</dd><dt>Komisyon${x.commInfo?`<div class="muted" style="font-size:11.5px">${esc(x.commInfo)}</div>`:''}</dt><dd>−${fmtTL(x.commission)}</dd><dt>Kargo${x.cargoInfo?`<div class="muted" style="font-size:11.5px">${esc(x.cargoInfo)}</div>`:''}</dt><dd>−${fmtTL(x.cargo)}</dd>${x.retCargo ? `<dt>İade kargosu${x.retCargoEst ? '<div class="muted" style="font-size:11.5px">Desi fiyatıyla tahmini</div>' : ''}</dt><dd>−${fmtTL(x.retCargo)}</dd>` : ''}${x.penalty ? `<dt>Ceza ve kupon</dt><dd>−${fmtTL(x.penalty)}</dd>` : ''}<dt>Hizmet bedeli</dt><dd>−${fmtTL(x.service)}</dd><dt>Stopaj</dt><dd>−${fmtTL(x.stopaj)}</dd><dt>Ürün maliyeti${x.kept ? '<div class="muted" style="font-size:11.5px">İade edilen ürün müşteride kaldı; maliyeti zarar</div>' : ''}</dt><dd>−${fmtTL(x.cost)}</dd>${x.pack ? `<dt>Paketleme</dt><dd>−${fmtTL(x.pack)}</dd>` : ''}
     <dt><b>Net kâr</b></dt><dd><b style="${profitCls(x.profit)}">${tlS(x.profit)}</b></dd></dl></div>`;
 }
 
@@ -3280,6 +3280,19 @@ function usageCard(){
     <p class="small muted" style="margin:0">Cloudflare'de ayrıca <b>Notifications → Add → Usage Based Billing</b> uyarısı kurarsan, ek ücret ihtimalinde e-posta da gelir.</p></div>`;
 }
 // Sürat Kargo bağlantısı: Shopify siparişleri kendi barkodumuzla Sürat'a bildirilir (ön kabul)
+function ptCard(){
+  const H = S.pt;
+  if (!H || (!H.loading && H.loadedAt && Date.now() - H.loadedAt > 30000)) { S.pt = {...(H || {}), loading: true}; api('/api/paytr/status', {}).then(d => { S.pt = {...d, loadedAt: Date.now()}; if (S.sheet) renderSheet(false); }).catch(e => { S.pt = {err: errText(e), loadedAt: Date.now()}; }); }
+  const d = S.pt || {}, badge = '<span class="pill p-brass">PayTR</span>';
+  if (d.loading && d.connected === undefined) return `<div class="card"><h3>${badge}</h3>${loading()}</div>`;
+  const info = `<p class="muted small" style="margin:0">Shopify'da kartla (online) ödenen siparişlerde PayTR'nin kestiği <b>gerçek komisyon</b> Kâr hesabına yazılır. İşlemler 3 saatte bir okunur.</p>`;
+  if (!d.connected || S.ptEdit) return `<div class="card" style="gap:8px"><div class="spread"><h3 style="margin:0">${badge} ${d.connected ? 'Bilgileri değiştir' : 'Bağlan'}</h3>${d.connected ? '<button class="btn sm ghost" data-act="pt-edit" data-id="0">Vazgeç</button>' : ''}</div>${info}
+    <p class="small" style="margin:0">PayTR Mağaza Paneli → <b>Destek & Kurulum → Entegrasyon Bilgileri</b> sayfasındaki üç bilgiyi gir.</p>
+    <form id="f-pt" class="grid2"><label class="f">Mağaza No (merchant_id)<input class="input mono" id="pt-id" autocomplete="off" required></label><label class="f">Mağaza Parola (merchant_key)<input class="input mono" id="pt-key" type="password" autocomplete="off" required></label><label class="f">Mağaza Gizli Anahtar (merchant_salt)<input class="input mono" id="pt-salt" type="password" autocomplete="off" required></label><div class="row" style="align-items:end"><button class="btn primary" type="submit">Bağlan</button></div></form></div>`;
+  return `<div class="card" style="gap:8px"><div class="spread"><h3 style="margin:0">${badge} <span class="pill p-good">Bağlı</span></h3><div class="row" style="gap:6px"><button class="btn sm ghost" data-act="pt-edit" data-id="1">Bilgileri değiştir</button><button class="btn sm ghost" data-act="pt-off" style="color:var(--bad)">Bağlantıyı kes</button></div></div>${info}
+    <dl class="kv" style="margin:0"><dt>Mağaza no</dt><dd class="mono">${esc(d.id || '')}</dd><dt>Okunan işlem</dt><dd>${fmtN(d.sales || 0)} satış · ${fmtN(d.refunds || 0)} iade${d.a ? ` · ${esc(d.a)} – ${esc(d.b)}` : ''}</dd><dt>Toplam komisyon</dt><dd>${tl2(d.kes || 0)}${d.oran ? ` · ort. %${String(Math.round(d.oran * 100) / 100).replace('.', ',')}` : ''}</dd><dt>Son okuma</dt><dd>${d.syncAt ? esc(new Date(d.syncAt).toLocaleString('tr-TR')) : '—'}${d.err ? `<div class="small" style="color:var(--bad)">${esc(d.err)}</div>` : ''}</dd>${(d.sample || []).length ? `<dt>Örnek sipariş no</dt><dd class="small mono">${esc(d.sample.map(x => x.siparis_no + ' (' + x.tutar + ' TL)').join(', '))}</dd>` : ''}</dl>
+    <div class="row"><button class="btn sm primary" data-act="pt-sync">Şimdi oku</button></div></div>`;
+}
 function bkCard(){
   const H = S.bk;
   if (!H || (!H.loading && H.loadedAt && Date.now() - H.loadedAt > 30000)) { S.bk = {...(H || {}), loading: true}; api('/api/bk/status', {}).then(d => { S.bk = {...d, loadedAt: Date.now()}; if (S.sheet) renderSheet(false); }).catch(e => { S.bk = {err: errText(e), loadedAt: Date.now()}; }); }
@@ -3389,6 +3402,7 @@ function sheetImport(){
   ${shopifyCard()}
   ${suratCard()}
   ${bkCard()}
+  ${ptCard()}
   <div class="card"><h3>Dosyadan aktar</h3>
     <p class="muted small" style="margin:0">Diğer kanalların sipariş/ürün dosyasını (CSV, Excel) ya da eski uygulamanın yedeğini buraya yükleyebilirsin. Aynı dosyayı tekrar yüklemek stoğu iki kez düşürmez.</p>
     ${stage}
@@ -3805,6 +3819,9 @@ document.addEventListener('click', async e => {
     case 'ad-fedit': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (!o) break; const k = b.dataset.k, E = A.edit[id] || addrForm(o.addr || {});
       A.field = {gid: id, k, v: k === 'phone' ? phoneShow(phoneFix(E.phone) || E.phone) : String(E[k] || '')}; render(); addrFocus(); break; }
     case 'ad-fok': addrFieldCommit(); break;
+    case 'pt-edit': S.ptEdit = id === '1'; renderSheet(false); break;
+    case 'pt-off': if (!(await confirmBox('PayTR bağlantısı kesilsin mi? Okunan işlemler korunur.', 'Bağlantıyı kes', true))) break; await run(async () => { await api('/api/paytr/disconnect', {}); S.pt = null; renderSheet(false); }); break;
+    case 'pt-sync': b.disabled = true; b.textContent = 'Okunuyor…'; await run(async () => { const r = (await api('/api/paytr/sync', {})).r; toast(`PayTR: ${fmtN(r ? r.n : 0)} işlem okundu${r && !r.done ? ' (devam için tekrar bas)' : ''}.`); S.pt = null; renderSheet(false); }); break;
     case 'bk-edit': S.bkEdit = id === '1'; renderSheet(false); break;
     case 'bk-off': if (!(await confirmBox('Basit Kargo bağlantısı kesilsin mi? Okunan gönderiler ve kâr hesabı korunur.', 'Bağlantıyı kes', true))) break; await run(async () => { await api('/api/bk/disconnect', {}); S.bk = null; renderSheet(false); }); break;
     case 'bk-sync': b.disabled = true; b.textContent = 'Çekiliyor…'; await run(async () => { const r = await api('/api/bk/sync', {}); toast('Basit Kargo: ' + r.msg); S.bk = null; renderSheet(false); }); break;
@@ -3948,6 +3965,7 @@ document.addEventListener('submit', async e => {
   if (id === 'f-bkord') { await run(async () => { const r = await api('/api/bk/order', {no: $('#bk-no').value}); S.bkSample = JSON.stringify({kayitli: r.saved, gonderiler: r.shipments}, null, 1).slice(0, 8000); renderSheet(false); }); return; }
   if (id === 'f-srtd') { S.srTd = 'Sorgulanıyor…'; renderSheet(false); try { S.srTd = JSON.stringify(await api('/api/surat/trackdiag', {no: $('#srtd-no').value}), null, 1).slice(0, 9000); } catch (err) { S.srTd = errText(err); } renderSheet(false); return; }
   if (id === 'f-shret') { const no = e.target.dataset.no; await run(async () => { const r = await api('/api/shret/add', {no, tracking: $('#shr-trk').value, desi: $('#shr-desi').value, cost: $('#shr-amt').value}); delete S.shret[no]; const P = profS(); P.cache = {}; P.key = ''; loadProfit(true); toast(`İade kargosu eklendi: ${tl2(r.cost)}.`); renderSheet(false); }); return; }
+  if (id === 'f-pt') { await run(async () => { const r = await api('/api/paytr/connect', {id: $('#pt-id').value, key: $('#pt-key').value, salt: $('#pt-salt').value}); S.ptEdit = false; S.pt = null; toast(r.err ? 'PayTR bağlandı; ilk okuma hatası: ' + r.err : `PayTR bağlandı · ${fmtN((r.r || {}).n || 0)} işlem okundu.`, !!r.err); renderSheet(false); }); return; }
   if (id === 'f-bk') { await run(async () => { await api('/api/bk/connect', {token: $('#bk-token').value}); S.bkEdit = false; S.bk = null; toast('Basit Kargo bağlandı. Şimdi "Gönderileri çek"e bas.'); renderSheet(false); }); return; }
   if (id === 'f-srweb') { await run(async () => { await api('/api/surat/settings', {desi: (S.surat || {}).desi || 2, web: $('#sr-web2').value}); S.surat = null; renderSheet(false); toast('Web servis şifresi kaydedildi.'); }); return; }
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }

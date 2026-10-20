@@ -21,6 +21,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS bundles(pkey TEXT NOT NULL, comp TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(pkey, comp))`,
   `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS paytr_tx(k TEXT PRIMARY KEY, siparis_no TEXT, tip TEXT, tutar REAL, kesinti REAL, net REAL, oran REAL, tarih TEXT, odeme_tipi TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_cost(no TEXT PRIMARY KEY, tracking TEXT, cost REAL, desi REAL, cod_amount REAL, undelivered INTEGER, durum TEXT, teslim TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sh_ret(id INTEGER PRIMARY KEY AUTOINCREMENT, no TEXT NOT NULL, tracking TEXT, desi REAL, cost REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS sh_pay(no TEXT PRIMARY KEY, gateway TEXT, cod INTEGER, card INTEGER, subtotal REAL, ship REAL, total REAL, at TEXT)`,
@@ -290,6 +291,38 @@ const SH_FREE_SHIP = 700, SH_SHIP_FEE = 100, SH_COD_CASH = 50, SH_COD_CARD = 100
 const SURAT_DIRECT_FROM = '2026-10-17T07:00:00.000Z', SURAT_POST_TAX = 0.0235; // 17.10.2026 10:00 (TR) sonrası anlaşmalı Sürat
 const suratDirectPrice = (d) => d <= 5 ? 102 : d <= 10 ? 144 : d <= 15 ? 168 : 192; // KDV dahil; 20 desi üstü şimdilik 192
 const suratDirectCod = (t) => r2(30 + Math.max(0, Math.ceil((t - 1000) / 100 - 1e-9)) * 1.5); // 0–1000 TL 30 TL, üzerindeki her 100 TL +1,50
+/* ---------- PayTR (Shopify online ödemelerin komisyonu): Satış ve İade İşlem Dökümü servisi ---------- */
+async function ptCreds(env) { const s = await getSettings(env, ['pt_id', 'pt_key', 'pt_salt']); return { id: env.PAYTR_MERCHANT_ID || s.pt_id || '', key: env.PAYTR_MERCHANT_KEY || s.pt_key || '', salt: env.PAYTR_MERCHANT_SALT || s.pt_salt || '' }; }
+const ptTime = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(0, 19).replace('T', ' ');
+async function ptList(env, cr, fromMs, toMs) {
+  const start = ptTime(fromMs), end = ptTime(toMs);
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(cr.key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(cr.id + start + end + cr.salt)));
+  const token = btoa(String.fromCharCode(...sig));
+  const r = await fetch('https://www.paytr.com/rapor/islem-dokumu', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ merchant_id: cr.id, start_date: start, end_date: end, paytr_token: token }) });
+  const t = await r.text(); let d = null; try { d = JSON.parse(t); } catch (e) {}
+  if (!d) throw new Error(`PayTR ${r.status}: ${t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`);
+  if (d.status === 'failed') return [];
+  if (d.status !== 'success') throw new Error('PayTR: ' + (d.err_msg || d.reason || JSON.stringify(d).slice(0, 160)));
+  const arr = Array.isArray(d.data) ? d.data : Array.isArray(d.transactions) ? d.transactions : Array.isArray(d.islemler) ? d.islemler : Object.values(d).find(v => Array.isArray(v)) || [];
+  return arr;
+}
+const ptNum = (v) => { const t = String(v ?? '').trim(); if (!t) return null; const n = Number(/,\d{1,2}$/.test(t) ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '')); return Number.isFinite(n) ? n : null; };
+const ptDay = (t) => { const m = /^(\d{2})\.(\d{2})\.(\d{4})/.exec(String(t || '')); return m ? `${m[3]}-${m[2]}-${m[1]}` : String(t || '').slice(0, 10); };
+async function ptSync(env, maxWin = 8) {
+  const cr = await ptCreds(env); if (!cr.id || !cr.key || !cr.salt) return null;
+  const s0 = await getSettings(env, ['pt_cursor', 'report_start']); const startDay = /^\d{4}-\d{2}-\d{2}$/.test(s0.report_start || '') ? s0.report_start : '2026-10-01';
+  let cur = Number(s0.pt_cursor) || Date.parse(startDay + 'T00:00:00+03:00'); const now = Date.now(); let n = 0, w = 0;
+  cur = Math.min(cur, now - 2 * 86400000); // son 2 gün her seferinde yeniden okunur (geç düşen işlemler)
+  while (cur < now && w < maxWin) { const to = Math.min(cur + 3 * 86400000 - 1000, now);
+    const L = await ptList(env, cr, cur, to); w++;
+    const st = L.map(x => { const sn = String(x.siparis_no ?? x.merchant_oid ?? '').trim(), tip = String(x.islem_tipi || '').trim(), tutar = ptNum(x.islem_tutari), tarih = ptDay(x.islem_tarihi);
+      return env.DB.prepare('INSERT INTO paytr_tx(k, siparis_no, tip, tutar, kesinti, net, oran, tarih, odeme_tipi, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(k) DO UPDATE SET kesinti=excluded.kesinti, net=excluded.net, oran=excluded.oran, at=excluded.at')
+        .bind([sn, tip, tutar, tarih].join('|'), sn, tip, tutar, ptNum(x.kesinti_tutari), ptNum(x.net_tutar), ptNum(x.kesinti_orani), tarih, String(x.odeme_tipi || ''), iso()); });
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); n += st.length; cur = to + 1000; }
+  await env.DB.batch([setStmt(env, 'pt_cursor', String(cur)), setStmt(env, 'pt_sync_at', iso()), setStmt(env, 'pt_err', ''), ...(n ? [env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(startDay), setStmt(env, 'home_cache', ''), REV(env)] : [])]);
+  return { n, windows: w, done: cur >= now };
+}
 /* ---------- Basit Kargo (17.10.2026 10:00'a kadarki Shopify gönderileri) ---------- */
 const BK_CUTOFF = '2026-10-17T10:00', BK_CUTOFF_MS = Date.parse('2026-10-17T07:00:00Z');
 const bkTime = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(0, 19); // Türkiye saati, YYYY-MM-DDTHH:mm:ss
@@ -1875,7 +1908,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));
     if (left() > 8000 && ok(40)) await step('shPush', async () => { try { return await pushShopifyStock(env); } catch (e) { await setSetting(env, 'sh_push_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } });
     // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
-    if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); if (left() > 15000) { try { await shPayBackfill(env, 3); } catch (e) { await setSetting(env, 'sh_pay_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } } const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) > 6 * 3600000 && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
+    if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); if (left() > 15000) { try { await shPayBackfill(env, 3); } catch (e) { await setSetting(env, 'sh_pay_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } } try { const pa2 = Number(await getSetting(env, 'run_pt_at')) || 0; if (now - pa2 > 3 * 3600000 && left() > 15000) { await setSetting(env, 'run_pt_at', String(now)); await ptSync(env, 4); } } catch (e) { await setSetting(env, 'pt_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) > 6 * 3600000 && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
     // Sürat: şube okuttuysa takip numarası alınıp Shopify'a işlenir (müşteriye bildirim) — 30 dakikada bir
     if (left() > 12000 && ok(80) && isDue('run_sr_at', 30 * 60000)) { await setSetting(env, 'run_sr_at', String(now)); await step('surat', () => srTrackPending(env), 'sr_track_err'); }
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
@@ -2158,7 +2191,7 @@ async function computeProfit(env, from, to, ch0) {
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
-  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR, scR, srtR]] = await Promise.all([loadFees(env), env.DB.batch([
+  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR, scR, ptR, srtR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day, desi FROM products`),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note, kept, inspect, insp_ok FROM returns WHERE order_id<>'' AND status<>'rejected'`),
@@ -2172,7 +2205,12 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare('SELECT no, fee, cod_fee, handler, cod, cod_type FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10)),
     env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
     env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
+    env.DB.prepare(`SELECT * FROM paytr_tx WHERE tip='S' AND tarih >= ?1 AND tarih <= ?2`).bind(addDay(dayFrom, -1), addDay(dayTo, 1)),
     env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
+  const ptTx = ptR.results, ptUsed = new Set(), ptRate = ptTx.filter(x => x.oran > 0).reduce((a, x, i, arr) => a + x.oran / arr.length, 0);
+  const ptFind = (no, total, day) => { let m = ptTx.find(x => !ptUsed.has(x.k) && String(x.siparis_no || '').replace(/\D/g, '') === no);
+    if (!m) { const c = ptTx.filter(x => !ptUsed.has(x.k) && Math.abs((x.tutar || 0) - total) < 0.06 && x.tarih === day); if (c.length === 1) m = c[0]; }
+    if (m) ptUsed.add(m.k); return m; };
   const shPay = new Map(spR.results.map(x => [x.no, x])), srCost = new Map(scR.results.map(x => [x.no, x])), shRet = new Map(srtR.results.map(x => [x.no, x]));
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
   // Kanal seçiliyse sadece o kanalın siparişleri; Trendyol fatura kesintileri yalnız Trendyol'da, genel giderler kanal seçilince düşülmez
@@ -2257,7 +2295,7 @@ async function computeProfit(env, from, to, ch0) {
     }
     const pkgs = new Map();
     for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true }; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
-    let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0, undel = false;
+    let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0, undel = false, ptFee = 0, ptTxt = '';
     const cargoInfo = [];
     if (ch === 'trendyol') for (const g of pkgs.values()) { const c = tyCargo(fee, g.amount, g.desi, g.carrier); cargo += c.cost;
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
@@ -2270,6 +2308,7 @@ async function computeProfit(env, from, to, ch0) {
       let cod = null, card = false; if (bk && !post) { cod = !!bk.cod; card = bk.cod_type === 'CREDIT_CARD'; } else if (pay) { cod = !!pay.cod; card = !!pay.card; }
       const shipInc = gross > 0 && gross < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codInc = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0; shInc = shipInc + codInc;
       const pm = cod === null ? 'ödeme yöntemi bilinmiyor (online sayıldı)' : cod ? (card ? 'kapıda kart' : 'kapıda nakit') : 'online';
+      if (cod === false || (cod === null && pay)) { const m = ptFind(no, r2(gross + shInc), trDay(Date.parse(ord.date))); if (m && m.kesinti !== null) { ptFee = r2(m.kesinti); ptTxt = ` · PayTR komisyonu ${ptFee} TL`; } else if (ptRate > 0) { ptFee = r2((gross + shInc) * ptRate / 100); ptTxt = ` · PayTR komisyonu tahmini %${r2(ptRate)} (${ptFee} TL)`; } }
       const incTxt = shInc ? ` · müşteriden ${[shipInc ? 'kargo ' + shipInc + ' TL' : '', codInc ? 'kapıda ödeme ' + codInc + ' TL' : ''].filter(Boolean).join(' + ')} satışa eklendi` : '';
       if (post) { // 17.10.2026 10:00 sonrası: anlaşmalı Sürat. Sürat raporu yüklendiyse gerçek ücret (KDV + posta vergisi dahil), yoksa tarife (+%2,35 posta vergisi sadece kargoya) + kapıda ödeme bedeli
         let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null; if (dz === null) { miss++; d += q; } else d += dz * q; }
@@ -2290,7 +2329,7 @@ async function computeProfit(env, from, to, ch0) {
     if (ch === 'trendyol') for (const g of pkgs.values()) { const f = g.fast && ordHour < fee.serviceCutoff; service += f ? fee.serviceFast : fee.serviceTy; if (f) fastPk++; }
     if (fastPk) sum.fastPkgs = (sum.fastPkgs || 0) + fastPk;
     const est = rows.reduce((a, x) => a + x.revenue, 0);
-    let revenue = est + shInc, commission = rows.reduce((a, x) => a + x.commission, 0) + (ch === 'shopify' ? r2((est + shInc) * (fee.shComm || 0) / 100) : 0); /* Shopify: Meta yardımcısının komisyonu (ciro × %) */ let actual = shReal, svcActual = false; // Shopify: satış tutarı Shopify'dan, kargo Basit Kargo'dan gerçekse sipariş gerçek sayılır
+    let revenue = est + shInc, commission = rows.reduce((a, x) => a + x.commission, 0) + (ch === 'shopify' ? r2((est + shInc) * (fee.shComm || 0) / 100) + ptFee : 0); /* Shopify: Meta yardımcısının komisyonu (ciro × %) */ let actual = shReal, svcActual = false; // Shopify: satış tutarı Shopify'dan, kargo Basit Kargo'dan gerçekse sipariş gerçek sayılır
     const retUnits = rows.reduce((a, x) => a + x.retQ, 0);
     const fa = ch === 'trendyol' ? fin.get(ord.order_no) : null;
     const undelivered = retUnits > 0 && [...pkgs.values()].some(g => g.ret && g.und);
@@ -2320,7 +2359,7 @@ async function computeProfit(env, from, to, ch0) {
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
-    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, commInfo: ch === 'shopify' ? `Meta yardımcısı %${fee.shComm || 0}${ptTxt}` : '', cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
     // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
@@ -3082,6 +3121,21 @@ ${catalog}` });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   // ---------- Sürat Kargo ----------
+  if (path === '/api/paytr/status') {
+    const cr = await ptCreds(env), s0 = await getSettings(env, ['pt_sync_at', 'pt_err']);
+    const c = await env.DB.prepare(`SELECT COUNT(*) n, SUM(tip='S') sales, SUM(tip='I') refunds, SUM(CASE WHEN tip='S' THEN kesinti END) kes, AVG(CASE WHEN tip='S' AND oran>0 THEN oran END) oran, MIN(tarih) a, MAX(tarih) b FROM paytr_tx`).first();
+    const smp = (await env.DB.prepare(`SELECT siparis_no, tutar, tarih FROM paytr_tx WHERE tip='S' ORDER BY tarih DESC LIMIT 3`).all()).results;
+    return json({ connected: !!(cr.id && cr.key && cr.salt), id: cr.id ? cr.id.slice(0, 2) + '•••' + cr.id.slice(-2) : '', syncAt: s0.pt_sync_at || '', err: s0.pt_err || '', ...c, sample: smp });
+  }
+  if (path === '/api/paytr/connect') {
+    const cr = { id: String(body.id || '').trim(), key: String(body.key || '').trim(), salt: String(body.salt || '').trim() };
+    if (!cr.id || !cr.key || !cr.salt) return bad('Mağaza no, Mağaza Parola (merchant_key) ve Mağaza Gizli Anahtar (merchant_salt) üçü de gerekli.');
+    try { await ptList(env, cr, Date.now() - 2 * 86400000, Date.now()); } catch (e) { return bad('PayTR bağlantısı kurulamadı: ' + e.message); }
+    await env.DB.batch([setStmt(env, 'pt_id', cr.id), setStmt(env, 'pt_key', cr.key), setStmt(env, 'pt_salt', cr.salt), setStmt(env, 'pt_cursor', '')]);
+    try { const r = await ptSync(env, 8); return json({ ok: true, r }); } catch (e) { return json({ ok: true, err: String(e.message || e) }); }
+  }
+  if (path === '/api/paytr/sync') { try { return json({ ok: true, r: await ptSync(env, 10) }); } catch (e) { await setSetting(env, 'pt_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e), 502); } }
+  if (path === '/api/paytr/disconnect') { await env.DB.batch([setStmt(env, 'pt_id', ''), setStmt(env, 'pt_key', ''), setStmt(env, 'pt_salt', '')]); return json({ ok: true }); }
   if (path === '/api/bk/status') {
     const s0 = await getSettings(env, ['bk_token', 'bk_sync_at', 'bk_sync_msg']), c = await env.DB.prepare('SELECT COUNT(*) n, SUM(fee IS NOT NULL) f, SUM(cod) c, SUM(cod=1 AND cod_fee IS NULL) cp, MIN(created) a, MAX(created) b FROM bk_ship').first();
     const mt = await env.DB.prepare(`SELECT COUNT(*) n FROM bk_ship b WHERE EXISTS(SELECT 1 FROM orders o WHERE o.channel='shopify' AND replace(o.order_no,'#','')=b.no)`).first();
