@@ -295,14 +295,14 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .sheet-h .tt{flex:1;min-width:0}
 .sheet-h h2{margin:0;font-family:var(--f-display);font-weight:800;font-size:20px;letter-spacing:-.02em;line-height:1.15;overflow-wrap:anywhere}
 .sheet-b{padding:16px 16px calc(28px + env(safe-area-inset-bottom,0px));display:grid;gap:18px}
-.hk-head{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}.hk-ch{font-weight:700;font-size:14px;padding:5px 8px;border-radius:9px;text-align:center}
+.hk-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-bottom:12px}
+.hk-ch{font-weight:700;font-size:12.5px;padding:4px 4px;border-radius:8px;text-align:center}
 .hk-ch.hk-ty{background:var(--ty-soft);color:var(--ty)}.hk-ch.hk-sh{background:var(--sh-soft);color:var(--sh)}.hk-ch.hk-all{background:var(--violet-soft);color:var(--violet)}
-.hk-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}.hk-grid.hk-one{grid-template-columns:1fr}
-.hk{height:108px;box-sizing:border-box;overflow:hidden;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:10px 12px;cursor:pointer;min-width:0}
-div.hk.hk-ty{border-left-color:var(--ty)}div.hk.hk-sh{border-left-color:var(--sh)}div.hk.hk-all{border-left-color:var(--violet)}
-.hk .k{font-size:12.5px;color:var(--ink-3)}.hk .v{font-size:21px;font-weight:700;margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--good)}.hk .s{font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hk-row{grid-column:1/-1;font-size:11.5px;font-weight:600;color:var(--ink-3);margin:4px 0 -3px 2px}
+.hk{height:70px;box-sizing:border-box;overflow:hidden;background:var(--surface);border:1px solid var(--line);border-top:3px solid var(--line);border-radius:11px;box-shadow:var(--shadow);padding:6px 8px;cursor:pointer;min-width:0}
+div.hk.hk-ty{border-top-color:var(--ty)}div.hk.hk-sh{border-top-color:var(--sh)}div.hk.hk-all{border-top-color:var(--violet)}
+.hk .v{font-size:16.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--good);line-height:1.25}.hk .s{font-size:10.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.35}
 .hk .up{color:var(--good);font-weight:600}.hk .dn{color:var(--bad);font-weight:600}
-.hk-wide{display:flex;justify-content:space-between;align-items:center;gap:10px}.hk-wide .v{font-size:23px;flex-shrink:0}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px;display:grid;gap:12px;min-width:0}
 .seg{display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
 .seg button{border:0;background:none;border-radius:8px;padding:8px 6px;cursor:pointer;color:var(--ink-2);font-weight:500;font-size:14px}
@@ -1460,29 +1460,22 @@ function viewHome(){
     const kpi = (k, icon, c, cs, v, sub, vstyle='', go='') => `<div class="kpi" data-act="home-go" data-id="${go}" style="--c:${c};--cs:${cs};cursor:pointer"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
     const vs = (a, b) => { if (!b) return ''; const d = (a - b) / Math.abs(b) * 100; if (!isFinite(d)) return ''; return ` <span class="${d >= 0 ? 'up' : 'dn'}">${d >= 0 ? '▲' : '▼'} %${Math.abs(d).toFixed(0)}</span>`; };
     const pc = (n) => n < 0 ? 'var(--bad)' : 'var(--good)', pcs = (n) => n < 0 ? 'var(--bad-soft)' : 'var(--good-soft)';
-    // Solda Trendyol, sağda Shopify (5'er kutu), altta tüm kanalların toplamı (5 geniş kutu); bütün kutular aynı yükseklikte
+    // 3 sütun: Trendyol · Shopify · Toplam; her satır bir dönem (bugün, dün, bu ay, son 30 gün, bekleyen). Bütün kutular aynı boyutta, kaydırmadan sığar.
     const C = H.ch || {}, nw = (S.sync.trendyol || {}).newOrders || {n: 0, u: 0}, cel = (P, k) => (P && P[k]) || {revenue: 0, profit: 0, margin: null, n: 0};
-    const box = (cls, k, v, sub, vcol, act, aid) => `<div class="hk ${cls}" data-act="${act}" data-id="${aid || ''}"><div class="k">${k}</div><div class="v" style="${vcol}">${v}</div>${sub.map(x => `<div class="s">${x}</div>`).join('')}</div>`;
     const prof = (x) => profitCls(x) || '', t0 = (v) => '₺' + Math.round(Number(v) || 0).toLocaleString('tr-TR'), mg = (v) => v === null || v === undefined ? '—' : '%' + (Math.round(v * 10) / 10).toLocaleString('tr-TR');
-    const col = (key, cls, pend) => { const t = cel(C.today, key), y = cel(C.ys, key), yd = cel(C.yday, key), m = cel(C.month, key), d = cel(C.d30, key), g = (per) => `${per}|${key}`;
-      return box(cls, 'Bugün kâr', tlS(t.profit), [`${t0(t.revenue)} ciro · ${mg(t.margin)}`, `Dün bu saat ${t0(y.profit)}${vs(t.profit, y.profit).replace('> ', '>').replace(' %', '%')}`], prof(t.profit), 'home-go2', g('today'))
-        + box(cls, 'Dün kâr', tlS(yd.profit), [`${t0(yd.revenue)} ciro · ${mg(yd.margin)}`], prof(yd.profit), 'home-go2', g('yesterday'))
-        + box(cls, 'Bu ay kâr', tlS(m.profit), [`${t0(m.revenue)} ciro · ${mg(m.margin)}`], prof(m.profit), 'home-go2', g('month'))
-        + box(cls, 'Son 30 gün kâr', tlS(d.profit), [`${t0(d.revenue)} ciro · ${mg(d.margin)}`], prof(d.profit), 'home-go2', g('d30'))
-        + box(cls, 'Bekleyen sipariş', fmtN(pend), [`Bugün ${fmtN(t.n)} sipariş`], 'color:var(--orange)', 'orders-new', key); };
-    const ty = col('trendyol', 'hk-ty', nw.n || 0), sh = col('shopify', 'hk-sh', nw.sh || 0);
-    const tyB = ty.split('<div class="hk ').slice(1).map(x => '<div class="hk ' + x), shB = sh.split('<div class="hk ').slice(1).map(x => '<div class="hk ' + x);
-    const tot = (k, v, sub, vcol, act, aid) => `<div class="hk hk-all hk-wide" data-act="${act}" data-id="${aid}"><div style="min-width:0"><div class="k">${k}</div>${sub.map(x => `<div class="s">${x}</div>`).join('')}</div><div class="v" style="${vcol}">${v}</div></div>`;
-    h += `<div class="hk-head"><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span></div>
-      <div class="hk-grid">${tyB.map((x, i) => x + shB[i]).join('')}</div>
-      <div class="hk-head" style="grid-template-columns:1fr;margin-top:12px"><span class="hk-ch hk-all">Toplam (tüm kanallar)</span></div>
-      <div class="hk-grid hk-one">
-        ${tot('Bugün kâr', tlS(T.prof), [`${fmtTL(T.rev)} ciro · marj ${pct(T.rev ? T.prof / T.rev * 100 : null)}`, YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : ''].filter(Boolean), prof(T.prof), 'home-go', 'today-products')}
-        ${H.yday ? tot('Dün kâr', tlS(H.yday.profit), [`${fmtTL(H.yday.revenue)} ciro · marj ${pct(H.yday.margin)}`], prof(H.yday.profit), 'home-go', 'yesterday-products') : ''}
-        ${tot('Bu ay kâr', tlS(M.profit), [`${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`], prof(M.profit), 'home-go', 'month-products')}
-        ${H.last30 ? tot('Son 30 gün kâr', tlS(H.last30.profit), [`${fmtTL(H.last30.revenue)} ciro · marj ${pct(H.last30.margin)}`], prof(H.last30.profit), 'home-go', 'd30-products') : ''}
-        ${tot('Bekleyen sipariş', fmtN((nw.n || 0) + (nw.sh || 0)), [`Bugün ${fmtN(H.todayN ?? (T.n || 0))} sipariş`], 'color:var(--orange)', 'orders-new', '')}
-      </div>` + homeRecent();
+    const cmp = (a, b) => vs(a, b).replace('> ', '>').replace(' %', '%');
+    const box = (cls, v, s1, s2, vcol, act, aid) => `<div class="hk ${cls}" data-act="${act}" data-id="${aid || ''}"><div class="v" style="${vcol}">${v}</div><div class="s">${s1}</div>${s2 ? `<div class="s">${s2}</div>` : ''}</div>`;
+    const all = { today: { revenue: T.rev, profit: T.prof, margin: T.rev ? T.prof / T.rev * 100 : null, n: H.todayN ?? T.n }, ys: { profit: YS ? YS.prof : 0 }, yday: H.yday || {}, month: M, d30: H.last30 || {} };
+    const cell = (key, cls) => { const src = key === 'all' ? all : null, get = (per) => src ? (src[per] || {}) : cel(C[per], key), act = key === 'all' ? 'home-go' : 'home-go2', id = (per) => key === 'all' ? `${per}-products` : `${per}|${key}`;
+      const t = get('today'), y = get('ys'), yd = get('yday'), m = get('month'), d = get('d30'), pend = key === 'all' ? (nw.n || 0) + (nw.sh || 0) : key === 'trendyol' ? nw.n || 0 : nw.sh || 0;
+      return [box(cls, t0(t.profit), `${t0(t.revenue)} · ${mg(t.margin)}`, `Dün bu saat ${cmp(t.profit, y.profit) || t0(y.profit)}`, prof(t.profit), act, id('today')),
+        box(cls, t0(yd.profit), `${t0(yd.revenue)} ciro`, mg(yd.margin), prof(yd.profit), act, key === 'all' ? 'yesterday-products' : `yesterday|${key}`),
+        box(cls, t0(m.profit), `${t0(m.revenue)} ciro`, mg(m.margin), prof(m.profit), act, id('month')),
+        box(cls, t0(d.profit), `${t0(d.revenue)} ciro`, mg(d.margin), prof(d.profit), act, id('d30')),
+        box(cls, fmtN(pend), `Bugün ${fmtN(t.n || 0)} sipariş`, '', 'color:var(--orange)', 'orders-new', '')]; };
+    const A = cell('trendyol', 'hk-ty'), B = cell('shopify', 'hk-sh'), Z = cell('all', 'hk-all'), rows = ['Bugün kâr', 'Dün kâr', 'Bu ay kâr', 'Son 30 gün kâr', 'Bekleyen sipariş'];
+    h += `<div class="hk-grid"><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span><span class="hk-ch hk-all">Toplam</span>
+      ${rows.map((r, i) => `<div class="hk-row">${r}</div>${A[i]}${B[i]}${Z[i]}`).join('')}</div>` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
