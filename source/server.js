@@ -34,6 +34,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS out_lists(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, reason TEXT, note TEXT, markup REAL, disc REAL, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`,
   `CREATE TABLE IF NOT EXISTS guard(x INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS ty_set(id TEXT PRIMARY KEY, order_no TEXT, type TEXT, tx_ms INTEGER, due_ms INTEGER, net REAL, amt REAL, po TEXT, at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS ty_po(id TEXT PRIMARY KEY, day TEXT, amount REAL, descr TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS audit_pkg(pkg_id TEXT PRIMARY KEY, order_no TEXT, day TEXT, units INTEGER, revenue REAL, paid REAL, status TEXT, seen_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS audit_pkg_day ON audit_pkg(day)`,
   `CREATE TABLE IF NOT EXISTS order_fin(order_no TEXT PRIMARY KEY, revenue REAL, commission REAL, net REAL, cargo REAL, service REAL, updated_at TEXT)`,
@@ -89,6 +91,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN cost_date TEXT').run(); } catch (e) {} // maliyetin geldiği fiş tarihi // cari ödeme şekli (vade)
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN tx TEXT').run(); } catch (e) {} // Shopify ödeme işlem kimlikleri (PayTR eşleşmesi)
   try { await env.DB.prepare('ALTER TABLE paytr_tx ADD COLUMN paid_day TEXT').run(); } catch (e) {} // PayTR parayı hangi gün yatırdı
+  try { await env.DB.prepare('ALTER TABLE audit_pkg ADD COLUMN delivered TEXT').run(); } catch (e) {} // Trendyol paketinin teslim günü
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN planned TEXT').run(); } catch (e) {} // Sürat planlanan teslim tarihi
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN delivered TEXT').run(); } catch (e) {} // Shopify gönderisinin teslim günü
   try { await env.DB.prepare('ALTER TABLE bk_ship ADD COLUMN delivered TEXT').run(); } catch (e) {} // Basit Kargo teslim günü
@@ -396,6 +399,28 @@ function srPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z')
 function trOff(ms) { const x = new Date(ms), k = x.toISOString().slice(0, 10); return x.getUTCDay() === 0 || x.getUTCDay() === 6 || TR_HOLI.has(k) || TR_HOLI.has(k.slice(5)); }
 // PayTR: teslimden 7 gün geçtikten sonraki ilk iş günü (22.10 teslim → 30.10; 23.10 teslim → 31.10 cumartesi → 2.11)
 function ptPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 8 * 86400000; while (trOff(t)) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
+// Trendyol: teslimden 28 gün sonraki ilk salı ya da perşembe (tatilse sonraki salı/perşembe)
+function tyPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 28 * 86400000; for (let i = 0; i < 30; i++) { const w = new Date(t).getUTCDay(); if ((w === 2 || w === 4) && !trOff(t)) break; t += 86400000; } return new Date(t).toISOString().slice(0, 10); }
+// Trendyol cari ekstresi (satış/iade/indirim satırları, vade tarihi) ve hakediş ödemeleri rapor başlangıcından itibaren 14 günlük dilimlerle okunur
+async function tySettleSync(env, maxWin = 2) {
+  const sid = env.TRENDYOL_SELLER_ID; if (!sid) return null; const rs = (await reportStart(env)) || '2026-10-01', now = Date.now(), D = 86400000;
+  let cur = Number(await getSetting(env, 'ty_settle_cur')) || Date.parse(rs + 'T00:00:00+03:00') - 3 * D; let w = 0, n = 0, po = 0;
+  while (cur < now && w < maxWin) { const to = Math.min(cur + 14 * D, now); w++; const st = [];
+    for (const type of FIN_TYPES.split(',')) { for (let page = 0; page < 20; page++) {
+      const r = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionType: type, startDate: cur, endDate: to, page, size: 1000, supplierId: sid });
+      for (const x of (r.content || [])) { if (!x.orderNumber) continue; n++; const amt = (Number(x.credit) || 0) - (Number(x.debt) || 0);
+        st.push(env.DB.prepare('INSERT INTO ty_set(id, order_no, type, tx_ms, due_ms, net, amt, po, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET due_ms=excluded.due_ms, net=excluded.net, amt=excluded.amt, po=excluded.po, at=excluded.at')
+          .bind(String(x.id || [type, x.orderNumber, x.transactionDate, x.barcode, amt].join('|')), String(x.orderNumber), type, Number(x.transactionDate) || null, Number(x.paymentDate) || null, Number(x.sellerRevenue) || 0, amt, x.paymentOrderId ? String(x.paymentOrderId) : null, iso())); }
+      if (page + 1 >= (r.totalPages || 0)) break; } }
+    try { for (let page = 0; page < 10; page++) { const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'PaymentOrder', startDate: cur, endDate: to, page, size: 500, supplierId: sid });
+      for (const x of (r.content || [])) { po++; st.push(env.DB.prepare('INSERT INTO ty_po(id, day, amount, descr, at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET day=excluded.day, amount=excluded.amount, descr=excluded.descr, at=excluded.at')
+        .bind(String(x.id || x.paymentOrderId || [x.transactionDate, x.debt, x.credit].join('|')), trDay(Number(x.transactionDate) || now), r2(Math.abs((Number(x.debt) || 0) - (Number(x.credit) || 0))), String(x.description || x.transactionType || '').slice(0, 120), iso())); }
+      if (page + 1 >= (r.totalPages || 0)) break; } } catch (e) { await setSetting(env, 'ty_po_err', iso() + ' · ' + String(e.message || e).slice(0, 160)); }
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    cur = to >= now ? now - 15 * D : to + 1; if (to >= now) break; }
+  await env.DB.batch([setStmt(env, 'ty_settle_cur', String(cur)), setStmt(env, 'ty_settle_at', iso())]);
+  return { windows: w, rows: n, po };
+}
 function bkRow(o) {
   const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
   const no = String(o.orderNumber || c.code || o.foreignCode || o.code || '').replace(/\D/g, ''); // orderNumber = Shopify sipariş no (2002); content.code Shopify'ın iç kimliği
@@ -718,10 +743,13 @@ async function recordAuditPkgs(env, pkgs) {
       units += Number(l.quantity) || 0; const f = tyLineFin(l); if (f) { revenue += f.revenue; paid += f.paid; }
     }
     const day = p.orderDate ? trDay(Number(p.orderDate) - TY_ORDER_DATE_SHIFT) : null;
-    st.push(env.DB.prepare(`INSERT INTO audit_pkg(pkg_id,order_no,day,units,revenue,paid,status,seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
-      ON CONFLICT(pkg_id) DO UPDATE SET order_no=excluded.order_no, day=excluded.day, units=excluded.units, revenue=excluded.revenue, paid=excluded.paid, status=excluded.status, seen_at=excluded.seen_at
-      WHERE audit_pkg.order_no IS NOT excluded.order_no OR audit_pkg.day IS NOT excluded.day OR audit_pkg.units IS NOT excluded.units OR audit_pkg.revenue IS NOT excluded.revenue OR audit_pkg.paid IS NOT excluded.paid OR audit_pkg.status IS NOT excluded.status`)
-      .bind(String(p.shipmentPackageId || p.id), String(p.orderNumber), day, units, Math.round(revenue * 100) / 100, Math.round(paid * 100) / 100, status, now));
+    // Teslim günü: paket geçmişindeki Delivered satırı; yoksa durum Delivered iken son değişiklik saati
+    const dh = (p.packageHistories || []).filter(h => /^delivered$/i.test(String(h.status || ''))).map(h => Number(h.createdDate)).filter(x => x > 0).sort((a, b) => a - b)[0];
+    const deliv = dh ? trDay(dh - TY_ORDER_DATE_SHIFT) : /^delivered$/i.test(status) && Number(p.lastModifiedDate) > 0 ? trDay(Number(p.lastModifiedDate) - TY_ORDER_DATE_SHIFT) : null;
+    st.push(env.DB.prepare(`INSERT INTO audit_pkg(pkg_id,order_no,day,units,revenue,paid,status,seen_at,delivered) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+      ON CONFLICT(pkg_id) DO UPDATE SET order_no=excluded.order_no, day=excluded.day, units=excluded.units, revenue=excluded.revenue, paid=excluded.paid, status=excluded.status, seen_at=excluded.seen_at, delivered=COALESCE(audit_pkg.delivered, excluded.delivered)
+      WHERE audit_pkg.order_no IS NOT excluded.order_no OR audit_pkg.day IS NOT excluded.day OR audit_pkg.units IS NOT excluded.units OR audit_pkg.revenue IS NOT excluded.revenue OR audit_pkg.paid IS NOT excluded.paid OR audit_pkg.status IS NOT excluded.status OR (audit_pkg.delivered IS NULL AND excluded.delivered IS NOT NULL)`)
+      .bind(String(p.shipmentPackageId || p.id), String(p.orderNumber), day, units, Math.round(revenue * 100) / 100, Math.round(paid * 100) / 100, status, now, deliv));
   }
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
 }
@@ -1962,12 +1990,13 @@ const qLeft = (env) => env.__q ? Q_LIMIT - env.__q.n : Infinity;
 async function heavySteps(env, budget, result, step, left, t) {
   {
     // Ağır işler seyrek çalışır; veritabanını sürekli meşgul edip ekranları yavaşlatmasın
-    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at', 'run_sr_at']); const now = Date.now();
+    const due = await getSettings(env, ['run_prod_at', 'run_fin_at', 'run_bf_at', 'run_qna_at', 'run_sr_at', 'run_tys_at']); const now = Date.now();
     const lvl = (GUARD_CACHE && GUARD_CACHE.v && GUARD_CACHE.v.level) || 0, mult = lvl >= 2 ? 6 : lvl === 1 ? 3 : 1;
     const isDue = (k, ms) => now - (Number(due[k]) || 0) >= ms * mult;
     const ok = (need) => qLeft(env) > need;
     // Sıra önemli: seyrek ama kritik işler (kesintiler = gerçek kâr, ürün listesi) önce; sık ve küçük işler kalan sürede
     if (left() > 28000 && ok(350) && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
+    if (left() > 25000 && ok(300) && isDue('run_tys_at', 60 * 60000)) { await setSetting(env, 'run_tys_at', String(now)); await step('tysettle', () => tySettleSync(env, 2), 'ty_set_err'); }
     if (left() > 20000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
     if (left() > 15000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
     if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));
@@ -3214,6 +3243,34 @@ ${catalog}` });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   // ---------- Sürat Kargo ----------
+  if (path === '/api/tycari/sync') { try { return json({ ok: true, r: await tySettleSync(env, 3) }); } catch (e) { await setSetting(env, 'ty_set_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e), 502); } }
+  if (path === '/api/tycari/diag') { const sid = env.TRENDYOL_SELLER_ID, end = Date.now(), st = end - 14 * 86400000;
+    const a = await ty(env, `finance/che/sellers/${sid}/settlements`, { transactionType: 'Sale', startDate: st, endDate: end, page: 0, size: 2, supplierId: sid }).catch(e => ({ err: String(e.message) }));
+    const b = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'PaymentOrder', startDate: st, endDate: end, page: 0, size: 2, supplierId: sid }).catch(e => ({ err: String(e.message) }));
+    const c = await env.DB.prepare('SELECT COUNT(*) n, COUNT(due_ms) due, MIN(tx_ms) a, MAX(tx_ms) b FROM ty_set').first(), d = await env.DB.prepare('SELECT COUNT(*) n, SUM(amount) t FROM ty_po').first(), e = await env.DB.prepare(`SELECT COUNT(*) n, COUNT(delivered) d FROM audit_pkg WHERE status='Delivered'`).first();
+    const s0 = await getSettings(env, ['ty_settle_at', 'ty_settle_cur', 'ty_set_err', 'ty_po_err']);
+    return json({ ozet: { satirlar: c.n, vadeli: c.due, ilk: c.a ? trDay(c.a) : null, son: c.b ? trDay(c.b) : null, odemeEmri: d.n, odemeToplam: r2(d.t || 0), teslimPaket: e.n, teslimTarihli: e.d, sonOkuma: s0.ty_settle_at || '', hata: s0.ty_set_err || '', odemeHata: s0.ty_po_err || '' }, satis: a.err || (a.content || []).slice(0, 2).map(x => { const o = { ...x }; delete o.customerName; return o; }), odeme: b.err || (b.content || []).slice(0, 2) }); }
+  if (path === '/api/tycari/recon') {
+    // Trendyol mutabakatı: her siparişin neti (satıcı hakedişi), teslim günü, kurala göre vade (teslim + 28 gün sonraki ilk salı/perşembe), Trendyol'un yazdığı vade ve hakediş ödemeleri
+    const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs)), today = trToday();
+    const [oR, sR, aR, pR] = await env.DB.batch([env.DB.prepare(`SELECT id, order_no, date, lines FROM orders WHERE channel='trendyol' AND date >= ?1 ORDER BY date DESC`).bind(from),
+      env.DB.prepare(`SELECT order_no, type, tx_ms, due_ms, net FROM ty_set WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1)`).bind(from),
+      env.DB.prepare(`SELECT order_no, MIN(delivered) d, GROUP_CONCAT(DISTINCT status) st FROM audit_pkg WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1) GROUP BY order_no`).bind(from),
+      env.DB.prepare('SELECT day, SUM(amount) amount, COUNT(*) n FROM ty_po WHERE day >= ?1 GROUP BY day ORDER BY day').bind(rs)]);
+    const S = new Map(); for (const x of sR.results) { const g = S.get(x.order_no) || { net: 0, sale: null, due: null, ret: 0 }; g.net += x.net || 0; if (x.type === 'Sale') { if (x.tx_ms && (!g.sale || x.tx_ms < g.sale)) g.sale = x.tx_ms; if (x.due_ms && (!g.due || x.due_ms > g.due)) g.due = x.due_ms; } if (x.type === 'Return') g.ret += x.net || 0; S.set(x.order_no, g); }
+    const A = new Map(aR.results.map(x => [x.order_no, x])), PO = new Map(pR.results.map(x => [x.day, x])), out = [];
+    for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} if (!lines.some(l => l.status !== 'cancelled')) continue;
+      const g = S.get(r.order_no), a = A.get(r.order_no), deliv = (a && a.d) || (g && g.sale ? trDay(g.sale) : null), rule = tyPayDay(deliv), tyDue = g && g.due ? trDay(g.due) : null, day = tyDue || rule;
+      const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending';
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
+    const sch = new Map(); for (const x of out) if (x.day && x.net > 0) { const g = sch.get(x.day) || { day: x.day, net: 0, n: 0 }; g.net = r2(g.net + x.net); g.n++; sch.set(x.day, g); }
+    const schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const p = PO.get(g.day); return { ...g, paid: p ? r2(p.amount) : null, diff: p ? r2(p.amount - g.net) : null, future: g.day >= today }; });
+    for (const [d, p] of PO) if (!sch.has(d)) schedule.push({ day: d, net: 0, n: 0, paid: r2(p.amount), diff: r2(p.amount), future: false, extra: true }); schedule.sort((a, b) => a.day < b.day ? -1 : 1);
+    const sum = (f) => r2(out.filter(f).reduce((a, x) => a + (x.net || 0), 0)), cnt = (k) => out.filter(x => x.st === k).length;
+    return json({ ok: true, items: out, n: out.length, schedule, next: schedule.find(x => x.future && x.net > 0) || null,
+      tot: { pending: sum(x => x.st === 'pending'), late: sum(x => x.st === 'late'), paidNet: sum(x => x.st === 'paid'), poTotal: r2(pR.results.reduce((a, x) => a + (x.amount || 0), 0)), transit: cnt('transit') + cnt('nosale') },
+      counts: { pending: cnt('pending'), late: cnt('late'), paid: cnt('paid'), transit: cnt('transit'), nosale: cnt('nosale'), diffDay: out.filter(x => x.diffDay).length }, at: (await getSetting(env, 'ty_settle_at')) || '' });
+  }
   if (path === '/api/paytr/recon') {
     // PayTR mutabakatı: Shopify online siparişlerde beklenen tutar (ürün + 700 TL altı 100 TL kargo) ile PayTR'nin işlediği tutar, komisyonu, neti ve hesaba yattığı gün
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs));
