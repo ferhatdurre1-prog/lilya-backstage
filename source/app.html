@@ -1499,6 +1499,14 @@ function viewHome(){
     ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
     ${act('Stoğu azalan', low, 'home-stock', 'low')}
   </div></div>`;
+  // Kısayollar: sık kullanılan işlemler
+  const sc = (label, icon, a, id) => `<button class="act" data-act="${a}"${id ? ` data-id="${id}"` : ''}><span class="n" style="color:var(--accent)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span><span class="l">${label}</span></button>`;
+  h += `<div class="card"><h3 style="margin:0">Kısayollar</h3><div class="act-grid">
+    ${sc('Gelir / gider', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>', 'add-expense')}
+    ${sc('Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>', 'ws-open')}
+    ${sc('Adres düzeltme', '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', 'tab', 'addr')}
+    ${sc('Cariler', '<path d="M4 7h16M4 12h16M4 17h10"/>', 'tab', 'cari')}
+  </div></div>`;
   return h;
 }
 // Sipariş kârları: liste beklemeden açılır, kârlar ayrı istekle gelip yerine oturur (önceki değerler hemen gösterilir)
