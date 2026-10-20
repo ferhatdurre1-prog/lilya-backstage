@@ -121,6 +121,8 @@ body[data-tab="home"] .act .n{font-size:17px}
 .drawer button.di[aria-current="page"] svg{color:var(--accent)}
 .drawer .di .cnt{margin-left:auto;min-width:20px;padding:1px 6px;border-radius:10px;background:var(--warn-soft);color:var(--warn);font-size:12px;font-weight:600;text-align:center}
 .drawer .sep{height:1px;background:var(--line);margin:8px 0}
+.drawer .dg{font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);padding:12px 10px 2px}
+.drawer button.di{padding:10px 10px}
 @keyframes slidein{from{transform:translateX(-100%)}to{transform:none}}
 @keyframes fadein{from{opacity:0}to{opacity:1}}
 .chart7 svg{width:100%;height:auto;display:block}
@@ -161,7 +163,7 @@ body[data-tab="home"] .act .n{font-size:17px}
 .bnav{display:none}
 @media (max-width:720px){
   .tabs{display:none}
-  .bnav{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
+  .bnav{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
   .bnav button{border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11.5px;font-weight:600;color:var(--ink-3);padding:7px 0;cursor:pointer;position:relative;border-radius:16px}
   .bnav button svg{width:22px;height:22px}
   .bnav button[aria-current="page"]{color:var(--accent);background:var(--accent-soft)}
@@ -355,6 +357,7 @@ body[data-tab="home"] .act-grid .act .l{font-size:10px;line-height:1.2}body[data
 .ticker .ti{display:flex;align-items:baseline;gap:6px;padding:8px 14px;white-space:nowrap;font-size:13px;border-right:1px solid rgba(255,255,255,.12)}
 .ticker .ti span{color:rgba(255,255,255,.6);font-size:12px}
 .ticker .ti b{font-variant-numeric:tabular-nums;font-weight:700;color:#fff}
+.ticker .ti.bad b,.ticker .ti.bad span{color:#ffb4a8}
 .ticker .ti em{font-style:normal;font-size:11.5px;font-variant-numeric:tabular-nums}
 .wx{display:flex;align-items:center;gap:10px;margin:0 0 4px;font-size:13px;color:rgba(255,255,255,.72)}
 .wx .tx{flex:1;min-width:0;line-height:1.35}
@@ -397,7 +400,7 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
       <button class="btn" data-act="open-import" aria-label="Bağlantılar ve yedek"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7l1.7-1.7"/></svg><span class="hide-sm">Bağlantılar</span></button>
     </div>
   </header>
-  <div class="ticker" id="ticker" hidden aria-label="Piyasalar"></div>
+  <div class="ticker" id="ticker" hidden aria-label="Uyarılar"></div>
 </div></div>
 <div class="wrap">
   <nav class="tabs" id="tabs" aria-label="Bölümler"></nav>
@@ -433,10 +436,11 @@ const ICONS = {
   buy:'<path d="M3 4h2l2.4 11.2a1 1 0 001 .8h9.2a1 1 0 001-.8L20 8H6.2"/><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/>',
   addr:'<path d="M12 21s-7-6.2-7-11.5A7 7 0 0119 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   questions:'<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1.1-4.6A8 8 0 1121 12z"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.5-1.5 1-1.5 2"/><path d="M12 16.5h.01"/>',
+  cari:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
 const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
-const NAV_MAIN = ['stock','orders','profit']; // alt çubukta görünenler; diğerleri sol menüde
+const NAV_MAIN = ['stock','value','orders','profit']; // alt çubukta görünenler; diğerleri sol menüde
 const TAB_SHORT = {questions:'Soru', addr:'Adres', buy:'Sipariş ver', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
 
 /* ============ Durum ============ */
@@ -526,15 +530,37 @@ function tyState(){
 function renderSync(){
   const c = $('#conn'); if (!c) return;
   if (S.conn === 'err') { c.className = 'conn err'; c.querySelector('span').textContent = 'Bağlantı yok'; return; }
-  const st = tyState(); c.className = 'conn ' + st.cls; c.querySelector('span').textContent = st.text;
+  const st = tyState(); c.className = 'conn ' + st.cls; c.querySelector('span').textContent = st.text; renderAlerts();
   const live = $('#ty-live'); if (live && S.sheet && S.sheet.type === 'import') live.innerHTML = tyCardLive();
 }
 setInterval(() => { if (S.authed) renderSync(); }, 1000);
 /* Piyasa bandı: 5 dakikada bir */
 let mktAt = 0;
 async function loadMarket(){
-  if (!S.authed || document.visibilityState !== 'visible' || Date.now() - mktAt < 5 * 60000) return; mktAt = Date.now();
+  return; // piyasa bandı kaldırıldı: bantta uyarılar döner (renderAlerts)
   try { const d = await api('/api/market'); renderTicker(d.items || []); try { localStorage.setItem('lb_mkt', JSON.stringify(d.items || [])); } catch(e) {} } catch(e) { mktAt = Date.now() - 4 * 60000; }
+}
+// Uyarı bandı (borsa yerine): yalnız sayısı olan uyarılar; dokununca ilgili ekran
+let alertKey = '';
+function renderAlerts(){
+  const el = $('#ticker'); if (!el) return; if (!S.authed) { el.hidden = true; return; }
+  const ty = S.sync.trendyol || {}, nw = ty.newOrders || {}, q = ty.qnaWaiting || 0, r = retActionCount(), pend = (nw.n || 0) + (nw.sh || 0), old = nw.old || 0, sr = nw.srWait || 0;
+  const zero = S.products ? productsArr().filter(p => p.qty <= 0 && !p.mto).length : 0;
+  const A = [];
+  if (q) A.push(['questions', '', 'Bekleyen soru', fmtN(q)]);
+  if (r) A.push(['returns', '', 'İade talebi', fmtN(r)]);
+  if (pend) A.push(['orders-new', '', 'Kargolanacak sipariş', fmtN(pend) + (nw.sh ? ` (Trendyol ${fmtN(nw.n || 0)} · Shopify ${fmtN(nw.sh)})` : '')]);
+  if (old) A.push(['orders-new', 'bad', 'Geç kalıyor', `${fmtN(old)} sipariş 1 günden eski`]);
+  if (zero) A.push(['home-stock', '', 'Stoğu biten ürün', fmtN(zero)]);
+  if (sr) A.push(['tab', '', 'Sürat takip no bekleyen', fmtN(sr)]);
+  const key = JSON.stringify(A); if (key === alertKey && !el.hidden) return; alertKey = key;
+  const id = (a) => a[0] === 'home-stock' ? 'zero' : a[0] === 'tab' ? 'addr' : a[0] === 'questions' || a[0] === 'returns' ? a[0] : '';
+  const act = (a) => a[0] === 'questions' || a[0] === 'returns' ? 'tab' : a[0];
+  const one = (a) => `<div class="ti${a[1] === 'bad' ? ' bad' : ''}" data-act="${act(a)}" data-id="${id(a)}" role="button" tabindex="0" style="cursor:pointer"><span>${esc(a[2])}</span><b>${esc(a[3])}</b></div>`;
+  if (!A.length) { el.innerHTML = `<div class="rail" style="animation:none"><div class="ti"><b>✓ Bekleyen iş yok</b></div></div>`; el.hidden = false; return; }
+  const row = A.map(one).join('');
+  el.innerHTML = `<div class="rail" style="--dur:${Math.max(18, A.length * 7)}s"><div style="display:flex">${row}${row}</div><div class="dup" style="display:flex" aria-hidden="true">${row}${row}</div></div>`;
+  el.hidden = false;
 }
 function renderTicker(items){
   const el = $('#ticker'); if (!el) return;
@@ -718,14 +744,14 @@ function render(){
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
   const pending = retActionCount();
   const counts = {returns: pending};
-  const NAV = TABS.filter(([id]) => NAV_MAIN.includes(id));
+  const NAV = NAV_MAIN.map(id => TABS.find(t => t[0] === id)).filter(Boolean);
   // bilgisayarda bütün bölümler üst sekmede (telefonda alt çubukta 3 ana bölüm + sol menü)
   $('#tabs').innerHTML = TABS.filter(([id]) => id !== 'home').map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
   v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr, buy:viewBuy, cari:viewCari}[S.tab])();
-  enhanceTables(v); if (S.tab === 'cari') wkSync();
+  enhanceTables(v); if (S.tab === 'cari') wkSync(); renderAlerts();
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
   if (S.drawer) renderDrawer();
@@ -735,16 +761,16 @@ function render(){
 function renderDrawer(){
   const root = $('#drawer-root'); if (!S.drawer) { root.innerHTML = ''; return; }
   const pending = retActionCount();
+  const svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`, grp = (t) => `<div class="dg">${t}</div>`, btn = (act, label, p) => `<button class="di" data-act="${act}">${svg(p)}${label}</button>`;
   const item = (id, label, icon, cnt) => `<button class="di" data-act="dnav" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon||id]}</svg>${label}${cnt?`<span class="cnt">${cnt}</span>`:''}</button>`;
   root.innerHTML = `<div class="drawer-scrim" data-act="menu-close"></div><nav class="drawer" aria-label="Menü">
     <div class="dh"><div class="mark" aria-hidden="true">L</div><div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1 style="font-size:20px">Backstage</h1></div></div>
-    ${TABS.map(([id, label]) => item(id, label, id, id === 'returns' ? pending : id === 'questions' ? ((S.sync.trendyol || {}).qnaWaiting || 0) : 0)).join('')}
-    <div class="sep"></div>
-    <button class="di" data-act="dnav" data-id="__conn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg>Bağlantılar & yedek</button>
-    <button class="di" data-act="ws-open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>Kusurlu ürün düş</button>
-    <button class="di" data-act="add-expense"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/></svg>Gider / gelir ekle</button>
-    <button class="di" data-act="security"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Güvenlik & Face ID</button>
-    <button class="di" data-act="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.out}</svg>Çıkış</button>
+    ${item('home', 'Ana ekran')}
+    ${grp('Satış')}${item('orders', 'Siparişler')}${item('addr', 'Adres düzeltme')}${item('returns', 'İadeler', 'returns', pending)}${item('questions', 'Sorular', 'questions', (S.sync.trendyol || {}).qnaWaiting || 0)}
+    ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
+    ${grp('Para')}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
+    ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
+    ${grp('Ayarlar')}<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
   </nav>`;
 }
 /* ============ Shopify adres düzeltme ============ */
@@ -4433,7 +4459,7 @@ document.addEventListener('error', e => { const t = e.target; if (t && t.tagName
   if (ev === 'drop' && e.dataTransfer.files[0]) onImportFile(e.dataTransfer.files[0]);
 }));
 // Son görülen bant ve hava durumu açılışta hemen gösterilir
-try { if (S.authed) { const m = JSON.parse(localStorage.getItem('lb_mkt') || 'null'); if (m) renderTicker(m); const w = JSON.parse(localStorage.getItem('lb_wx') || 'null'); if (w) renderWeather(w, !!wxCoords()); } } catch(e) {}
+try { if (S.authed) { const w = JSON.parse(localStorage.getItem('lb_wx') || 'null'); if (w) renderWeather(w, !!wxCoords()); } } catch(e) {}
 render();
 startPolling();
 
