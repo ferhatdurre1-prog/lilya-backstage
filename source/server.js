@@ -3254,16 +3254,16 @@ ${catalog}` });
     // Trendyol mutabakatı: her siparişin neti (satıcı hakedişi), teslim günü, kurala göre vade (teslim + 28 gün sonraki ilk salı/perşembe), Trendyol'un yazdığı vade ve hakediş ödemeleri
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs)), today = trToday();
     const [oR, sR, aR, pR] = await env.DB.batch([env.DB.prepare(`SELECT id, order_no, date, lines FROM orders WHERE channel='trendyol' AND date >= ?1 ORDER BY date DESC`).bind(from),
-      env.DB.prepare(`SELECT order_no, type, tx_ms, due_ms, net FROM ty_set WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1)`).bind(from),
+      env.DB.prepare(`SELECT order_no, type, tx_ms, due_ms, net, po FROM ty_set WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1)`).bind(from),
       env.DB.prepare(`SELECT order_no, MIN(delivered) d, GROUP_CONCAT(DISTINCT status) st FROM audit_pkg WHERE order_no IN (SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1) GROUP BY order_no`).bind(from),
       env.DB.prepare('SELECT day, SUM(amount) amount, COUNT(*) n FROM ty_po WHERE day >= ?1 GROUP BY day ORDER BY day').bind(rs)]);
-    const S = new Map(); for (const x of sR.results) { const g = S.get(x.order_no) || { net: 0, sale: null, due: null, ret: 0 }; g.net += x.net || 0; if (x.type === 'Sale') { if (x.tx_ms && (!g.sale || x.tx_ms < g.sale)) g.sale = x.tx_ms; if (x.due_ms && (!g.due || x.due_ms > g.due)) g.due = x.due_ms; } if (x.type === 'Return') g.ret += x.net || 0; S.set(x.order_no, g); }
+    const S = new Map(); for (const x of sR.results) { const g = S.get(x.order_no) || { net: 0, sale: null, due: null, ret: 0, po: null }; g.net += x.net || 0; if (x.po) g.po = x.po; if (x.type === 'Sale') { if (x.tx_ms && (!g.sale || x.tx_ms < g.sale)) g.sale = x.tx_ms; if (x.due_ms && (!g.due || x.due_ms > g.due)) g.due = x.due_ms; } if (x.type === 'Return') g.ret += x.net || 0; S.set(x.order_no, g); }
     const A = new Map(aR.results.map(x => [x.order_no, x])), PO = new Map(pR.results.map(x => [x.day, x])), out = [];
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} if (!lines.some(l => l.status !== 'cancelled')) continue;
-      const g = S.get(r.order_no), a = A.get(r.order_no), deliv = (a && a.d) || (g && g.sale ? trDay(g.sale) : null), rule = tyPayDay(deliv), tyDue = g && g.due ? trDay(g.due) : null, day = tyDue || rule;
-      const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending';
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
-    const sch = new Map(); for (const x of out) if (x.day && x.net > 0) { const g = sch.get(x.day) || { day: x.day, net: 0, n: 0 }; g.net = r2(g.net + x.net); g.n++; sch.set(x.day, g); }
+      const g = S.get(r.order_no), a = A.get(r.order_no), deliv = (a && a.d) || (g && g.sale ? trDay(g.sale) : null), rule = tyPayDay(deliv), tyDue = g && g.due ? trDay(g.due) : null, day = rule || tyDue; // kural (teslim + 28 gün → ilk salı/perşembe) esas; Trendyol vadesi yalnızca bilgi
+      const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : g.po ? 'paid' : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending'; // ekstre satırında ödeme emri no varsa ödenmiştir
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, po: g ? g.po : null, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
+    const sch = new Map(); for (const x of out) if (x.day && x.net > 0 && x.st !== 'transit') { const g = sch.get(x.day) || { day: x.day, net: 0, n: 0 }; g.net = r2(g.net + x.net); g.n++; sch.set(x.day, g); }
     const schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const p = PO.get(g.day); return { ...g, paid: p ? r2(p.amount) : null, diff: p ? r2(p.amount - g.net) : null, future: g.day >= today }; });
     for (const [d, p] of PO) if (!sch.has(d)) schedule.push({ day: d, net: 0, n: 0, paid: r2(p.amount), diff: r2(p.amount), future: false, extra: true }); schedule.sort((a, b) => a.day < b.day ? -1 : 1);
     const sum = (f) => r2(out.filter(f).reduce((a, x) => a + (x.net || 0), 0)), cnt = (k) => out.filter(x => x.st === k).length;
