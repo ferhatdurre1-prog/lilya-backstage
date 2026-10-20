@@ -286,7 +286,7 @@ async function bkCall(env, method, path, body) {
 }
 function bkRow(o) {
   const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
-  const no = String(c.code || o.orderNumber || o.foreignCode || o.code || '').replace(/\D/g, '');
+  const no = String(o.orderNumber || c.code || o.foreignCode || o.code || '').replace(/\D/g, ''); // orderNumber = Shopify sipariş no (2002); content.code Shopify'ın iç kimliği
   const tc = N(pi.totalCost), fee = tc !== null ? tc + (N(pi.extraFee) || 0) : N(pi.shipmentFee) !== null ? (N(pi.shipmentFee) || 0) + (N(pi.extraFee) || 0) + (N(pi.returnFee) || 0) + (N(pi.extraServicesFee) || 0) : null;
   const cod = ci.collectOnDelivery || ci.collect || /COD|DOOR|KAPI/i.test(String(o.orderPaymentType || '')) ? 1 : 0;
   return { no, id: String(o.id || ''), created: String(o.createdTime || o.createdDate || '').slice(0, 10), handler: (sh.handler && (sh.handler.name || sh.handler.code)) || '', hcode: (sh.handler && sh.handler.code) || '', status: String(o.status || ''),
@@ -309,7 +309,9 @@ async function bkSync(env) {
   const st = uniq.map(x => env.DB.prepare(`INSERT INTO bk_ship(no, bk_id, created, handler, status, fee, cod, cod_type, cod_amount, cod_fee, cod_status, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
     ON CONFLICT(no) DO UPDATE SET bk_id=excluded.bk_id, created=excluded.created, handler=excluded.handler, status=excluded.status, fee=excluded.fee, cod=excluded.cod, cod_type=excluded.cod_type, cod_amount=excluded.cod_amount, cod_fee=COALESCE(excluded.cod_fee, bk_ship.cod_fee), cod_status=excluded.cod_status, at=excluded.at`)
     .bind(x.no, x.id, x.created, x.handler, x.status, x.fee, x.cod, x.codType, x.codAmount, x.codFee, x.codStatus, iso()));
-  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  const runAt = iso(); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90).map(x => x));
+  // Tam okuma bittiyse bu turda görülmeyen eski kayıtlar (ör. yanlış numarayla kaydedilenler) silinir
+  if (page >= pages && uniq.length) await env.DB.prepare('DELETE FROM bk_ship WHERE at < ?1').bind(new Date(T0).toISOString()).run();
   // Kapıda ödeme bedeli siparişte yazmıyorsa, gönderen kargo firmasının ücret listesinden alınır
   const hc = new Map(uniq.map(x => [x.no, x.hcode]));
   const need = (await env.DB.prepare('SELECT no, bk_id, handler FROM bk_ship WHERE cod=1 AND cod_fee IS NULL LIMIT 120').all()).results; let filled = 0;
