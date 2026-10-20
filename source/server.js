@@ -89,6 +89,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN cost_date TEXT').run(); } catch (e) {} // maliyetin geldiği fiş tarihi // cari ödeme şekli (vade)
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN tx TEXT').run(); } catch (e) {} // Shopify ödeme işlem kimlikleri (PayTR eşleşmesi)
   try { await env.DB.prepare('ALTER TABLE paytr_tx ADD COLUMN paid_day TEXT').run(); } catch (e) {} // PayTR parayı hangi gün yatırdı
+  try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN planned TEXT').run(); } catch (e) {} // Sürat planlanan teslim tarihi
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN delivered TEXT').run(); } catch (e) {} // Shopify gönderisinin teslim günü
   try { await env.DB.prepare('ALTER TABLE bk_ship ADD COLUMN delivered TEXT').run(); } catch (e) {} // Basit Kargo teslim günü
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -1020,7 +1021,7 @@ const srPick = (r) => { const E = Object.entries(r).map(([k, v]) => [srNorm(k), 
   const num = (t) => { if (!t) return null; const n = Number(/,\d{1,2}$/.test(t) ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '')); return Number.isFinite(n) ? n : null; };
   const iade = get(/^IADEDURUM$/), tes = get(/^TESLIMATDURUM$/), yer = get(/^BULUNDUGUYER$/);
   const undelivered = /^(EVET|E|1|TRUE)$/i.test(srNorm(iade)) || /IADE|TESLIMEDILEMEDI|GERIDON/.test(srNorm(tes + ' ' + yer));
-  return { cost: num(get(/^TUTAR$/)), desi: num(get(/^TOPLAMDESI$/)), cod: num(get(/^KAPIDANTAHSILATTUTARI$/)) || 0, undelivered, durum: (tes || yer || '').slice(0, 80), teslim: get(/^TESLIMTARIHI$/).slice(0, 30) }; };
+  return { cost: num(get(/^TUTAR$/)), desi: num(get(/^TOPLAMDESI$/)), cod: num(get(/^KAPIDANTAHSILATTUTARI$/)) || 0, undelivered, durum: (tes || yer || '').slice(0, 80), teslim: get(/^TESLIMTARIHI$/).slice(0, 30), planned: get(/^PLANLANANTESLIMTARIHI$/).slice(0, 30) }; };
 const srRowState = (r) => { for (const [k, v] of Object.entries(r)) if (/durum|islem|hareket/i.test(k) && v) return String(v).slice(0, 120); return ''; };
 // Shopify'da siparişi "kargolandı" yapar ve takip numarasını müşteriye bildirir
 // Gerekli yetkiler: read_merchant_managed_fulfillment_orders, write_merchant_managed_fulfillment_orders
@@ -3300,7 +3301,7 @@ ${catalog}` });
   if (path === '/api/srcari/recon') {
     // Sipariş bazında Sürat mutabakatı (17.10.2026 10:00 sonrası Shopify): bizim beklediğimiz (tahsilat − ücret) ile Sürat raporundaki (tahsilat − ücret)
     const rs = await reportStart(env), from = iso(Math.max(Date.parse(SURAT_DIRECT_FROM), /^\d{4}-\d{2}-\d{2}$/.test(rs || '') ? dayStartTR(rs) : 0));
-    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday
+    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, c.planned, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday
       FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN sr_rows s ON s.takip = c.tracking
       WHERE o.channel='shopify' AND o.date >= ?1 ORDER BY o.date DESC LIMIT 2000`).bind(from), env.DB.prepare('SELECT key, desi FROM products')]);
     const fee = await loadFees(env), dz = new Map(pR.results.map(x => [x.key, Number(x.desi) || null])), out = [];
@@ -3311,8 +3312,8 @@ ${catalog}` });
       const und = !!r.undelivered, base = r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, r.date)), codFee = cod && !und ? suratDirectCod(total) : 0;
       const eColl = cod && !und ? total : 0, eFee = r2(und ? base * 1.5 : base + codFee), eNet = r2(eColl - eFee);
       const has = r.sfee !== null && r.sfee !== undefined, sColl = has ? r2(r.scod || 0) : null, sFee = has ? r2(r.sfee || 0) : null, sNet = has ? r2(sColl - sFee) : null;
-      const diff = has ? r2(sNet - eNet) : null, deliv = dlvDay(r.teslim), payDay = cod && !und && deliv ? srPayDay(deliv) : null;
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi, miss, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, durum: r.sdurum || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
+      const diff = has ? r2(sNet - eNet) : null, deliv = dlvDay(r.teslim), payDay = cod && !und && deliv ? srPayDay(deliv) : null, planned = dlvDay(r.planned), estPay = cod && !und && !deliv && planned ? srPayDay(planned) : null;
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi, miss, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, planned, estPay, durum: r.sdurum || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
     }
     const sum = (f, k) => r2(out.filter(f).reduce((a, x) => a + (x[k] || 0), 0)), m = (x) => x.st !== 'nodata';
     return json({ ok: true, items: out, n: out.length, matched: out.filter(m).length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
@@ -3415,7 +3416,7 @@ ${catalog}` });
     const out = [], miss = [], fixed = []; let already = 0;
     const costSt = [];
     for (const r of results) { const m = srMatch(rows, r), tn = m && srRowTrack(m);
-      if (m) { const g = srPick(m); if (g.cost !== null || g.undelivered) costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(no) DO UPDATE SET tracking=excluded.tracking, cost=COALESCE(excluded.cost, sr_cost.cost), desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=excluded.cod_amount, undelivered=excluded.undelivered, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn || null, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso())); }
+      if (m) { const g = srPick(m); if (g.cost !== null || g.undelivered) costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, planned) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(no) DO UPDATE SET planned=excluded.planned, tracking=excluded.tracking, cost=COALESCE(excluded.cost, sr_cost.cost), desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=excluded.cod_amount, undelivered=excluded.undelivered, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn || null, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso(), g.planned || null)); }
       if (!tn) { if (!r.fulfilled_at) miss.push(r.order_no); continue; }
       if (r.fulfilled_at) { // zaten kargolandı: numara farklıysa (eski hatalı okuma) düzelt
         if (r.tracking === tn) { already++; continue; }
