@@ -3756,7 +3756,7 @@ document.addEventListener('change', async e => { const t = e.target; if (!t || t
       if (ci.name < 0 || (ci.amt < 0 && ci.debt < 0 && ci.cred < 0)) continue;
       const rows = aoa.slice(hi + 1).map(r => { const name = String(r[ci.name] ?? '').trim(); if (!name || /^(toplam|genel ?toplam|total)/i.test(name)) return null;
         let a = ci.amt >= 0 ? num(r[ci.amt]) : 0; if (ci.amt < 0 || (!a && (ci.debt >= 0 || ci.cred >= 0))) a = (ci.debt >= 0 ? num(r[ci.debt]) : 0) - (ci.cred >= 0 ? num(r[ci.cred]) : 0);
-        return { supplier: name, amount: Math.round(a * 100) / 100, kind: 'open', date: ci.date >= 0 ? day(r[ci.date]) : '', note: ci.note >= 0 ? String(r[ci.note] ?? '').trim().slice(0, 150) : 'Excel devir' }; }).filter(Boolean);
+        return { supplier: name, amount: Math.round(a * 100) / 100, kind: 'open', date: ci.date >= 0 ? day(r[ci.date]) : '', note: ci.note >= 0 ? String(r[ci.note] ?? '').trim().slice(0, 150) : 'Excel devir' }; }).filter(x => x && Math.abs(x.amount) >= 0.01 && x.supplier.length <= 80); // tutarsız / açıklama satırları alınmaz
       if (rows.length && (!best || rows.length > best.rows.length)) best = { rows, cols: Object.fromEntries(Object.entries(ci).map(([k, i]) => [k, i >= 0 ? String(aoa[hi][i]) : ''])) }; }
     if (!best) throw new Error('Dosyada firma adı ve tutar (bakiye / borç / alacak) sütunu bulunamadı. Başlık satırında "Firma" ve "Bakiye" gibi sütun adları olmalı.');
     C.imp = { file: file.name, ...best };
