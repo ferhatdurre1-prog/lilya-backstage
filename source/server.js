@@ -2998,6 +2998,14 @@ ${catalog}` });
   if (path === '/api/bk/sync') {
     try { const r = await bkSync(env); return json({ ok: true, ...r }); } catch (e) { await setSetting(env, 'bk_sync_msg', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad('Basit Kargo: ' + e.message, 502); }
   }
+  if (path === '/api/bk/order') {
+    // Teşhis: bir Shopify siparişinin Basit Kargo'daki bütün gönderileri ve ücret dökümü (kişisel bilgi yok)
+    const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş no yaz.');
+    const L = await bkCall(env, 'POST', '/v2/order/filter', { keyword: no, page: 0, size: 20 });
+    const arr = (Array.isArray(L.list) ? L.list : []).filter(o => String(o.orderNumber || '').replace(/\D/g, '') === no);
+    const row = await env.DB.prepare('SELECT * FROM bk_ship WHERE no=?1').bind(no).first();
+    return json({ ok: true, saved: row, shipments: arr.map(o => ({ id: o.id, type: o.type, status: o.status, created: o.createdTime, handler: o.shipmentInfo && o.shipmentInfo.handler && o.shipmentInfo.handler.name, priceInfo: o.priceInfo, codInfo: o.codInfo ? { ...o.codInfo, amount: o.codInfo.amount } : null, orderTotal: o.orderTotal, desi: o.content && o.content.totalDesiKg })) });
+  }
   if (path === '/api/bk/sample') {
     // Teşhis: alan adlarını görmek için ilk 2 gönderinin kişisel bilgileri çıkarılmış yapısı
     const L = await bkCall(env, 'POST', '/v2/order/filter', { page: 0, size: 2, endDate: bkTime(BK_CUTOFF_MS) });
