@@ -902,8 +902,8 @@ function suratBlock(o, e, issues){
 const codTxt = (t, a) => t ? `Kapıda ödeme · ${t === 2 ? 'kart' : 'nakit'} · ${tl2(a)}` : '';
 function suratForm(o, again){
   const A = aS(), g = esc(o.gid), busy = A.busy['sr' + o.gid], sr = S.surat || {}, cd = o.cod || {tip: 0, amt: 0};
-  return `<div class="srf"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end"><label class="f" style="width:130px">Kapıda ödeme<select class="input" id="sr-ct">${[[0, 'Yok'], [1, 'Nakit'], [2, 'Kart (POS)']].map(([v, t]) => `<option value="${v}"${v === cd.tip ? ' selected' : ''}>${t}</option>`).join('')}</select></label><label class="f" style="width:110px">Tahsil tutarı<input class="input num" id="sr-cod" inputmode="decimal" value="${esc(String(cd.amt || o.total || '').replace('.', ','))}"></label></div>
-    ${cd.tip ? `<div class="small" style="color:var(--orange);font-weight:600">Shopify: ${esc(cd.gw || 'kapıda ödeme')} → Sürat müşteriden ${tl2(cd.amt)} tahsil edecek</div>` : `<div class="small muted">Shopify ödeme: ${esc(cd.gw || '—')} (online ödenmiş, kapıda tahsilat yok)</div>`}
+  return `<div class="srf"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end"><label class="f" style="width:130px">Kapıda ödeme<select class="input" id="sr-ct">${[[0, 'Yok'], [1, 'Nakit'], [2, 'Kart (POS)']].map(([v, t]) => `<option value="${v}"${v === cd.tip ? ' selected' : ''}>${t}</option>`).join('')}</select></label><label class="f" id="sr-codw" style="width:110px;${cd.tip ? '' : 'display:none'}">Tahsil tutarı<input class="input num" id="sr-cod" inputmode="decimal" value="${esc(String(cd.amt || o.total || '').replace('.', ','))}"></label></div>
+    ${cd.tip ? `<div class="small" style="color:var(--orange);font-weight:600">Shopify: ${esc(cd.gw || 'kapıda ödeme')} → Sürat müşteriden ${tl2(cd.amt)} tahsil edecek</div>` : `<div class="small muted">Shopify ödeme: ${esc(cd.gw || '—')} (online ödenmiş, kapıda tahsilat yok) · otomatik seçildi</div>`}
     <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end"><label class="f" style="width:90px">Koli adedi<input class="input num" id="sr-adet" inputmode="numeric" value="1"></label><label class="f" style="width:90px">Desi<input class="input num" id="sr-d" inputmode="decimal" value="${esc(String(sr.desi || 2).replace('.', ','))}"></label>
     <button class="btn primary" data-act="sr-ship" data-id="${g}" ${again ? 'data-again="1"' : ''} ${busy ? 'disabled' : ''}>${busy ? "Sürat'a gönderiliyor…" : again ? 'Yeni barkod oluştur ve yazdır' : 'Oluştur ve etiketi yazdır'}</button><button class="btn ghost" data-act="sr-close" ${busy ? 'disabled' : ''}>Vazgeç</button></div>
     <p class="small muted" style="margin:0">${again ? "Eski barkod Sürat'ta kayıtlı kalır; şubeye yalnız yeni etiketli paketi ver." : "Etiket PDF'i açılır (100×200 mm)."}</p></div>`;
@@ -4389,6 +4389,7 @@ document.addEventListener('change', e => {
   if (t.id === 'pur-in' && t.files && t.files.length) { purRead(t.files); t.value = ''; }
   if (t.id === 'so-disc' && S.sheet) { S.sheet.disc = Math.min(95, Math.max(0, Number(t.value) || 0)); soList(); }
   if (t.id === 'so-mk') { soMarkup(Math.min(1000, Math.max(0, Number(t.value) || 0))); soList(); }
+  if (t.id === 'sr-ct') { const w = $('#sr-codw'); if (w) w.style.display = t.value === '0' ? 'none' : ''; }
   if (t.id === 'so-pdf' && S.sheet) { S.sheet.pdf = t.checked; scanFocus(); }
   if (t.dataset && t.dataset.cost) saveCost(t);
   if (t.id === 'imp-file') onImportFile(t.files[0]);
