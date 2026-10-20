@@ -388,6 +388,10 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 .srf{display:grid;gap:6px;background:var(--surface-2);border-radius:12px;padding:10px}
 .afb{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.afb .btn{white-space:normal;min-width:0;padding-inline:8px}
 @media (max-width:560px){.afr,.afr.open{grid-template-columns:minmax(0,1fr) auto}.afr .afk{grid-column:1/-1}.afr.open .afe{grid-column:1/-1}}
+/* Bekleyen iade / soru: kibar açık kırmızı nefes alma ikazı */
+@keyframes actblink{0%,100%{background:var(--surface-2);box-shadow:0 0 0 0 rgba(239,68,68,0)}50%{background:rgba(255,120,120,.22);box-shadow:0 0 0 2px rgba(239,68,68,.45)}}
+.act.blink{animation:actblink 2s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.act.blink{animation:none;background:rgba(255,120,120,.18);box-shadow:0 0 0 2px rgba(239,68,68,.35)}}
 /* ===== Bilgisayar (≥1000px): tam genişlik; ana ekran kaydırmadan tek ekrana sığar ===== */
 @media (min-width:1000px){
 .wrap{max-width:none;padding-inline:24px}
@@ -1589,12 +1593,12 @@ function viewHome(){
   const st = tyState();
   if (!S.loaded.products) return h + `<div class="card"><h3>Aksiyonlar</h3><div class="act-grid">${'<div class="skel" style="height:66px;border-radius:12px"></div>'.repeat(4)}</div></div>`;
   const chev = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
-  const act = (label, n, act, id, hot) => `<button class="act${n ? (hot ? ' hot' : '') : ' zero'}" data-act="${act}"${id ? ` data-id="${id}"` : ''}><span class="l">${label}</span><span class="n">${fmtN(n)} Adet${n ? chev : ''}</span></button>`;
+  const act = (label, n, act, id, hot, blink) => `<button class="act${n ? (hot ? ' hot' : '') + (blink ? ' blink' : '') : ' zero'}"${n && blink ? ` style="animation-delay:-${Date.now() % 2000}ms"` : ''} data-act="${act}"${id ? ` data-id="${id}"` : ''}><span class="l">${label}</span><span class="n">${fmtN(n)} Adet${n ? chev : ''}</span></button>`;
   let conn = '';
   if (st.cls === 'err' || st.cls === 'warn') conn = `<button class="alert-row" data-act="open-import" style="margin-top:4px"><div class="ic" style="background:var(--bad-soft);color:var(--bad)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg></div><div class="tx"><b>${esc(st.text)}</b><span>${esc(st.err || 'Bağlantıyı kontrol et')}</span></div></button>`;
   h += `<div class="card h-act"><h3 style="margin:0">Aksiyonlar</h3>${conn}<div class="act-grid">
-    ${act('Aksiyon bekleyen iade', pendN, 'ret-tab', 'action')}
-    ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true)}
+    ${act('Aksiyon bekleyen iade', pendN, 'ret-tab', 'action', false, true)}
+    ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true, true)}
     ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
     ${act('Stoğu azalan', low, 'home-stock', 'low')}
   </div></div>`;
