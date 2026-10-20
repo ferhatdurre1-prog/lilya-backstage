@@ -2983,7 +2983,9 @@ ${catalog}` });
   // ---------- Sürat Kargo ----------
   if (path === '/api/bk/status') {
     const s0 = await getSettings(env, ['bk_token', 'bk_sync_at', 'bk_sync_msg']), c = await env.DB.prepare('SELECT COUNT(*) n, SUM(fee IS NOT NULL) f, SUM(cod) c, SUM(cod=1 AND cod_fee IS NULL) cp, MIN(created) a, MAX(created) b FROM bk_ship').first();
-    return json({ connected: !!(env.BASIT_KARGO_TOKEN || s0.bk_token), syncAt: s0.bk_sync_at || '', msg: s0.bk_sync_msg || '', n: c.n || 0, withFee: c.f || 0, cod: c.c || 0, codPending: c.cp || 0, from: c.a || '', to: c.b || '', cutoff: BK_CUTOFF });
+    const mt = await env.DB.prepare(`SELECT COUNT(*) n FROM bk_ship b WHERE EXISTS(SELECT 1 FROM orders o WHERE o.channel='shopify' AND replace(o.order_no,'#','')=b.no)`).first();
+    const smp = (await env.DB.prepare('SELECT no FROM bk_ship ORDER BY created DESC LIMIT 4').all()).results.map(x => x.no), so = (await env.DB.prepare(`SELECT order_no FROM orders WHERE channel='shopify' AND date < ?1 ORDER BY date DESC LIMIT 4`).bind('2026-10-17T07:00:00Z').all()).results.map(x => x.order_no);
+    return json({ matched: mt ? mt.n : 0, sampleBk: smp, sampleSh: so, connected: !!(env.BASIT_KARGO_TOKEN || s0.bk_token), syncAt: s0.bk_sync_at || '', msg: s0.bk_sync_msg || '', n: c.n || 0, withFee: c.f || 0, cod: c.c || 0, codPending: c.cp || 0, from: c.a || '', to: c.b || '', cutoff: BK_CUTOFF });
   }
   if (path === '/api/bk/connect') {
     const t = String(body.token || '').trim(); if (t.length < 10) return bad('API anahtarını (token) yapıştır.');
