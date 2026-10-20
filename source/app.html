@@ -479,7 +479,7 @@ function startPolling(){
   if (pollTimer) return;
   // Maliyet koruması: tasarruf modunda uygulama da daha seyrek sorar
   let lastPoll = 0;
-  pollTimer = setInterval(() => { const lv = (S.usage && S.usage.level) || 0, every = lv >= 2 ? 120000 : lv === 1 ? 90000 : 60000; if (document.visibilityState === 'visible' && S.authed && Date.now() - lastPoll >= every - 500) { lastPoll = Date.now(); refresh(false); } }, 10000);
+  pollTimer = setInterval(() => { const lv = (S.usage && S.usage.level) || 0, every = lv >= 2 ? 60000 : lv === 1 ? 30000 : 10000; if (document.visibilityState === 'visible' && S.authed && Date.now() - lastPoll >= every - 500) { lastPoll = Date.now(); refresh(false); } }, 10000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.authed) refresh(false); });
 }
 function allMoves(){ return S.moves; }
