@@ -308,6 +308,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 body[data-tab="home"] .act-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 body[data-tab="home"] .act-grid .act{padding:6px 3px}body[data-tab="home"] .act-grid .act .l{font-size:10px;line-height:1.2}body[data-tab="home"] .act-grid .act .n{font-size:14px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0} /* uzun tek satırlık metin kartı ekrandan taşırmasın */
+.card>*{min-width:0;max-width:100%}
 .seg{display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
 .seg button{border:0;background:none;border-radius:8px;padding:8px 6px;cursor:pointer;color:var(--ink-2);font-weight:500;font-size:14px}
 .seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.1)}
@@ -1291,7 +1292,7 @@ function viewQuestions(){
   const items = D.items || [];
   if (!items.length) return h + `<div class="panel empty"><h4>${Q.tab === 'waiting' ? 'Cevap bekleyen soru yok' : 'Henüz cevaplanan soru yok'}</h4><p>${Q.tab === 'waiting' ? 'Yeni soru gelince burada görünür ve ana ekranda bildirilir.' : 'Buradan gönderdiğin cevaplar burada listelenir.'}</p></div>`;
   for (const q of items) {
-    const head = `<div style="display:flex;gap:12px;align-items:flex-start">${q.image ? `<div class="thumb"><img alt="" loading="lazy" referrerpolicy="no-referrer" src="${esc(q.image)}"></div>` : ''}<div style="min-width:0;flex:1"><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.product_name || '')}</div><div class="small muted">${esc(qAgo(q.created_at))}${q.web_url ? ` · <a href="${esc(q.web_url)}" target="_blank" rel="noopener">Ürün sayfası</a>` : ''}</div></div></div>
+    const head = `<div style="display:flex;gap:12px;align-items:flex-start;min-width:0;overflow:hidden">${q.image ? `<div class="thumb"><img alt="" loading="lazy" referrerpolicy="no-referrer" src="${esc(q.image)}"></div>` : ''}<div style="min-width:0;flex:1"><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.product_name || '')}</div><div class="small muted">${esc(qAgo(q.created_at))}${q.web_url ? ` · <a href="${esc(q.web_url)}" target="_blank" rel="noopener">Ürün sayfası</a>` : ''}</div></div></div>
       <div style="background:var(--surface-2);border-radius:12px;padding:12px 14px;font-size:15px;line-height:1.45"><b>Soru:</b> ${esc(q.text)}</div>`;
     if (Q.tab === 'answered') { h += `<div class="card" style="gap:10px">${head}<div style="border-left:3px solid var(--good);padding:2px 0 2px 12px;font-size:14.5px">${q.answer ? esc(q.answer) : '<span class="muted">Trendyol panelinden cevaplandı.</span>'}</div><div class="small muted">${q.answered_at ? 'Cevap: ' + esc(fmtDate(q.answered_at)) : ''}</div></div>`; continue; }
     const val = Q.drafts[q.id] !== undefined ? Q.drafts[q.id] : (q.draft || '');
