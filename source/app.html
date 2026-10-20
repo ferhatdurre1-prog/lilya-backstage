@@ -984,7 +984,11 @@ function loadCariDet(sup){ const C = cS(); C.detLoading = true; C.det = null;
   api('/api/cari/get', {supplier: sup}).then(d => { if (C.open === sup) { C.det = d; C.detLoading = false; if (S.tab === 'cari') render(); } }).catch(e => { C.detLoading = false; toast(errText(e), true); }); }
 function termsText(t){ if (!t) return 'Peşin'; return t.kind === 'days' ? `${t.n} ${t.unit} vade` : t.kind === 'split' ? `${t.parts} taksit · ${t.every} günde bir${t.first !== t.every ? ` · ilki ${t.first}. gün` : ''}` : t.kind === 'pct' ? `Her ${WDAYS[t.wday]} kalan borcun %${t.pct}'${t.pct === 25 ? 'i (dörtte biri)' : 'i'}` : 'Peşin (vade yok)'; }
 const ST = {late: ['Gecikmiş', 'p-bad'], today: ['Bugün', 'p-warn'], week: ['Bu hafta', 'p-brass'], later: ['İleride', 'p-mute'], paid: ['Ödendi', 'p-good']};
-function cariDueAlert(){ const C = S.cari, D = C && C.data; if (!D || !D.list) return null; const late = D.list.reduce((t, x) => t + (x.overdue || 0), 0), today = D.list.reduce((t, x) => t + (x.dueToday || 0), 0); return late + today > 0.004 ? {late, today, n: D.list.filter(x => x.overdue + x.dueToday > 0.004).length} : null; }
+function cariDueAlert(){ const C = S.cari, D = C && C.data; if (!D || !D.list) return null; const fx = (x) => x.cur && x.cur !== 'TL';
+  // TL karşılığıyla toplanır (döviz cariler güncel kurla); döviz tutarları ayrıca yazılır
+  const late = D.list.reduce((t, x) => t + (fx(x) ? x.overdueTL || 0 : x.overdue || 0), 0), today = D.list.reduce((t, x) => t + (fx(x) ? x.dueTodayTL || 0 : x.dueToday || 0), 0);
+  const fxTxt = D.list.filter(x => fx(x) && x.overdue + x.dueToday > 0.004).map(x => `${x.supplier} ${curAmt(x.overdue + x.dueToday, x.cur)}`).join(', ');
+  return D.list.some(x => x.overdue + x.dueToday > 0.004) ? {late, today, fxTxt, n: D.list.filter(x => x.overdue + x.dueToday > 0.004).length} : null; }
 function viewCari(){
   const C = cS(); loadCari(); const D = C.data;
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Cariler</h2><p class="lead small">Tedarikçi hesapları. Alış listelerinde <b>Cariye işle</b> dediğin faturalar borç, buradan girdiğin ödemeler alacak olarak yazılır. Her firmaya çalışma şeklini (vade) girersen ödeme günleri burada uyarılır.</p></div>`;
@@ -1542,7 +1546,7 @@ function banners(){
   const st = tyState();
   if (st.cls === 'err') h += `<div class="banner bad"><div><b>Trendyol eşitlemesi hata verdi:</b> ${esc(st.err || '')}</div><button class="btn sm" data-act="open-import">Ayrıntı</button></div>`;
   else if (!(S.sync && S.sync.trendyol && S.sync.trendyol.configured)) h += `<div class="banner"><div><b>Trendyol bağlantısı kurulmadı.</b> Cloudflare'de Trendyol bilgileri girilince siparişler her 10 saniyede kendiliğinden gelir.</div></div>`;
-  if (S.tab !== 'cari') { loadCari(); const ca = cariDueAlert(); if (ca) h += `<div class="banner bad"><div><b>⏰ Tedarikçi ödemesi:</b> ${ca.today > 0.004 ? `bugün <b>${tl2(ca.today)}</b>` : ''}${ca.today > 0.004 && ca.late > 0.004 ? ', ' : ''}${ca.late > 0.004 ? `gecikmiş <b>${tl2(ca.late)}</b>` : ''} · ${fmtN(ca.n)} firma</div><button class="btn sm" data-act="go-cari">Carilere git</button></div>`; }
+  if (S.tab !== 'cari') { loadCari(); const ca = cariDueAlert(); if (ca) h += `<div class="banner bad"><div><b>⏰ Tedarikçi ödemesi:</b> ${ca.today > 0.004 ? `bugün <b>${tl2(ca.today)}</b>` : ''}${ca.today > 0.004 && ca.late > 0.004 ? ', ' : ''}${ca.late > 0.004 ? `gecikmiş <b>${tl2(ca.late)}</b>` : ''}${ca.fxTxt ? ` <span class="small">(${esc(ca.fxTxt)} dahil, güncel kurla)</span>` : ''} · ${fmtN(ca.n)} firma</div><button class="btn sm" data-act="go-cari">Carilere git</button></div>`; }
   return h;
 }
 function loading(){ return `<div class="list" aria-busy="true"><div class="skel" style="border-top:0"></div><div class="skel"></div><div class="skel"></div></div>`; }
