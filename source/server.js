@@ -949,7 +949,7 @@ const SH_API = '2026-07';
 // Gerekli: write_orders yetkisi + korunan müşteri verisi (ad, adres, telefon, e-posta) izni.
 const SH_ADDR_F = 'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone';
 const SH_ADDR_Q = `query($q:String,$after:String){orders(first:25,after:$after,sortKey:CREATED_AT,reverse:true,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt cancelledAt closed test displayFulfillmentStatus note email phone
-  totalPriceSet{shopMoney{amount}} lineItems(first:20){pageInfo{hasNextPage}nodes{name quantity unfulfilledQuantity}} shippingAddress{${SH_ADDR_F}}}}}`;
+  paymentGatewayNames totalPriceSet{shopMoney{amount}} totalOutstandingSet{shopMoney{amount}} lineItems(first:20){pageInfo{hasNextPage}nodes{name quantity unfulfilledQuantity}} shippingAddress{${SH_ADDR_F}}}}}`;
 /* ---------- Sürat Kargo: ön kabul (kendi barkodumuzla gönderi bildirimi) ----------
    Gönderi, cari kodu + şifreyle web servisine OzelKargoTakipNo (bizim barkodumuz) ile kaydedilir; şube barkodu okutunca adres Sürat'ta çıkar.
    İstek, Sürat'ın kendi WSDL tanımından okunan alan adı ve sırasıyla kurulur (ASMX alan sırasına duyarlı). */
@@ -993,7 +993,7 @@ async function srSchema(env, force) {
 // Alan değeri: bilinen alanlara siparişten, bilinmeyen zorunlu alanlara türüne göre boş/0
 function srValue(f, g) {
   const k = f.name.toLowerCase();
-  if (k in g) return g[k];
+  if (k in g) { const v = g[k]; return k === 'kapidanodemetutari' && typeof v === 'number' && /string/i.test(f.type) ? v.toFixed(2).replace('.', ',') : v; }
   if (f.min === 0) return undefined; // isteğe bağlı bilinmeyen alan gönderilmez
   return /int|short|long|byte|decimal|double|float/i.test(f.type) ? 0 : /boolean/i.test(f.type) ? 'false' : '';
 }
@@ -1151,7 +1151,7 @@ async function srTrackPending(env, limit) {
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
 async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_user', 'sr_pass', 'sr_web', 'sr_desi']); const cari = env.SURAT_CARI_KODU || s.sr_cari || ''; return { cari, user: env.SURAT_KULLANICI || s.sr_user || cari, pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
-const SR_ORDER_Q = `query($id:ID!){order(id:$id){id name email phone cancelledAt displayFulfillmentStatus shippingAddress{${'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone'}} totalPriceSet{shopMoney{amount}}
+const SR_ORDER_Q = `query($id:ID!){order(id:$id){id name email phone cancelledAt displayFulfillmentStatus shippingAddress{${'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone'}} paymentGatewayNames totalPriceSet{shopMoney{amount}} totalOutstandingSet{shopMoney{amount}}
   lineItems(first:50){nodes{name sku quantity unfulfilledQuantity variant{id} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} image{url}}}}}`;
 function shAddrErr(e) {
   const m = String((e && e.message) || e);
@@ -1222,6 +1222,9 @@ function shOrdersToInput(nodes) {
 // Stok kodu eşleştirmesi Türkçe İ/ı ve büyük-küçük harf farkını önemsemez (Trendyol'da "LİLYAHOME1652", Shopify'da "LILYAHOME1652" olabilir)
 const skuFold = (x) => String(x || '').trim().replace(/İ/g, 'I').replace(/ı/g, 'i').toUpperCase();
 async function skuFoldMap(env) { const { results } = await env.DB.prepare('SELECT key, sku FROM products').all(); const m = new Map(); for (const r of results) { const f = skuFold(r.sku); if (f && !m.has(f)) m.set(f, r); } return m; }
+// Sürat'a yazılacak kapıda tahsilat: tip 0 = yok, 1 = nakit, 2 = kart (POS); tutar = müşterinin ödemediği kalan (yoksa sipariş toplamı)
+function shCod(o) { const x = shPayRow(o); if (!x.cod) return { tip: 0, amt: 0, gw: x.gateway };
+  const out = Number(((o.totalOutstandingSet || {}).shopMoney || {}).amount) || 0; return { tip: x.card ? 2 : 1, amt: r2(out > 0 ? out : x.total || 0), gw: x.gateway }; }
 // Shopify ödeme yöntemi: kapıda nakit / kapıda kart / online (kâr hesabında kargo ve kapıda ödeme kuralları için)
 function shPayRow(o) {
   const g = (o.paymentGatewayNames || []).join(' | '), gl = g.toLocaleLowerCase('tr-TR');
@@ -3397,7 +3400,7 @@ ${catalog}` });
       const orders = nodes.filter(o => !o.test && !o.cancelledAt && !o.closed && left(o) && !['FULFILLED', 'RESTOCKED'].includes(o.displayFulfillmentStatus)).map(o => ({
         gid: o.id, name: o.name, createdAt: o.createdAt, cancelled: !!o.cancelledAt, fulfill: o.displayFulfillmentStatus, note: o.note || '', email: o.email || '', phone: o.phone || '',
         total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0).map(l => `${l.unfulfilledQuantity}× ${l.name}`),
-        addr: o.shippingAddress || null }));
+        addr: o.shippingAddress || null, cod: shCod(o) }));
       const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
       const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err, exported_at, mode FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
       return json({ ok: true, orders, log, ships, after: more ? after : null });
@@ -3773,9 +3776,13 @@ ${catalog}` });
     const codes = new Map((await selectIn(env, 'SELECT key, code FROM products', 'key', [...new Set([...lm.values()].map(v => v.pkey).filter(Boolean))])).map(r => [r.key, r.code]));
     const L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
     const icerik = L.map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ').slice(0, 100);
-    const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: 0, kapidanodemetutari: 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: '', irsaliyesirano: '' };
+    // Kapıda ödeme: Shopify'daki ödeme yönteminden; formda değiştirildiyse o geçerli
+    const cd = shCod(o); let codTip = cd.tip, cod = cd.amt;
+    if (body.codTip != null) { codTip = [0, 1, 2].includes(Number(body.codTip)) ? Number(body.codTip) : cd.tip; const t = String(body.cod ?? cod).trim(); cod = codTip ? r2(Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t) || 0) : 0; }
+    if (codTip && !(cod > 0)) return bad('Kapıda ödeme tutarı girilmeli.');
+    const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: codTip, kapidanodemetutari: codTip ? cod : 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: '', irsaliyesirano: '' };
     let res; if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); if (!res.barcode && /daha [öo]nce/i.test(res.msg)) { const fb = await srFetchBarcode(env, cr, ref); if (fb.barcode) res.barcode = fb.barcode; errs.push('barkod sorgusu: ' + fb.log.join(' / ')); } if (errs.length) res.msg = res.msg + ' ‖ ' + errs.join(' | '); break; } catch (e1) { errs.push(a.method.replace('GonderiyiKargoyaGonder', '…') + ': ' + String(e1.message || e1).slice(0, 220)); } } if (!res) throw new Error(errs.join(' | ')); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
-    const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik };
+    const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik, codTip, cod };
     await env.DB.batch([env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel'), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
     // Sürat barkodu geldiyse takip no hemen Shopify'a işlenir (Trendyol'daki gibi)
     let trk = null; if (res.barcode) { try { trk = await srTrackOne(env, { ref, gid, order_no: o.name, tracking: res.barcode, track_msg: 'Sürat barkodu', fulfilled_at: null }, cr, c); } catch (e) { trk = { err: String(e.message || e) }; } }
