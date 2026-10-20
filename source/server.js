@@ -93,6 +93,8 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN cost_date TEXT').run(); } catch (e) {} // maliyetin geldiği fiş tarihi // cari ödeme şekli (vade)
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN tx TEXT').run(); } catch (e) {} // Shopify ödeme işlem kimlikleri (PayTR eşleşmesi)
   try { await env.DB.prepare('ALTER TABLE paytr_tx ADD COLUMN paid_day TEXT').run(); } catch (e) {} // PayTR parayı hangi gün yatırdı
+  try { await env.DB.prepare('ALTER TABLE qna ADD COLUMN sent_draft TEXT').run(); } catch (e) {} // gönderilen cevabın yapay zekâ taslağı (düzeltmelerden öğrenmek için)
+  try { await env.DB.prepare('ALTER TABLE qna ADD COLUMN draft_n INTEGER').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE ty_set ADD COLUMN period INTEGER').run(); } catch (e) {} // Trendyol vade süresi (gün, kategoriye göre)
   try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN manual INTEGER').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN currency TEXT').run(); } catch (e) {}
@@ -1717,16 +1719,21 @@ Kurallar:
 async function draftQna(env, id, hint) {
   if (!env.ANTHROPIC_API_KEY) throw new Error('Yapay zekâ anahtarı (ANTHROPIC_API_KEY) Cloudflare\'e eklenmemiş.');
   const q = await env.DB.prepare('SELECT * FROM qna WHERE id=?1').bind(String(id)).first(); if (!q) throw new Error('Soru bulunamadı');
-  const [pi, prev, gen] = await Promise.all([
+  const [pi, prev, gen, hist] = await Promise.all([
     q.main_id ? env.DB.prepare('SELECT * FROM product_info WHERE main_id=?1').bind(q.main_id).first() : null,
     env.DB.prepare(`SELECT text, answer FROM qna WHERE main_id=?1 AND id<>?2 AND answer IS NOT NULL AND answer<>'' ORDER BY answered_at DESC LIMIT 6`).bind(q.main_id || '-', q.id).all(),
-    getSetting(env, 'qa_general')]);
+    getSetting(env, 'qa_general'),
+    // Mağaza sahibinin son cevapları (her üründe): üslubunu ve karar mantığını öğrenmek için; taslağı düzelttiyse taslak → gönderilen
+    env.DB.prepare(`SELECT product_name, text, answer, sent_draft FROM qna WHERE id<>?1 AND (main_id IS NULL OR main_id<>?2) AND status='answered' AND answer IS NOT NULL AND answer<>'' ORDER BY answered_at DESC LIMIT 15`).bind(q.id, q.main_id || '-').all()]);
   const parts = [`ÜRÜN: ${(pi && pi.title) || q.product_name || '-'}`];
   if (pi && pi.attrs) parts.push(`ÖZELLİKLER:\n${pi.attrs}`);
   if (pi && pi.descr) parts.push(`ÜRÜN AÇIKLAMASI:\n${pi.descr.slice(0, 3500)}`);
   if (pi && pi.note) parts.push(`MAĞAZA SAHİBİNİN BU ÜRÜN İÇİN NOTU (en güvenilir bilgi):\n${pi.note}`);
   if (gen) parts.push(`MAĞAZANIN GENEL BİLGİLERİ (kargo, iade vb.):\n${gen}`);
   if (prev.results.length) parts.push(`BU ÜRÜNE DAHA ÖNCE VERİLEN CEVAPLAR (üslup ve bilgi için örnek):\n${prev.results.map(x => `S: ${x.text}\nC: ${x.answer}`).join('\n---\n')}`);
+  const H = hist.results || [], edited = H.filter(x => x.sent_draft && x.sent_draft.trim() !== x.answer.trim());
+  if (H.length) parts.push(`MAĞAZA SAHİBİNİN SON CEVAPLARI (başka ürünler). Bunlardan onun üslubunu ve karar mantığını öğren: hangi durumda ne öneriyor (iade, değişim, ölçü, adet, kargo, iptal), neyi söylüyor, neyi söylemiyor. Benzer soruda onun vereceği kararı ver:\n${H.map(x => `Ürün: ${(x.product_name || '').slice(0, 80)}\nS: ${x.text}\nC: ${x.answer}`).join('\n---\n')}`);
+  if (edited.length) parts.push(`MAĞAZA SAHİBİNİN SENİN TASLAKLARINDA YAPTIĞI DÜZELTMELER (en önemli kısım; aynı hataları tekrarlama, onun düzelttiği gibi yaz):\n${edited.slice(0, 8).map(x => `S: ${x.text}\nSenin taslağın: ${x.sent_draft}\nOnun gönderdiği: ${x.answer}`).join('\n---\n')}`);
   parts.push(`MÜŞTERİNİN SORUSU:\n${q.text}`);
   if (hint) parts.push(`MAĞAZA SAHİBİNİN İSTEĞİ (taslağı buna göre yaz): ${String(hint).slice(0, 300)}`);
   const model = (await getSetting(env, 'qa_model')) || 'claude-haiku-5-5';
@@ -1736,8 +1743,9 @@ async function draftQna(env, id, hint) {
   if (!r.ok) { const msg = (data.error && data.error.message) || ('Yapay zekâ hatası ' + r.status); await env.DB.prepare('UPDATE qna SET draft_err=?2 WHERE id=?1').bind(q.id, msg.slice(0, 200)).run(); throw new Error(msg); }
   let text = ((data.content || []).filter(c => c.type === 'text').map(c => c.text).join('') || '').trim();
   const flag = /^\[KONTROL\]/i.test(text) ? 1 : 0; text = text.replace(/^\[KONTROL\]\s*/i, '').trim().slice(0, 2000);
-  await env.DB.prepare('UPDATE qna SET draft=?2, draft_flag=?3, draft_at=?4, draft_err=NULL WHERE id=?1').bind(q.id, text, flag, iso()).run();
-  return { draft: text, flag: !!flag };
+  const learned = (prev.results || []).length + H.length;
+  await env.DB.prepare('UPDATE qna SET draft=?2, draft_flag=?3, draft_at=?4, draft_err=NULL, draft_n=?5 WHERE id=?1').bind(q.id, text, flag, iso(), learned).run();
+  return { draft: text, flag: !!flag, learned, edits: edited.length };
 }
 async function draftPendingQna(env, max = 4) {
   if (!env.ANTHROPIC_API_KEY) return { n: 0 };
@@ -2848,7 +2856,7 @@ async function api(req, env, path, ctx) {
     if (/(https?:\/\/|www\.|@[a-z0-9-]+\.|\b0?5\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b)/i.test(text)) return bad('Cevapta web adresi, e-posta ya da telefon numarası olmamalı (Trendyol kuralı).');
     const r = await fetch(`${TY_BASE}qna/sellers/${env.TRENDYOL_SELLER_ID}/questions/${encodeURIComponent(id)}/answers`, { method: 'POST', headers: { ...tyHeaders(env), 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
     if (!r.ok) { const t = (await r.text()).slice(0, 300); return bad(`Trendyol cevabı kabul etmedi (${r.status}): ${t}`); }
-    await env.DB.prepare(`UPDATE qna SET status='answered', answer=?2, answered_at=?3, updated_at=?3 WHERE id=?1`).bind(id, text, iso()).run();
+    await env.DB.prepare(`UPDATE qna SET status='answered', answer=?2, answered_at=?3, updated_at=?3, sent_draft=draft WHERE id=?1`).bind(id, text, iso()).run(); // taslak saklanır: düzeltmeden öğrenmek için
     await qnaCount(env);
     return json({ ok: true });
   }
