@@ -3122,7 +3122,7 @@ ${catalog}` });
     for (const c of all) { const sc = cariSchedule(c, today), rate = fx[c.cur] || null, T = (v) => rate ? r2(v * rate) : null;
       for (const x of sc.items) { x.cur = c.cur; x.leftTL = T(x.left); }
       list.push({ cur: c.cur, rate, balTL: T(c.bal), overdueTL: T(sc.overdue), dueTodayTL: T(sc.today), dueWeekTL: T(sc.week), supplier: c.supplier, terms: c.terms, buys: c.buys.length, buy: c.buy, pays: c.pays.length, paid: c.paid, bal: c.bal, last: c.last, next: sc.next, overdue: sc.overdue, dueToday: sc.today, dueWeek: sc.week });
-      for (const x of sc.items) { if (x.left > 0.004 && x.due <= addDayStr(today, 7)) alerts.push({ supplier: c.supplier, ...x }); if (x.left > 0.004 && x.due <= addDayStr(today, 60)) dues.push({ supplier: c.supplier, due: x.due, left: x.left, cur: c.cur, leftTL: x.leftTL, label: x.label }); } }
+      for (const x of sc.items) { if (x.left > 0.004 && x.due <= addDayStr(today, 7)) alerts.push({ supplier: c.supplier, ...x }); if (x.left > 0.004 && x.due <= addDayStr(today, 100)) dues.push({ supplier: c.supplier, due: x.due, left: x.left, cur: c.cur, leftTL: x.leftTL, label: x.label }); } }
     list.sort((a, b) => (b.overdue + b.dueToday > 0.004) - (a.overdue + a.dueToday > 0.004) || b.bal - a.bal || a.supplier.localeCompare(b.supplier, 'tr'));
     alerts.sort((a, b) => a.due.localeCompare(b.due) || b.left - a.left);
     const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name);
