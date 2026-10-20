@@ -1159,7 +1159,7 @@ function curAmt(v, c){ if (!c || c === 'TL') return tl2(v); const n = Number(v) 
 // Haftalık ödeme / tahsilat: sağa-sola kaydırılan haftalar. Her hafta: firma başına toplam ödeme (vade sonrası ilk cuma) ve gelecek paralar (Trendyol, PayTR, Sürat)
 function cariWeekCard(D){
   const C = cS(), today = todayTR(), add = (d, n) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
-  const mon = (d) => { const t = new Date(d + 'T12:00:00Z'), w = (t.getUTCDay() + 6) % 7; return add(d, -w); }, w0 = mon(today), PW = 8, NW = PW + 12; // 8 geçmiş hafta + bu hafta + 11 sonraki
+  const mon = (d) => { const t = new Date(d + 'T12:00:00Z'), w = (t.getUTCDay() + 6) % 7; return add(d, -w); }, w0 = mon(today), PW = 0, NW = PW + 12; // yalnız bu hafta ve sonraki 11 hafta (geçmiş yok)
   const weeks = []; for (let i = 0; i < NW; i++) weeks.push({ a: add(w0, (i - PW) * 7), b: add(w0, (i - PW) * 7 + 6), pay: [], inc: [], hp: [], hi: [] });
   const wOf = (d) => weeks.find(w => d >= w.a && d <= w.b), late = [], lateIn = [];
   for (const x of (D.dues || [])) { const tl = x.cur && x.cur !== 'TL' ? x.leftTL : x.left, it = { who: x.supplier, day: x.due, amt: x.left, cur: x.cur, tl: tl || 0 };
@@ -1202,8 +1202,8 @@ function cariWeekCard(D){
   return h;
 }
 // Haftalık kartın kaydırma konumu: yeniden çizimde korunur, noktalar ve oklar güncellenir
-function wkSync(){ const sw = document.getElementById('wk-swipe'); if (!sw) return; const C = cS(), w = sw.clientWidth || 1; sw.scrollLeft = (C.wkI ?? 8) * w;
-  if (!sw.dataset.on) { sw.dataset.on = '1'; let tm = null; sw.addEventListener('scroll', () => { clearTimeout(tm); tm = setTimeout(() => { const i = Math.round(sw.scrollLeft / (sw.clientWidth || 1)); if (i !== (cS().wkI ?? 8)) { cS().wkI = i; const dots = document.querySelectorAll('#wk-dots span'); dots.forEach((d, k) => { d.style.width = (k === i ? 16 : 7) + 'px'; d.style.background = k === i ? 'var(--accent)' : 'var(--line)'; }); const bs = sw.parentElement.querySelectorAll('[data-act="wk-go"]'); if (bs[0]) bs[0].disabled = i === 0; if (bs[1]) bs[1].disabled = i >= dots.length - 1; } }, 90); }, { passive: true }); } }
+function wkSync(){ const sw = document.getElementById('wk-swipe'); if (!sw) return; const C = cS(), w = sw.clientWidth || 1; sw.scrollLeft = (C.wkI ?? 0) * w;
+  if (!sw.dataset.on) { sw.dataset.on = '1'; let tm = null; sw.addEventListener('scroll', () => { clearTimeout(tm); tm = setTimeout(() => { const i = Math.round(sw.scrollLeft / (sw.clientWidth || 1)); if (i !== (cS().wkI ?? 0)) { cS().wkI = i; const dots = document.querySelectorAll('#wk-dots span'); dots.forEach((d, k) => { d.style.width = (k === i ? 16 : 7) + 'px'; d.style.background = k === i ? 'var(--accent)' : 'var(--line)'; }); const bs = sw.parentElement.querySelectorAll('[data-act="wk-go"]'); if (bs[0]) bs[0].disabled = i === 0; if (bs[1]) bs[1].disabled = i >= dots.length - 1; } }, 90); }, { passive: true }); } }
 function cariImpsHtml(I){
   if (I.loading) return loading(); if (I.err) return `<div class="banner bad"><div>${esc(I.err)}</div></div>`;
   if (!I.list.length) return '<div class="card" style="padding:10px;margin-bottom:10px"><span class="small muted">Excel\'den yapılmış yükleme yok.</span></div>';
