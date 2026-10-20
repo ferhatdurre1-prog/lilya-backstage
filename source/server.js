@@ -777,6 +777,14 @@ const SH_ADDR_Q = `query($q:String,$after:String){orders(first:25,after:$after,s
    Gönderi, cari kodu + şifreyle web servisine OzelKargoTakipNo (bizim barkodumuz) ile kaydedilir; şube barkodu okutunca adres Sürat'ta çıkar.
    İstek, Sürat'ın kendi WSDL tanımından okunan alan adı ve sırasıyla kurulur (ASMX alan sırasına duyarlı). */
 const SR_URL = 'https://webservices.suratkargo.com.tr/services.asmx';
+// Sürat'ın önündeki Cloudflare, kimliksiz istekleri bot sayıp 403 verebiliyor: .NET web servis istemcisi gibi tanıtılır, 403'te bir kez tarayıcı kimliğiyle tekrar denenir
+const SR_UA = ['Mozilla/4.0 (compatible; MSIE 6.0; MS Web Services Client Protocol 4.0.30319.42000)', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'];
+async function srFetch(url, init = {}) {
+  let r;
+  for (const ua of SR_UA) { r = await fetch(url, { ...init, headers: { 'user-agent': ua, accept: 'text/xml, application/xml, */*', 'accept-language': 'tr-TR,tr;q=0.9', ...(init.headers || {}) } });
+    if (r.status !== 403) return r; const t = await r.clone().text().catch(() => ''); if (!/cloudflare|attention/i.test(t)) return r; }
+  return r;
+}
 // Sıra: Sürat barkodu ve takip no'yu hemen veren işlem (Trendyol'un kullandığı), sonra ön kabul işlemleri
 const SR_METHODS = ['GonderiyiKargoyaGonderYeniSiparisBarkodOlustur', 'GonderiyiKargoyaGonderYeni', 'GonderiyiKargoyaGonder'];
 const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
@@ -784,7 +792,7 @@ const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)
 async function srSchema(env, force) {
   const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
   if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 7) return c; } catch (e) {} }
-  const r = await fetch(SR_URL + '?WSDL', { headers: { 'user-agent': 'LilyaBackstage/1.0' } });
+  const r = await srFetch(SR_URL + '?WSDL');
   if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
   const w = await r.text();
   const ns = (/targetNamespace="([^"]+)"/.exec(w) || [])[1] || 'http://tempuri.org/';
@@ -823,7 +831,7 @@ async function srSend(env, creds, g, alt) {
   const a0 = alt ? (sc.alts || []).find(x => x.method === alt) : (sc.alts || [])[0]; if (alt && !a0) throw new Error('Sürat: ' + alt + ' yok');
   if (a0) sc = { ...sc, method: a0.method, params: a0.params, gonderi: a0.gonderi || sc.gonderi };
   const body = srEnvelope(sc, creds, g);
-  const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${sc.method}"` }, body });
+  const r = await srFetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${sc.method}"` }, body });
   const t = await r.text();
   const fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(t);
   if (fault) throw new Error('Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 300));
@@ -855,7 +863,7 @@ async function srQuery(env, creds, ref) {
     const v = /cari|kullanici/i.test(n) ? creds.cari : /sifre|password|parola/i.test(n) ? (creds.pass || creds.web) : /siparis|referans|ozel|kod/i.test(n) ? ref : null;
     return v == null ? '' : `<${n}>${xmlEsc(v)}</${n}>`; }).join('');
   const body = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${q.method} xmlns="${sc.ns}">${px}</${q.method}></soap:Body></soap:Envelope>`;
-  const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${q.method}"` }, body });
+  const r = await srFetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${q.method}"` }, body });
   const raw = await r.text(), fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(raw);
   if (fault) throw new Error('Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 200));
   const t = raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -876,7 +884,7 @@ async function srCall(env, method, params, val) {
   const sc = await srSchema(env, false);
   const px = params.map(p => { const v = val(p); return v == null ? '' : `<${p.name}>${xmlEsc(v)}</${p.name}>`; }).join('');
   const body = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${method} xmlns="${sc.ns}">${px}</${method}></soap:Body></soap:Envelope>`;
-  const r = await fetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${method}"` }, body });
+  const r = await srFetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}${method}"` }, body });
   const raw = await r.text(), fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(raw);
   if (fault) throw new Error('Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 200));
   return raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -939,7 +947,8 @@ async function srTrackPending(env, limit) {
   const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
   let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
-  const out = []; for (const r of results) { try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 6 * 3600000)); break; } }
+  let solo = 0; const out = []; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 90 * 60000)); break; } }
+  if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
 async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_user', 'sr_pass', 'sr_web', 'sr_desi']); const cari = env.SURAT_CARI_KODU || s.sr_cari || ''; return { cari, user: env.SURAT_KULLANICI || s.sr_user || cari, pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
