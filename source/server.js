@@ -21,6 +21,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS bundles(pkey TEXT NOT NULL, comp TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(pkey, comp))`,
   `CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier_id INTEGER, supplier TEXT, doc_no TEXT, doc_date TEXT, items TEXT NOT NULL DEFAULT '[]', units INTEGER, total REAL, status TEXT NOT NULL DEFAULT 'active', reverted_at TEXT, note TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sh_pay(no TEXT PRIMARY KEY, gateway TEXT, cod INTEGER, card INTEGER, subtotal REAL, ship REAL, total REAL, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS bk_ship(no TEXT PRIMARY KEY, bk_id TEXT, created TEXT, handler TEXT, status TEXT, fee REAL, cod INTEGER, cod_type TEXT, cod_amount REAL, cod_fee REAL, cod_status TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sup_pay(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, supplier TEXT NOT NULL COLLATE NOCASE, date TEXT, amount REAL NOT NULL, method TEXT, note TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS sup_map(supplier TEXT NOT NULL, k TEXT NOT NULL, pkey TEXT NOT NULL, PRIMARY KEY(supplier, k))`,
@@ -278,6 +279,11 @@ function costPick(p, unit, date) {
   if (c0 !== null && d0 && date && d0 === date && c0 >= u) return null; // aynı tarih: yüksek olan kalır
   return u;
 }
+/* ---------- Shopify kargo / kapıda ödeme kuralları (kullanıcının verdiği, 20.10.2026) ---------- */
+const SH_FREE_SHIP = 700, SH_SHIP_FEE = 100, SH_COD_CASH = 50, SH_COD_CARD = 100;
+const SURAT_DIRECT_FROM = '2026-10-17T07:00:00.000Z', SURAT_POST_TAX = 0.0235; // 17.10.2026 10:00 (TR) sonrası anlaşmalı Sürat
+const suratDirectPrice = (d) => d <= 5 ? 102 : d <= 10 ? 144 : d <= 15 ? 168 : 192; // KDV dahil; 20 desi üstü şimdilik 192
+const suratDirectCod = (t) => r2(30 + Math.max(0, Math.ceil((t - 1000) / 100 - 1e-9)) * 1.5); // 0–1000 TL 30 TL, üzerindeki her 100 TL +1,50
 /* ---------- Basit Kargo (17.10.2026 10:00'a kadarki Shopify gönderileri) ---------- */
 const BK_CUTOFF = '2026-10-17T10:00', BK_CUTOFF_MS = Date.parse('2026-10-17T07:00:00Z');
 const bkTime = (ms) => new Date(ms + 3 * 3600000).toISOString().slice(0, 19); // Türkiye saati, YYYY-MM-DDTHH:mm:ss
@@ -975,7 +981,7 @@ async function shGql(env, c, query, variables) {
   }
   throw new Error('Shopify isteği tamamlanamadı.');
 }
-const SH_ORDERS_Q = `query($q:String!,$after:String){orders(first:40,after:$after,sortKey:UPDATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt updatedAt cancelledAt test displayFulfillmentStatus
+const SH_ORDERS_Q = `query($q:String!,$after:String){orders(first:40,after:$after,sortKey:UPDATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt updatedAt cancelledAt test displayFulfillmentStatus paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}}
   lineItems(first:60){nodes{id sku name quantity currentQuantity unfulfilledQuantity variant{id sku barcode image{url}} image{url} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} originalUnitPriceSet{shopMoney{amount}}}}
   refunds{refundLineItems(first:60){nodes{quantity restockType lineItem{id}}}}}}}`;
 const shId = (gid) => { const m = /(\d+)\s*$/.exec(String(gid || '')); return m ? m[1] : ''; };
@@ -1004,6 +1010,30 @@ function shOrdersToInput(nodes) {
 // Stok kodu eşleştirmesi Türkçe İ/ı ve büyük-küçük harf farkını önemsemez (Trendyol'da "LİLYAHOME1652", Shopify'da "LILYAHOME1652" olabilir)
 const skuFold = (x) => String(x || '').trim().replace(/İ/g, 'I').replace(/ı/g, 'i').toUpperCase();
 async function skuFoldMap(env) { const { results } = await env.DB.prepare('SELECT key, sku FROM products').all(); const m = new Map(); for (const r of results) { const f = skuFold(r.sku); if (f && !m.has(f)) m.set(f, r); } return m; }
+// Shopify ödeme yöntemi: kapıda nakit / kapıda kart / online (kâr hesabında kargo ve kapıda ödeme kuralları için)
+function shPayRow(o) {
+  const g = (o.paymentGatewayNames || []).join(' | '), gl = g.toLocaleLowerCase('tr-TR');
+  const cod = /kap[ıi]da|cash on delivery|\bcod\b|teslimatta|nakit/.test(gl) ? 1 : 0;
+  const card = cod && /kart|card|pos|kredi/.test(gl) ? 1 : 0;
+  const M = (x) => x && x.shopMoney ? Number(x.shopMoney.amount) || 0 : null;
+  return { no: String(o.name || '').replace(/\D/g, ''), gateway: g.slice(0, 200), cod, card, subtotal: M(o.subtotalPriceSet), ship: M(o.totalShippingPriceSet), total: M(o.totalPriceSet) };
+}
+async function shPaySave(env, nodes) {
+  const st = nodes.filter(o => o && o.name && Array.isArray(o.paymentGatewayNames)).map(o => { const x = shPayRow(o); return env.DB.prepare('INSERT INTO sh_pay(no, gateway, cod, card, subtotal, ship, total, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(no) DO UPDATE SET gateway=excluded.gateway, cod=excluded.cod, card=excluded.card, subtotal=excluded.subtotal, ship=excluded.ship, total=excluded.total, at=excluded.at').bind(x.no, x.gateway, x.cod, x.card, x.subtotal, x.ship, x.total, iso()); });
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+}
+// Geçmiş siparişlerin ödeme yöntemi bir kez (rapor başlangıcından bu yana) sayfa sayfa okunur
+const SH_PAY_Q = `query($q:String!,$after:String){orders(first:100,after:$after,sortKey:CREATED_AT,query:$q){pageInfo{hasNextPage endCursor}nodes{name paymentGatewayNames subtotalPriceSet{shopMoney{amount}} totalShippingPriceSet{shopMoney{amount}} totalPriceSet{shopMoney{amount}}}}}`;
+async function shPayBackfill(env, maxPages = 4) {
+  const s = await getSettings(env, ['sh_pay_done', 'sh_pay_after', 'report_start']); if (s.sh_pay_done === '1') return null;
+  const c = await shCreds(env); if (!shConfigured(c)) return null;
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(s.report_start || '') ? s.report_start : '2026-09-01';
+  let after = s.sh_pay_after || null, n = 0, done = false;
+  for (let p = 0; p < maxPages; p++) { const d = await shGql(env, c, SH_PAY_Q, { q: `created_at:>='${from}T00:00:00+03:00'`, after }); await shPaySave(env, d.orders.nodes); n += d.orders.nodes.length;
+    if (!d.orders.pageInfo.hasNextPage) { done = true; break; } after = d.orders.pageInfo.endCursor; }
+  await env.DB.batch([setStmt(env, 'sh_pay_after', done ? '' : after || ''), ...(done ? [setStmt(env, 'sh_pay_done', '1'), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(from), setStmt(env, 'home_cache', ''), REV(env)] : [])]);
+  return { n, done };
+}
 async function syncShopifyOrders(env, opts = {}) {
   const c = await shCreds(env); if (!shConfigured(c)) return null;
   const s = await getSettings(env, ['sh_hwm', 'sh_start', 'sh_paused', 'sh_unf_init']);
@@ -1022,6 +1052,7 @@ async function syncShopifyOrders(env, opts = {}) {
     if (!ord.pageInfo.hasNextPage) { after = null; break; }
     after = ord.pageInfo.endCursor;
   }
+  try { await shPaySave(env, nodes); } catch (e) {}
   const input = shOrdersToInput(nodes);
   // Kargolanmamış adetler (iptal edilmemiş siparişlerde)
   const unf = nodes.filter(o => !o.test).map(o => { const m = {}; if (!o.cancelledAt) for (const l of ((o.lineItems || {}).nodes || [])) { const v = shId(l.variant && l.variant.id), q = Number(l.unfulfilledQuantity) || 0; if (v && q > 0) m[v] = (m[v] || 0) + q; } return [String(o.name || '').trim(), m]; });
@@ -1807,7 +1838,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));
     if (left() > 8000 && ok(40)) await step('shPush', async () => { try { return await pushShopifyStock(env); } catch (e) { await setSetting(env, 'sh_push_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } });
     // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
-    if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) > 6 * 3600000 && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
+    if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); if (left() > 15000) { try { await shPayBackfill(env, 3); } catch (e) { await setSetting(env, 'sh_pay_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } } const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) > 6 * 3600000 && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
     // Sürat: şube okuttuysa takip numarası alınıp Shopify'a işlenir (müşteriye bildirim) — 30 dakikada bir
     if (left() > 12000 && ok(80) && isDue('run_sr_at', 30 * 60000)) { await setSetting(env, 'run_sr_at', String(now)); await step('surat', () => srTrackPending(env), 'sr_track_err'); }
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
@@ -2090,9 +2121,9 @@ async function computeProfit(env, from, to, ch0) {
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
-  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR]] = await Promise.all([loadFees(env), env.DB.batch([
+  const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
-    env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day FROM products`),
+    env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day, desi FROM products`),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note, kept, inspect, insp_ok FROM returns WHERE order_id<>'' AND status<>'rejected'`),
     env.DB.prepare(`SELECT * FROM order_fin WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare(`SELECT order_no, json_extract(data,'$.name') n FROM order_cust WHERE order_no IN (${SUBQ})`).bind(from, to),
@@ -2101,7 +2132,9 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT COUNT(*) n FROM ad_spend'),
     env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
-    env.DB.prepare('SELECT no, fee, cod_fee, handler FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10))])]);
+    env.DB.prepare('SELECT no, fee, cod_fee, handler, cod, cod_type FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10)),
+    env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to)])]);
+  const shPay = new Map(spR.results.map(x => [x.no, x]));
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
   // Kanal seçiliyse sadece o kanalın siparişleri; Trendyol fatura kesintileri yalnız Trendyol'da, genel giderler kanal seçilince düşülmez
   if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); expR.results = []; }
@@ -2185,23 +2218,36 @@ async function computeProfit(env, from, to, ch0) {
     }
     const pkgs = new Map();
     for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true }; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
-    let cargo = 0, retCargo = 0, penalty = 0, shReal = false;
+    let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0;
     const cargoInfo = [];
     if (ch === 'trendyol') for (const g of pkgs.values()) { const c = tyCargo(fee, g.amount, g.desi, g.carrier); cargo += c.cost;
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
       if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi, g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi, g.carrier);
       if (g.defVal > 0) penalty += penaltyFor(g.defVal); cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (desi yok, 1 sayıldı)'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
-    else if (ch === 'shopify') { const bk = bkMap.get(String(ord.order_no || '').replace(/\D/g, ''));
-      // Basit Kargo'dan giden siparişte gerçek kargo ücreti + kapıda ödeme bedeli; yoksa ayardaki sabit Shopify kargo ücreti
-      if (bk && bk.fee !== null) { cargo = r2(bk.fee + (bk.cod_fee || 0)); shReal = true; cargoInfo.push(`Basit Kargo${bk.handler ? ' · ' + bk.handler : ''} · gerçek ücret${bk.cod_fee ? ' (kapıda ödeme bedeli ' + bk.cod_fee + ' TL dahil)' : ''}`); }
-      else cargo = fee.cargoSh; }
+    else if (ch === 'shopify' && rows.some(x => x.qty > 0 || x.retQ > 0)) {
+      // Shopify kuralları: 700 TL altı müşteri 100 TL kargo öder; kapıda nakit +50 TL, kapıda kart +100 TL (müşteriden). Gider: kargo firmasının ücreti
+      const no = String(ord.order_no || '').replace(/\D/g, ''), bk = bkMap.get(no), pay = shPay.get(no), post = String(ord.date || '') >= SURAT_DIRECT_FROM;
+      const gross = rows.reduce((a, x) => a + x.full, 0);
+      let cod = null, card = false; if (bk && !post) { cod = !!bk.cod; card = bk.cod_type === 'CREDIT_CARD'; } else if (pay) { cod = !!pay.cod; card = !!pay.card; }
+      const shipInc = gross > 0 && gross < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codInc = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0; shInc = shipInc + codInc;
+      const pm = cod === null ? 'ödeme yöntemi bilinmiyor (online sayıldı)' : cod ? (card ? 'kapıda kart' : 'kapıda nakit') : 'online';
+      const incTxt = shInc ? ` · müşteriden ${[shipInc ? 'kargo ' + shipInc + ' TL' : '', codInc ? 'kapıda ödeme ' + codInc + ' TL' : ''].filter(Boolean).join(' + ')} satışa eklendi` : '';
+      if (post) { // 17.10.2026 10:00 sonrası: anlaşmalı Sürat tarifesi (+%2,35 posta vergisi sadece kargoya) + kapıda ödeme bedeli
+        let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null; if (dz === null) { miss++; d += q; } else d += dz * q; }
+        const desi = Math.max(0, Math.ceil(d - 1e-9)), base = suratDirectPrice(desi), cf = cod ? suratDirectCod(gross + shInc) : 0;
+        cargo = r2(base * (1 + SURAT_POST_TAX) + cf); shReal = !miss && cod !== null;
+        cargoInfo.push(`Sürat (anlaşmalı) · ${desi} desi${miss ? ` (${miss} ürünün desisi yok, 1 sayıldı)` : ''}${desi > 20 ? ' · 20 desi üstü!' : ''} · ${base} TL + %2,35 posta vergisi${cf ? ` + kapıda ödeme bedeli ${cf} TL` : ''} · ${pm}${incTxt}`); }
+      else if (bk && bk.fee !== null) { const cc = card && /s[üu]rat/i.test(bk.handler || '') ? r2((gross + shInc) * 0.045) : 0;
+        cargo = r2(bk.fee + (bk.cod_fee || 0) + cc); shReal = true;
+        cargoInfo.push(`Basit Kargo${bk.handler ? ' · ' + bk.handler : ''} · gerçek ücret${bk.cod_fee ? ' (kapıda ödeme bedeli ' + bk.cod_fee + ' TL dahil)' : ''}${cc ? ` + kart komisyonu %4,5 (${cc} TL)` : ''} · ${pm}${incTxt}`); }
+      else { cargo = fee.cargoSh; cargoInfo.push(`Basit Kargo kaydı yok · sabit kargo ${fee.cargoSh} TL · ${pm}${incTxt}`); } }
     // Platform hizmet bedeli: sipariş saat <kesim> (15:00) öncesi geldiyse indirimli (Bugün Kargoda), sonrası normal. Fatura detayı gelince gerçeği yazılır.
     const ordHour = ord.date ? new Date(Date.parse(ord.date) + TY_TZ).getUTCHours() : 23;
     let service = 0, fastPk = 0;
     if (ch === 'trendyol') for (const g of pkgs.values()) { const f = g.fast && ordHour < fee.serviceCutoff; service += f ? fee.serviceFast : fee.serviceTy; if (f) fastPk++; }
     if (fastPk) sum.fastPkgs = (sum.fastPkgs || 0) + fastPk;
     const est = rows.reduce((a, x) => a + x.revenue, 0);
-    let revenue = est, commission = rows.reduce((a, x) => a + x.commission, 0); let actual = shReal, svcActual = false; // Shopify: satış tutarı Shopify'dan, kargo Basit Kargo'dan gerçekse sipariş gerçek sayılır
+    let revenue = est + shInc, commission = rows.reduce((a, x) => a + x.commission, 0); let actual = shReal, svcActual = false; // Shopify: satış tutarı Shopify'dan, kargo Basit Kargo'dan gerçekse sipariş gerçek sayılır
     const retUnits = rows.reduce((a, x) => a + x.retQ, 0);
     const fa = ch === 'trendyol' ? fin.get(ord.order_no) : null;
     const undelivered = retUnits > 0 && [...pkgs.values()].some(g => g.ret && g.und);
