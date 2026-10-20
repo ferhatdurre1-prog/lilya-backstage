@@ -295,6 +295,14 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .sheet-h .tt{flex:1;min-width:0}
 .sheet-h h2{margin:0;font-family:var(--f-display);font-weight:800;font-size:20px;letter-spacing:-.02em;line-height:1.15;overflow-wrap:anywhere}
 .sheet-b{padding:16px 16px calc(28px + env(safe-area-inset-bottom,0px));display:grid;gap:18px}
+.hk-head{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}.hk-ch{font-weight:700;font-size:14px;padding:5px 8px;border-radius:9px;text-align:center}
+.hk-ch.hk-ty{background:var(--ty-soft);color:var(--ty)}.hk-ch.hk-sh{background:var(--sh-soft);color:var(--sh)}.hk-ch.hk-all{background:var(--violet-soft);color:var(--violet)}
+.hk-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}.hk-grid.hk-one{grid-template-columns:1fr}
+.hk{height:108px;box-sizing:border-box;overflow:hidden;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:10px 12px;cursor:pointer;min-width:0}
+div.hk.hk-ty{border-left-color:var(--ty)}div.hk.hk-sh{border-left-color:var(--sh)}div.hk.hk-all{border-left-color:var(--violet)}
+.hk .k{font-size:12.5px;color:var(--ink-3)}.hk .v{font-size:21px;font-weight:700;margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--good)}.hk .s{font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hk .up{color:var(--good);font-weight:600}.hk .dn{color:var(--bad);font-weight:600}
+.hk-wide{display:flex;justify-content:space-between;align-items:center;gap:10px}.hk-wide .v{font-size:23px;flex-shrink:0}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px;display:grid;gap:12px;min-width:0}
 .seg{display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
 .seg button{border:0;background:none;border-radius:8px;padding:8px 6px;cursor:pointer;color:var(--ink-2);font-weight:500;font-size:14px}
@@ -1452,14 +1460,29 @@ function viewHome(){
     const kpi = (k, icon, c, cs, v, sub, vstyle='', go='') => `<div class="kpi" data-act="home-go" data-id="${go}" style="--c:${c};--cs:${cs};cursor:pointer"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
     const vs = (a, b) => { if (!b) return ''; const d = (a - b) / Math.abs(b) * 100; if (!isFinite(d)) return ''; return ` <span class="${d >= 0 ? 'up' : 'dn'}">${d >= 0 ? '▲' : '▼'} %${Math.abs(d).toFixed(0)}</span>`; };
     const pc = (n) => n < 0 ? 'var(--bad)' : 'var(--good)', pcs = (n) => n < 0 ? 'var(--bad-soft)' : 'var(--good-soft)';
-    h += `<div class="home-grid">
-      ${kpi('Bugün ciro', 'value', 'var(--blue)', 'var(--blue-soft)', fmtTL(T.rev), YS ? `Dün bu saatte ${fmtTL(YS.rev)}${vs(T.rev, YS.rev)}` : (Y.rev ? `Dün ${fmtTL(Y.rev)}` : 'Dün satış yok'), 'color:var(--blue)', 'today-products')}
-      ${kpi('Bugün net kâr', 'profit', pc(T.prof), pcs(T.prof), tlS(T.prof), YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : (Y.prof ? `Dün ${tlS(Y.prof)}` : ''), profitCls(T.prof), 'today-products')}
-      ${H.yday ? kpi('Dün net kâr', 'profit', pc(H.yday.profit), pcs(H.yday.profit), tlS(H.yday.profit), `${fmtTL(H.yday.revenue)} ciro · marj ${pct(H.yday.margin)}`, profitCls(H.yday.profit), 'yesterday-products') : ''}
-      ${kpi('Bu ay net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(M.profit), `${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`, profitCls(M.profit) || 'color:var(--violet)', 'month-products')}
-      ${H.last30 ? kpi('Son 30 gün net kâr', 'stock', 'var(--violet)', 'var(--violet-soft)', tlS(H.last30.profit), `${fmtTL(H.last30.revenue)} ciro · marj ${pct(H.last30.margin)}`, profitCls(H.last30.profit) || 'color:var(--violet)', 'd30-products') : ''}
-      ${(() => { const nw = (S.sync.trendyol || {}).newOrders || {n:0, u:0}; return `<div class="kpi" data-act="orders-new" style="--c:var(--orange);--cs:var(--warn-soft);cursor:pointer"><div class="hd"><div class="k">Bekleyen siparişler</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.orders}</svg></div></div><div class="v" style="color:var(--orange)">${fmtN(nw.n)}</div></div>`; })()}
-    </div>` + homeRecent();
+    // Solda Trendyol, sağda Shopify (5'er kutu), altta tüm kanalların toplamı (5 geniş kutu); bütün kutular aynı yükseklikte
+    const C = H.ch || {}, nw = (S.sync.trendyol || {}).newOrders || {n: 0, u: 0}, cel = (P, k) => (P && P[k]) || {revenue: 0, profit: 0, margin: null, n: 0};
+    const box = (cls, k, v, sub, vcol, act, aid) => `<div class="hk ${cls}" data-act="${act}" data-id="${aid || ''}"><div class="k">${k}</div><div class="v" style="${vcol}">${v}</div>${sub.map(x => `<div class="s">${x}</div>`).join('')}</div>`;
+    const prof = (x) => profitCls(x) || '', t0 = (v) => '₺' + Math.round(Number(v) || 0).toLocaleString('tr-TR'), mg = (v) => v === null || v === undefined ? '—' : '%' + (Math.round(v * 10) / 10).toLocaleString('tr-TR');
+    const col = (key, cls, pend) => { const t = cel(C.today, key), y = cel(C.ys, key), yd = cel(C.yday, key), m = cel(C.month, key), d = cel(C.d30, key), g = (per) => `${per}|${key}`;
+      return box(cls, 'Bugün kâr', tlS(t.profit), [`${t0(t.revenue)} ciro · ${mg(t.margin)}`, `Dün bu saat ${t0(y.profit)}${vs(t.profit, y.profit).replace('> ', '>').replace(' %', '%')}`], prof(t.profit), 'home-go2', g('today'))
+        + box(cls, 'Dün kâr', tlS(yd.profit), [`${t0(yd.revenue)} ciro · ${mg(yd.margin)}`], prof(yd.profit), 'home-go2', g('yesterday'))
+        + box(cls, 'Bu ay kâr', tlS(m.profit), [`${t0(m.revenue)} ciro · ${mg(m.margin)}`], prof(m.profit), 'home-go2', g('month'))
+        + box(cls, 'Son 30 gün kâr', tlS(d.profit), [`${t0(d.revenue)} ciro · ${mg(d.margin)}`], prof(d.profit), 'home-go2', g('d30'))
+        + box(cls, 'Bekleyen sipariş', fmtN(pend), [`Bugün ${fmtN(t.n)} sipariş`], 'color:var(--orange)', 'orders-new', key); };
+    const ty = col('trendyol', 'hk-ty', nw.n || 0), sh = col('shopify', 'hk-sh', nw.sh || 0);
+    const tyB = ty.split('<div class="hk ').slice(1).map(x => '<div class="hk ' + x), shB = sh.split('<div class="hk ').slice(1).map(x => '<div class="hk ' + x);
+    const tot = (k, v, sub, vcol, act, aid) => `<div class="hk hk-all hk-wide" data-act="${act}" data-id="${aid}"><div style="min-width:0"><div class="k">${k}</div>${sub.map(x => `<div class="s">${x}</div>`).join('')}</div><div class="v" style="${vcol}">${v}</div></div>`;
+    h += `<div class="hk-head"><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span></div>
+      <div class="hk-grid">${tyB.map((x, i) => x + shB[i]).join('')}</div>
+      <div class="hk-head" style="grid-template-columns:1fr;margin-top:12px"><span class="hk-ch hk-all">Toplam (tüm kanallar)</span></div>
+      <div class="hk-grid hk-one">
+        ${tot('Bugün kâr', tlS(T.prof), [`${fmtTL(T.rev)} ciro · marj ${pct(T.rev ? T.prof / T.rev * 100 : null)}`, YS ? `Dün bu saatte ${tlS(YS.prof)}${vs(T.prof, YS.prof)}` : ''].filter(Boolean), prof(T.prof), 'home-go', 'today-products')}
+        ${H.yday ? tot('Dün kâr', tlS(H.yday.profit), [`${fmtTL(H.yday.revenue)} ciro · marj ${pct(H.yday.margin)}`], prof(H.yday.profit), 'home-go', 'yesterday-products') : ''}
+        ${tot('Bu ay kâr', tlS(M.profit), [`${fmtTL(M.revenue)} ciro · marj ${pct(M.margin)}`], prof(M.profit), 'home-go', 'month-products')}
+        ${H.last30 ? tot('Son 30 gün kâr', tlS(H.last30.profit), [`${fmtTL(H.last30.revenue)} ciro · marj ${pct(H.last30.margin)}`], prof(H.last30.profit), 'home-go', 'd30-products') : ''}
+        ${tot('Bekleyen sipariş', fmtN((nw.n || 0) + (nw.sh || 0)), [`Bugün ${fmtN(H.todayN ?? (T.n || 0))} sipariş`], 'color:var(--orange)', 'orders-new', '')}
+      </div>` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
@@ -1553,7 +1576,7 @@ function banners(){
   const st = tyState();
   if (st.cls === 'err') h += `<div class="banner bad"><div><b>Trendyol eşitlemesi hata verdi:</b> ${esc(st.err || '')}</div><button class="btn sm" data-act="open-import">Ayrıntı</button></div>`;
   else if (!(S.sync && S.sync.trendyol && S.sync.trendyol.configured)) h += `<div class="banner"><div><b>Trendyol bağlantısı kurulmadı.</b> Cloudflare'de Trendyol bilgileri girilince siparişler her 10 saniyede kendiliğinden gelir.</div></div>`;
-  if (S.tab !== 'cari') { loadCari(); const ca = cariDueAlert(); if (ca) h += `<div class="banner bad"><div><b>⏰ Tedarikçi ödemesi:</b> ${ca.today > 0.004 ? `bugün <b>${tl2(ca.today)}</b>` : ''}${ca.today > 0.004 && ca.late > 0.004 ? ', ' : ''}${ca.late > 0.004 ? `gecikmiş <b>${tl2(ca.late)}</b>` : ''}${ca.fxTxt ? ` <span class="small">(${esc(ca.fxTxt)} dahil, güncel kurla)</span>` : ''} · ${fmtN(ca.n)} firma</div><button class="btn sm" data-act="go-cari">Carilere git</button></div>`; }
+  if (S.tab !== 'cari' && S.tab !== 'home') { loadCari(); const ca = cariDueAlert(); if (ca) h += `<div class="banner bad"><div><b>⏰ Tedarikçi ödemesi:</b> ${ca.today > 0.004 ? `bugün <b>${tl2(ca.today)}</b>` : ''}${ca.today > 0.004 && ca.late > 0.004 ? ', ' : ''}${ca.late > 0.004 ? `gecikmiş <b>${tl2(ca.late)}</b>` : ''}${ca.fxTxt ? ` <span class="small">(${esc(ca.fxTxt)} dahil, güncel kurla)</span>` : ''} · ${fmtN(ca.n)} firma</div><button class="btn sm" data-act="go-cari">Carilere git</button></div>`; }
   return h;
 }
 function loading(){ return `<div class="list" aria-busy="true"><div class="skel" style="border-top:0"></div><div class="skel"></div><div class="skel"></div></div>`; }
@@ -4192,6 +4215,7 @@ document.addEventListener('click', async e => {
       catch(e) { toast(errText(e), true); }
       delete Q.busy[id]; render(); break; }
     case 'orders-new': S.ofilter = 'new'; S.opage = 1; setTab('orders'); break;
+    case 'home-go2': { const [per, ch] = String(id).split('|'); const P = profS(); P.period = ['month', 'yesterday', 'd30'].includes(per) ? per : 'today'; P.ch = ch || ''; P.sub = 'products'; P.opage = 1; P.data = null; P.key = ''; setTab('profit'); break; }
     case 'home-go': { if (id === 'reports') { repS().gran = 'day'; setTab('reports'); break; }
       const P = profS(); const [per, sub] = id.split('-'); P.period = ['month', 'yesterday', 'd30'].includes(per) ? per : 'today'; P.sub = sub === 'orders' ? 'orders' : 'products'; P.opage = 1; P.data = null; P.key = ''; setTab('profit'); break; }
     case 'rep-quick': { const R = repS(); [R.cf, R.ct] = id.split('|'); render(); break; }
