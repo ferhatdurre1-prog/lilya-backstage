@@ -391,8 +391,10 @@ function bkDelivered(o) { const out = []; const walk = (x, d) => { if (!x || typ
 const TR_HOLI = new Set(['01-01', '04-23', '05-01', '05-19', '07-15', '08-30', '10-29', '2026-03-20', '2026-05-27', '2026-05-28', '2026-05-29', '2027-03-09', '2027-03-10', '2027-05-16', '2027-05-17', '2027-05-18', '2027-05-19']);
 function srPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; const D = 86400000;
   const wed = t + ((3 - new Date(t).getUTCDay() + 7) % 7) * D; t = wed + 8 * D;
-  const isOff = (ms) => { const x = new Date(ms), k = x.toISOString().slice(0, 10); return x.getUTCDay() === 0 || x.getUTCDay() === 6 || TR_HOLI.has(k) || TR_HOLI.has(k.slice(5)); };
-  while (isOff(t)) t -= D; return new Date(t).toISOString().slice(0, 10); }
+  while (trOff(t)) t -= D; return new Date(t).toISOString().slice(0, 10); }
+function trOff(ms) { const x = new Date(ms), k = x.toISOString().slice(0, 10); return x.getUTCDay() === 0 || x.getUTCDay() === 6 || TR_HOLI.has(k) || TR_HOLI.has(k.slice(5)); }
+// PayTR: teslimden 7 gün geçtikten sonraki ilk iş günü (22.10 teslim → 30.10; 23.10 teslim → 31.10 cumartesi → 2.11)
+function ptPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 8 * 86400000; while (trOff(t)) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
 function bkRow(o) {
   const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
   const no = String(o.orderNumber || c.code || o.foreignCode || o.code || '').replace(/\D/g, ''); // orderNumber = Shopify sipariş no (2002); content.code Shopify'ın iç kimliği
@@ -3198,7 +3200,7 @@ ${catalog}` });
       if (m) used.add(m.k);
       const lag = m && m.paid_day ? Math.round((Date.parse(m.paid_day) - Date.parse(m.tarih)) / 86400000) : null;
       const deliv = dlvDay(r.srd) || r.bkd || r.shd || null, dlag = m && m.paid_day && deliv ? Math.round((Date.parse(m.paid_day) - Date.parse(deliv)) / 86400000) : null; // PayTR ödemeyi teslimata göre yapar
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, deliv, dlag, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff' }); }
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, deliv, dlag, due: deliv ? ptPayDay(deliv) : null, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff' }); }
     const orphan = sales.filter(x => !used.has(x.k)).map(x => ({ siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day, odeme: x.odeme_tipi || '' }));
     // Eşleşmeyen her PayTR işlemi için aday Shopify siparişleri (±1 gün, tutar ±%15): neden eşleşmediği yazılır
     if (orphan.length) { const { results: cand } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, p.gateway FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1`).bind(iso(dayStartTR(addDayStr(rs, -2)))).all();
@@ -3210,10 +3212,12 @@ ${catalog}` });
           return { id: c.id, orderNo: c.order_no, date: c.date, amt, why }; }).filter(Boolean).slice(0, 4); } }
     const st3 = (k) => { const a = out.filter(x => x[k] !== null && x[k] !== undefined).map(x => x[k]).sort((p, q) => p - q); return a.length ? { min: a[0], max: a[a.length - 1], med: a[Math.floor(a.length / 2)], avg: r2(a.reduce((p, q) => p + q, 0) / a.length), n: a.length } : null; };
     const lags = out.filter(x => x.lag !== null).map(x => x.lag).sort((a, b) => a - b), mm = (k, f = () => true) => r2(out.filter(x => x.st !== 'nodata' && f(x)).reduce((a, x) => a + (x[k] || 0), 0));
+    const today = trToday(), dueM = new Map(); for (const x of out) if (x.st !== 'nodata' && !x.paid && x.due) { const g = dueM.get(x.due) || { day: x.due, net: 0, n: 0 }; g.net = r2(g.net + (x.net || 0)); g.n++; dueM.set(x.due, g); }
+    const dueList = [...dueM.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => ({ ...g, late: g.day < today }));
     const pend = mm('net', x => !x.paid), paidTot = r2(pR.results.reduce((a, x) => a + (x.net || 0), 0));
     return json({ ok: true, items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { exp: mm('exp'), pt: mm('pt'), kes: mm('kes'), net: mm('net'), pend, paid: paidTot, refunds: r2(refunds.reduce((a, x) => a + (x.tutar || 0), 0)) },
-      lag: lags.length ? { min: lags[0], max: lags[lags.length - 1], med: lags[Math.floor(lags.length / 2)], n: lags.length } : null, lagD: st3('dlag'), delivN: out.filter(x => x.deliv).length, payouts: pR.results.slice(0, 60), orphan: orphan.slice(0, 50), orphanN: orphan.length });
+      lag: lags.length ? { min: lags[0], max: lags[lags.length - 1], med: lags[Math.floor(lags.length / 2)], n: lags.length } : null, lagD: st3('dlag'), dueList, noDue: out.filter(x => x.st !== 'nodata' && !x.paid && !x.due).length, delivN: out.filter(x => x.deliv).length, payouts: pR.results.slice(0, 60), orphan: orphan.slice(0, 50), orphanN: orphan.length });
   }
   if (path === '/api/paytr/rawdiag') { const cr = await ptCreds(env); const d = trToday(); const a = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-dokumu/', { start_date: addDayStr(d, -14), end_date: d }, cr.id + addDayStr(d, -14) + d + cr.salt).catch(e => ({ err: String(e.message) }));
     const p1 = a.list && a.list[0]; const day = p1 ? ptDay(String(p1.date_paid || '')) : addDayStr(d, -1); const b = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-detayi/', { date: day }, cr.id + day + cr.salt).catch(e => ({ err: String(e.message) }));
