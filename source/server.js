@@ -94,7 +94,9 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN tx TEXT').run(); } catch (e) {} // Shopify ödeme işlem kimlikleri (PayTR eşleşmesi)
   try { await env.DB.prepare('ALTER TABLE paytr_tx ADD COLUMN paid_day TEXT').run(); } catch (e) {} // PayTR parayı hangi gün yatırdı
   try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN manual INTEGER').run(); } catch (e) {}
-  try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN currency TEXT').run(); } catch (e) {} // döviz cari: USD / EUR (boş = TL) // elle açılan cari (hareketi olmasa da listede görünür)
+  try { await env.DB.prepare('ALTER TABLE suppliers ADD COLUMN currency TEXT').run(); } catch (e) {}
+  try { await env.DB.prepare('ALTER TABLE sup_mov ADD COLUMN src TEXT').run(); } catch (e) {} // 'xls' = Excel'den yüklendi (toplu silinebilir)
+  try { await env.DB.prepare('ALTER TABLE sup_pay ADD COLUMN src TEXT').run(); } catch (e) {} // döviz cari: USD / EUR (boş = TL) // elle açılan cari (hareketi olmasa da listede görünür)
   try { await env.DB.prepare('ALTER TABLE audit_pkg ADD COLUMN delivered TEXT').run(); } catch (e) {} // Trendyol paketinin teslim günü
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN planned TEXT').run(); } catch (e) {} // Sürat planlanan teslim tarihi
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN delivered TEXT').run(); } catch (e) {} // Shopify gönderisinin teslim günü
@@ -264,14 +266,14 @@ async function cariLoad(env, only) {
   const w = only ? ' AND supplier=?1 COLLATE NOCASE' : '', B = (st) => only ? st.bind(only) : st;
   const pur = (await B(env.DB.prepare(`SELECT id, supplier, doc_no, doc_date, t, total, units FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted'${w}`)).all()).results;
   const pay = (await B(env.DB.prepare(`SELECT id, supplier, date, t, amount, method, note FROM sup_pay WHERE deleted=0${w}`)).all()).results;
-  const mov = (await B(env.DB.prepare(`SELECT id, supplier, date, t, kind, amount, note FROM sup_mov WHERE deleted=0${w}`)).all()).results;
+  const mov = (await B(env.DB.prepare(`SELECT id, supplier, date, t, kind, amount, note, src FROM sup_mov WHERE deleted=0${w}`)).all()).results;
   const sups = (await env.DB.prepare('SELECT name, terms, manual, currency FROM suppliers').all()).results, K = (x) => String(x || '').toLocaleLowerCase('tr-TR'), sm = new Map(sups.map(x => [K(x.name), x]));
   const m = new Map(), get = (n) => { const k = K(n); if (!m.has(k)) { const s0 = sm.get(k); m.set(k, { supplier: s0 ? s0.name : n, cur: cariCur(s0 && s0.currency), terms: cariTerms(s0 && s0.terms), buys: [], pays: [] }); } return m.get(k); };
   for (const r of pur) get(r.supplier).buys.push({ id: r.id, doc_no: r.doc_no, units: r.units, date: r.doc_date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(r.total) });
   for (const r of pay) get(r.supplier).pays.push({ id: r.id, method: r.method, note: r.note, date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(r.amount) });
   // Elle girilen hareketler: devir bakiye / borç (+ borç, − alacak) ve alacak (iade, indirim)
   const MK = { open: 'Devir bakiye', debt: 'Borç', credit: 'Alacak' };
-  for (const r of mov) { const a = r2(r.amount), x = { id: 'm' + r.id, mov: true, label: [MK[r.kind] || 'Hareket', r.note].filter(Boolean).join(' · '), date: r.date || String(r.t || '').slice(0, 10), t: r.t || '' };
+  for (const r of mov) { const a = r2(r.amount), x = { id: 'm' + r.id, mov: true, label: r.src === 'xls' && r.note ? r.note : [MK[r.kind] || 'Hareket', r.note].filter(Boolean).join(' · '), date: r.date || String(r.t || '').slice(0, 10), t: r.t || '' };
     if (r.kind === 'credit' || a < 0) get(r.supplier).pays.push({ ...x, method: MK[r.kind] || 'Alacak', note: r.note, amount: Math.abs(a) }); else get(r.supplier).buys.push({ ...x, amount: a }); }
   if (!only) for (const s0 of sups) if (s0.manual) get(s0.name);
   return [...m.values()].map(c => { c.buy = r2(c.buys.reduce((a, x) => a + x.amount, 0)); c.paid = r2(c.pays.reduce((a, x) => a + x.amount, 0)); c.bal = r2(c.buy - c.paid);
@@ -3172,15 +3174,23 @@ ${catalog}` });
     await env.DB.prepare('UPDATE suppliers SET currency=?2 WHERE name=?1').bind(sup, c === 'TL' ? null : c).run(); return json({ ok: true, currency: c }); }
   if (path === '/api/cari/movdel') { await env.DB.prepare('UPDATE sup_mov SET deleted=1 WHERE id=?1').bind(intOr(String(body.id || '').replace(/^m/, ''), 0)).run(); return json({ ok: true }); }
   if (path === '/api/cari/import') {
-    // EXCEL'DEN CARİ YÜKLE: her satır bir firma (ya da hareket): firma, tutar (+ borç / − alacak), tarih, açıklama, tür (devir/borç/alacak)
-    const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 2000); if (!rows.length) return bad('Yüklenecek satır yok.');
-    const st = [], names = new Set(); let n = 0;
-    for (const x of rows) { const sup = String(x.supplier || '').trim().slice(0, 120), amt = cariAmt(x.amount); if (!sup) continue; names.add(sup);
-      const cu = cariCur(x.currency); st.push(env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(sup, iso()), env.DB.prepare('UPDATE suppliers SET manual=1, currency=COALESCE(?2, currency) WHERE name=?1').bind(sup, cu === 'TL' ? null : cu));
-      if (!amt) continue; const kind = ['open', 'debt', 'credit'].includes(x.kind) ? x.kind : 'open', date = /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : trToday();
-      st.push(env.DB.prepare('INSERT INTO sup_mov(t, supplier, date, kind, amount, note) VALUES(?1,(SELECT name FROM suppliers WHERE name=?2),?3,?4,?5,?6)').bind(iso(), sup, date, kind, kind === 'credit' ? Math.abs(amt) : amt, String(x.note || 'Excel').slice(0, 160))); n++; }
+    // EXCEL'DEN CARİ YÜKLE: her satır bir hareket: firma, para birimi, tarih, tür, tutar (+ borç / − alacak, ödeme), açıklama
+    const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 5000); if (!rows.length) return bad('Yüklenecek satır yok.');
+    const st = [], names = new Map(); let n = 0, pays = 0; const t0 = Date.now();
+    rows.forEach((x, i) => { const sup = String(x.supplier || '').trim().slice(0, 120), amt = cariAmt(x.amount); if (!sup) return; const cu = cariCur(x.currency);
+      if (!names.has(sup.toLocaleLowerCase('tr-TR'))) { names.set(sup.toLocaleLowerCase('tr-TR'), sup); st.push(env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(sup, iso()), env.DB.prepare('UPDATE suppliers SET manual=1, currency=COALESCE(?2, currency) WHERE name=?1').bind(sup, cu === 'TL' ? null : cu)); }
+      if (!amt) return; const date = /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : trToday(), tur = String(x.tur || '').trim().slice(0, 40), note = [tur, String(x.note || '').trim()].filter(Boolean).join(' · ').slice(0, 160), t = iso(t0 + i);
+      if (/ödeme|odeme|tahsilat/i.test(tur) && amt < 0) { pays++; st.push(env.DB.prepare('INSERT INTO sup_pay(t, supplier, date, amount, method, note, src) VALUES(?1,(SELECT name FROM suppliers WHERE name=?2),?3,?4,?5,?6,?7)').bind(t, sup, date, Math.abs(amt), tur || 'Ödeme', String(x.note || '').slice(0, 160), 'xls')); return; }
+      const kind = /devir/i.test(tur) || x.kind === 'open' ? 'open' : amt < 0 ? 'credit' : 'debt';
+      st.push(env.DB.prepare('INSERT INTO sup_mov(t, supplier, date, kind, amount, note, src) VALUES(?1,(SELECT name FROM suppliers WHERE name=?2),?3,?4,?5,?6,?7)').bind(t, sup, date, kind, kind === 'credit' ? Math.abs(amt) : amt, note || 'Excel', 'xls')); n++; });
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
-    return json({ ok: true, suppliers: names.size, moves: n });
+    return json({ ok: true, suppliers: names.size, moves: n + pays, pays });
+  }
+  if (path === '/api/cari/impclear') {
+    // Excel'den yüklenen bütün hareketleri sil (önceki devir yüklemeleri dahil); elle girilenler ve fişler kalır
+    const a = await env.DB.prepare(`UPDATE sup_mov SET deleted=1 WHERE deleted=0 AND (src='xls' OR note LIKE 'Hesap ekstresi devri%' OR note='Excel devir' OR note='Excel')`).run();
+    const b = await env.DB.prepare(`UPDATE sup_pay SET deleted=1 WHERE deleted=0 AND src='xls'`).run();
+    return json({ ok: true, n: ((a.meta && a.meta.changes) || 0) + ((b.meta && b.meta.changes) || 0) });
   }
   if (path === '/api/cari/paydel') {
     await env.DB.prepare('UPDATE sup_pay SET deleted=1 WHERE id=?1').bind(intOr(body.id, 0)).run();
