@@ -4197,7 +4197,7 @@ ${catalog}` });
     try {
       const ds = results.map(r => Date.parse(r.date)).filter(Number.isFinite);
       if (ds.length) {
-        const pr = await computeProfit(env, iso(Math.min(...ds)), iso(Math.max(...ds) + 1));
+        const pr = await computeProfit(env, iso(Math.min(...ds) - 1000), iso(Math.max(...ds) + 1000)) /* Shopify tarihleri milisaniyesiz ('…12Z'); metin karşılaştırmasında dışarıda kalmasın */;
         const ids = new Set(results.map(r => r.id));
         for (const x of pr.orders) if (ids.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual };
       }
@@ -4207,7 +4207,7 @@ ${catalog}` });
   if (path === '/api/orders/profdet') {
     // Tek siparişin kâr dökümü (sipariş detayında gelir / gider kalemleri; Kâr ekranıyla aynı hesap)
     const id = String(body.id || ''); const r = await env.DB.prepare('SELECT date FROM orders WHERE id=?1').bind(id).first(); if (!r) return bad('Sipariş bulunamadı.', 404);
-    const d = Date.parse(r.date); const pr = await computeProfit(env, iso(d), iso(d + 1)); const x = (pr.orders || []).find(y => y.id === id);
+    const d = Date.parse(r.date); const pr = await computeProfit(env, iso(d - 1000), iso(d + 1000)); const x = (pr.orders || []).find(y => y.id === id);
     return json({ ok: true, x: x || null, outOfRange: !x });
   }
   if (path === '/api/orders/prof') {
@@ -4216,7 +4216,7 @@ ${catalog}` });
     if (ids.length) {
       const rows = await selectIn(env, 'SELECT id, date FROM orders', 'id', ids);
       const ds = rows.map(r => Date.parse(r.date)).filter(Number.isFinite);
-      if (ds.length) { const pr = await computeProfit(env, iso(Math.min(...ds)), iso(Math.max(...ds) + 1)); const want = new Set(ids); for (const x of pr.orders) if (want.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual }; }
+      if (ds.length) { const pr = await computeProfit(env, iso(Math.min(...ds) - 1000), iso(Math.max(...ds) + 1000)) /* Shopify tarihleri milisaniyesiz ('…12Z'); metin karşılaştırmasında dışarıda kalmasın */; const want = new Set(ids); for (const x of pr.orders) if (want.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual }; }
     }
     return json({ ok: true, prof });
   }
