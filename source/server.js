@@ -2315,7 +2315,7 @@ async function computeProfit(env, from, to, ch0) {
   const rep = { grossU: 0, grossTL: 0, cancelU: 0, cancelTL: 0, retU: 0, retTL: 0, pendU: 0, pendTL: 0, discTL: 0, netU: 0, netTL: 0, noGross: 0 };
   for (const ord of o.results) for (const l of JSON.parse(ord.lines || '[]')) {
     if (!l.qty) continue; const f = l.fin || {}; const unitG = (f.gross ?? f.revenue ?? 0) / l.qty, unitR = (f.revenue ?? 0) / l.qty;
-    if (f.gross === null || f.gross === undefined) rep.noGross++;
+    if ((f.gross === null || f.gross === undefined) && ord.channel !== 'shopify') rep.noGross++; // Shopify'da brüt tutar ayrıca okunmaz
     rep.grossU += l.qty; rep.grossTL += unitG * l.qty;
     if (l.status === 'cancelled') { rep.cancelU += l.qty; rep.cancelTL += unitG * l.qty; continue; }
     const rq = Math.min(l.qty, rets.get(ord.id + '|' + l.pkey) || 0), pq = Math.min(l.qty - rq, pend.get(ord.id + '|' + l.pkey) || 0);
