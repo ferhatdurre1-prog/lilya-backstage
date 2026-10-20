@@ -91,7 +91,8 @@ body[data-tab="home"] .kpi .v{font-size:19px;margin-top:2px}
 body[data-tab="home"] .kpi .s{font-size:10.5px;margin-top:1px;line-height:1.3}
 body[data-tab="home"] .card{padding:8px 12px;gap:4px;border-radius:14px;margin-bottom:6px}
 body[data-tab="home"] .card h3{font-size:15px}
-body[data-tab="home"] .hlist .item{padding-top:5px;padding-bottom:5px;gap:10px}
+body[data-tab="home"] .hlist .item{padding-top:3px;padding-bottom:3px;gap:10px}
+body[data-tab="home"] .act.sc{display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;text-align:left}body[data-tab="home"] .act.sc .n svg{width:17px;height:17px}body[data-tab="home"] .act.sc .l{font-size:10.5px;line-height:1.2}
 body[data-tab="home"] .hlist .thumb{width:36px;height:36px;border-radius:8px}
 body[data-tab="home"] .hlist .ttl{font-size:13.5px;-webkit-line-clamp:1}
 body[data-tab="home"] .hlist .meta{font-size:11.5px}
@@ -300,12 +301,13 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .hk-grid>span:first-child{border-bottom:1px solid var(--line)}
 .hk-ch.hk-ty{background:var(--ty-soft);color:var(--ty)}.hk-ch.hk-sh{background:var(--sh-soft);color:var(--sh)}.hk-ch.hk-all{background:var(--violet-soft);color:var(--violet)}
 .hk-row{font-size:10px;font-weight:600;color:var(--ink-3);padding:6px 3px 0 6px;overflow:hidden;border-bottom:1px solid var(--line);line-height:1.2}
-.hk{height:42px;box-sizing:border-box;overflow:hidden;border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:4px 6px;cursor:pointer;min-width:0}
+.hk{height:39px;box-sizing:border-box;overflow:hidden;border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:4px 6px;cursor:pointer;min-width:0}
 .hk-grid>:nth-last-child(-n+4){border-bottom:0}
 .hk .v{font-size:14.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--good);line-height:1.2}.hk .v .x{font-size:10px;margin-left:2px;font-weight:600}
 .hk .s{font-size:9.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
 .hk .up{color:var(--good)}.hk .dn{color:var(--bad)}
 body[data-tab="home"] .act-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+body[data-tab="home"] .sc-grid .act.sc{height:44px;min-width:0;overflow:hidden}body[data-tab="home"] .sc-grid .act.sc .l{min-width:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical} /* bütün kısayollar aynı boyda */
 body[data-tab="home"] .act-grid .act{padding:6px 3px}body[data-tab="home"] .act-grid .act .l{font-size:10px;line-height:1.2}body[data-tab="home"] .act-grid .act .n{font-size:14px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0} /* uzun tek satırlık metin kartı ekrandan taşırmasın */
 .card>*{min-width:0;max-width:100%}
@@ -1505,15 +1507,15 @@ function viewHome(){
     ${act('Stoğu azalan', low, 'home-stock', 'low')}
   </div></div>`;
   // Kısayollar: sık kullanılan işlemler
-  const sc = (label, icon, a, id) => `<button class="act" data-act="${a}"${id ? ` data-id="${id}"` : ''}><span class="n" style="color:var(--accent)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span><span class="l">${label}</span></button>`;
-  h += `<div class="card"><h3 style="margin:0">Kısayollar</h3><div class="act-grid">
+  const sc = (label, icon, a, id) => `<button class="act sc" data-act="${a}"${id ? ` data-id="${id}"` : ''}><span class="n" style="color:var(--accent)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span><span class="l">${label}</span></button>`;
+  h += `<div class="card"><h3 style="margin:0">Kısayollar</h3><div class="act-grid sc-grid">
     ${sc('Gelir / gider', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>', 'add-expense')}
     ${sc('Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>', 'ws-open')}
     ${sc('Adres düzeltme', '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', 'tab', 'addr')}
     ${sc('Cariler', '<path d="M4 7h16M4 12h16M4 17h10"/>', 'tab', 'cari')}
     ${sc(`Alınacaklar${(() => { const n = ps.filter(p => p.mto && p.qty < 0).length; return n ? ` <b style="color:var(--orange)">${fmtN(n)}</b>` : ''; })()}`, '<path d="M6 6h15l-1.5 9h-12z"/><path d="M6 6L5 3H2"/><circle cx="9" cy="20" r="1.3"/><circle cx="18" cy="20" r="1.3"/>', 'need-open')}
     ${sc('Barkodla çıkış', '<path d="M4 6v12M7 6v12M10 6v12M14 6v12M17 6v12M20 6v12"/>', 'scan-open')}
-    ${sc('Alış faturası yükle', '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>', 'pur-open')}
+    ${sc('Fatura yükle', '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>', 'pur-open')}
     ${sc('Alış listeleri', '<path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>', 'purl-open')}
   </div></div>`;
   return h;
