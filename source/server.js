@@ -3143,16 +3143,16 @@ ${catalog}` });
     if (!rows.length) return bad('Dosyada satır bulunamadı.');
     const cr = await srCreds(env), c = await shCreds(env);
     const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
-    const out = [], miss = [], fixed = [];
+    const out = [], miss = [], fixed = []; let already = 0;
     for (const r of results) { const m = srMatch(rows, r), tn = m && srRowTrack(m);
       if (!tn) { if (!r.fulfilled_at) miss.push(r.order_no); continue; }
       if (r.fulfilled_at) { // zaten kargolandı: numara farklıysa (eski hatalı okuma) düzelt
-        if (r.tracking === tn) continue;
+        if (r.tracking === tn) { already++; continue; }
         try { if (shConfigured(c)) await shFixTracking(env, c, r.gid, tn); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(r.ref, tn, 'Sürat raporundan düzeltildi (önceki: ' + (r.tracking || '-') + ')', iso()).run(); fixed.push(r.order_no); out.push({ ref: r.ref, tracking: tn, fulfilled: true, fixed: true }); }
         catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } continue; }
       r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat raporundan';
       try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
-    return json({ ok: true, rows: rows.length, pending: results.filter(r => !r.fulfilled_at).length, tracked: out.filter(x => !x.fixed).length, fulfilled: out.filter(x => x.fulfilled && !x.fixed).length, fixed: fixed.length, fixedList: fixed.slice(0, 30), errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
+    return json({ ok: true, rows: rows.length, pending: results.filter(r => !r.fulfilled_at).length, tracked: out.filter(x => !x.fixed).length, fulfilled: out.filter(x => x.fulfilled && !x.fixed).length, fixed: fixed.length, fixedList: fixed.slice(0, 30), already, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
   }
   if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
