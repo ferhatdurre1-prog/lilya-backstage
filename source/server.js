@@ -2045,7 +2045,6 @@ async function heavySteps(env, budget, result, step, left, t) {
     const ok = (need) => qLeft(env) > need;
     // Sıra önemli: seyrek ama kritik işler (kesintiler = gerçek kâr, ürün listesi) önce; sık ve küçük işler kalan sürede
     if (left() > 28000 && ok(350) && isDue('run_fin_at', 5 * 60000)) { await setSetting(env, 'run_fin_at', String(now)); await step('finance', () => syncTrendyolFinance(env, false, Math.min(budget ? budget - 15000 : Infinity, Date.now() + 20000)), 'fin_err'); if (result.finance && !result.steps.financeErr) await setSetting(env, 'fin_err', ''); }
-    if (left() > 25000 && ok(300) && isDue('run_tys_at', 60 * 60000)) { await setSetting(env, 'run_tys_at', String(now)); await step('tysettle', () => tySettleSync(env, 2), 'ty_set_err'); }
     if (left() > 20000 && ok(350) && isDue('run_prod_at', 5 * 60000)) { await setSetting(env, 'run_prod_at', String(now)); await step('products', () => syncTrendyolProducts(env, 1)); }
     if (left() > 15000 && ok(300) && isDue('run_bf_at', 3 * 60000)) { await setSetting(env, 'run_bf_at', String(now)); await step('backfill', () => backfillTrendyolOrders(env), 'fin_err'); }
     if (left() > 8000 && ok(40)) await step('hook', () => ensureTyWebhook(env, false));

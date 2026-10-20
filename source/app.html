@@ -996,7 +996,7 @@ function viewCari(){
   const L = D.list || [], A = D.alerts || [], tlv = (x, k, kt) => x.cur && x.cur !== 'TL' ? (x[kt] || 0) : x[k], tb = L.reduce((t, x) => t + tlv(x, 'bal', 'balTL'), 0), tp = 0;
   const fxL = L.filter(x => x.cur && x.cur !== 'TL'), sum = (f) => A.filter(f).reduce((t, x) => t + tlv(x, 'left', 'leftTL'), 0), late = sum(x => x.st === 'late'), tod = sum(x => x.st === 'today'), wk = sum(x => x.st === 'week');
   h += `<div class="home-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:12px"><div class="kpi"><div class="k">Kalan borç${fxL.length ? ' (TL karşılığı dahil)' : ''}</div><div class="v" style="color:${tb - tp > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(tb - tp)}</div>${fxL.length ? `<div class="small muted">${fxL.map(x => `${esc(x.supplier)}: ${curAmt(x.bal, x.cur)}`).join(' · ')}${D.fx && D.fx.USD ? ` · 1$ = ${D.fx.USD.toLocaleString('tr-TR', {maximumFractionDigits: 4})} TL` : ''}</div>` : ''}</div><div class="kpi"><div class="k">Gecikmiş</div><div class="v" style="color:${late > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(late)}</div></div><div class="kpi"><div class="k">Bugün ödenecek</div><div class="v" style="color:${tod > 0.004 ? 'var(--warn, #b45309)' : 'inherit'}">${tl2(tod)}</div></div><div class="kpi"><div class="k">Önümüzdeki 7 gün</div><div class="v">${tl2(wk)}</div></div></div>`;
-  { const cards = tyCariCard() + srCariCard() + ptCariCard(); h += cariWeekCard(D) + cards; }
+  { const cards = srCariCard() + ptCariCard(); h += cariWeekCard(D) + cards; } // Trendyol hakediş mutabakatı kaldırıldı
   h += `<div class="row" style="justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn" data-act="cari-addnew">+ Cari ekle</button><label class="btn" style="cursor:pointer">📤 Excel'den cari yükle<input type="file" id="cari-xls" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button><button class="btn ghost" data-act="cari-imps">${C.imps ? 'Yüklemeleri kapat' : '↩︎ Yüklemeler / geri al'}</button></div>`;
   if (C.imps) h += cariImpsHtml(C.imps);
   if (C.open === '__add') h += cariNewForm();
@@ -1134,7 +1134,7 @@ function cariWeekCard(D){
   const wOf = (d) => weeks.find(w => d >= w.a && d <= w.b), late = [];
   for (const x of (D.dues || [])) { const tl = x.cur && x.cur !== 'TL' ? x.leftTL : x.left, it = { who: x.supplier, day: x.due, amt: x.left, cur: x.cur, tl: tl || 0 };
     if (x.due < today) late.push(it); else { const w = wOf(x.due); if (w) w.pay.push(it); } }
-  const T = C.ty; if (T && T.schedule) for (const g of T.schedule) if (g.future && g.net > 0) { const w = wOf(g.day); if (w) w.inc.push({ who: 'Trendyol hakediş', day: g.day, amt: g.net, tl: g.net, note: `${fmtN(g.n)} sipariş` }); }
+  const T = true; // Trendyol hakediş kaldırıldı
   const P = C.pt; if (P && P.dueList) for (const g of P.dueList) if (!g.late) { const w = wOf(g.day); if (w) w.inc.push({ who: 'PayTR', day: g.day, amt: g.net, tl: g.net, note: `${fmtN(g.n)} sipariş` }); }
   const R0 = C.sr; if (R0 && R0.schedule) for (const g of R0.schedule) if (g.st === 'future') { const w = wOf(g.day); if (w) w.inc.push({ who: 'Sürat kapıda tahsilat', day: g.day, amt: g.amount, tl: g.amount, note: `${fmtN(g.n)} gönderi` }); }
   const sumT = (L) => L.reduce((a, x) => a + (x.tl || 0), 0), wd = (d) => ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'][new Date(d + 'T12:00:00Z').getUTCDay()];
