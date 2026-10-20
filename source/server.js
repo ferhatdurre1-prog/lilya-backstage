@@ -386,8 +386,13 @@ function bkDelivered(o) { const out = []; const walk = (x, d) => { if (!x || typ
       if (/deliver/i.test(k) && !/address|adres|type|fee|price|estimat|plan|expect|count|method/i.test(k)) { const dd = dlvDay(v); if (dd) out.push(dd); }
       else if (stt && /time|date|tarih|created/i.test(k)) { const dd = dlvDay(v); if (dd) out.push(dd); } } };
   walk(o, 0); return out.sort().pop() || null; }
-// Sürat kapıda tahsilatı: teslimin olduğu haftanın ertesi haftası perşembe günü yatırır
-function srPayDay(d) { if (!d) return null; const t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; const off = (new Date(t).getUTCDay() + 6) % 7; return new Date(t - off * 86400000 + 10 * 86400000).toISOString().slice(0, 10); }
+// Sürat kapıda tahsilatı: perşembe–çarşamba haftası; çarşambaya kadar (dahil) teslim edilenler 8 gün sonraki perşembe yatar
+// (ör. 21.10 çarşambaya kadar → 29.10; 22.10'dan sonra → 5.11). Ödeme günü resmi tatile denk gelirse önceki iş günü (29 Ekim → 28 Ekim)
+const TR_HOLI = new Set(['01-01', '04-23', '05-01', '05-19', '07-15', '08-30', '10-29', '2026-03-20', '2026-05-27', '2026-05-28', '2026-05-29', '2027-03-09', '2027-03-10', '2027-05-16', '2027-05-17', '2027-05-18', '2027-05-19']);
+function srPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; const D = 86400000;
+  const wed = t + ((3 - new Date(t).getUTCDay() + 7) % 7) * D; t = wed + 8 * D;
+  const isOff = (ms) => { const x = new Date(ms), k = x.toISOString().slice(0, 10); return x.getUTCDay() === 0 || x.getUTCDay() === 6 || TR_HOLI.has(k) || TR_HOLI.has(k.slice(5)); };
+  while (isOff(t)) t -= D; return new Date(t).toISOString().slice(0, 10); }
 function bkRow(o) {
   const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
   const no = String(o.orderNumber || c.code || o.foreignCode || o.code || '').replace(/\D/g, ''); // orderNumber = Shopify sipariş no (2002); content.code Shopify'ın iç kimliği
