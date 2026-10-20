@@ -2473,6 +2473,7 @@ async function computeProfit(env, from, to, ch0) {
   sum.extraIncome = R2(expenses.filter(x => x.kind === 'gelir').reduce((a, x) => a + x.amount, 0));
   sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses; sum.profit += sum.compensation + sum.extraIncome;
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
+  for (const bp of byProduct.values()) if (!prods.has(bp.key)) bp.orphan = true; // ürün silinmiş: satış hiçbir ürüne bağlı değil
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
   mark('cpu'); PERF_LAST = { ...TM, orders: o.results.length };
@@ -2810,6 +2811,32 @@ async function api(req, env, path, ctx) {
     const r = await env.DB.batch([env.DB.prepare(sql).bind(...vals, iso(), key), REV(env)]);
     if (!r[0].meta.changes) return bad('Ürün bulunamadı.', 404);
     return json({ ok: true });
+  }
+  // Silinmiş bir ürüne ait geçmiş satışlar: mevcut bir ürüne bağla ya da ürünü aynı anahtarla geri getir (kâr hesabı maliyeti bulsun)
+  if (path === '/api/products/relink') {
+    const key = String(body.key || ''), into = String(body.into || '');
+    if (!key || !into || key === into) return bad('Ürün seçilmedi.');
+    if (await env.DB.prepare('SELECT 1 FROM products WHERE key=?1').bind(key).first()) return bad('Bu ürün zaten listede; ürün sayfasından birleştir.');
+    let t = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(into).first();
+    for (let i = 0; t && t.merged_into && i < 5; i++) t = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(t.merged_into).first();
+    if (!t) return bad('Seçilen ürün bulunamadı.', 404);
+    const pat = '"pkey":' + JSON.stringify(key), rep = '"pkey":' + JSON.stringify(t.key);
+    await env.DB.batch([
+      env.DB.prepare('UPDATE orders SET lines=replace(lines, ?1, ?2), updated_at=?3 WHERE instr(lines, ?1) > 0').bind(pat, rep, iso()),
+      env.DB.prepare('UPDATE returns SET pkey=?2 WHERE pkey=?1').bind(key, t.key),
+      env.DB.prepare('UPDATE listings SET pkey=?2 WHERE pkey=?1').bind(key, t.key),
+      env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'stats_first', ''), setStmt(env, 'stats_cursor', ''), setStmt(env, 'stats_busy', '0'),
+      REV(env)]);
+    const job = refreshStats(env, Date.now() + 25000).catch(() => {}); if (ctx && ctx.waitUntil) ctx.waitUntil(job);
+    return json({ ok: true, key: t.key });
+  }
+  if (path === '/api/products/restore') {
+    const key = String(body.key || ''), name = String(body.name || '').trim(), sku = String(body.sku || '').trim();
+    if (!key || !name) return bad('Ürün adı gerekli.');
+    const cost = numOrNull(body.cost); if (cost !== null && cost < 0) return bad('Alış fiyatı eksi olamaz.');
+    if (await env.DB.prepare('SELECT 1 FROM products WHERE key=?1').bind(key).first()) return bad('Bu ürün zaten listede.');
+    await env.DB.batch([...ensureProduct(env, key, { sku, name, cost }, null), REV(env)]);
+    return json({ ok: true, key });
   }
   if (path === '/api/products/delete') { await env.DB.batch([env.DB.prepare('DELETE FROM products WHERE key=?1').bind(String(body.key || '')), REV(env)]); return json({ ok: true }); }
   if (path === '/api/stock') {

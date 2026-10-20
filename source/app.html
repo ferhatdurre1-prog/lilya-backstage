@@ -1640,6 +1640,25 @@ function listingsCard(p){
     ${ls.length ? `<div class="lines">${rows}</div>` : '<p class="muted small" style="margin:0">Bu ürüne bağlı kanal ilanı yok (elle eklenmiş ürün).</p>'}
     <p class="muted small" style="margin:0">Aynı ürünün farklı ilanları (ör. Trendyol'daki 1'li ve 2'li paket, Shopify'daki ilan) tek ürüne bağlanınca hepsi bu stoktan düşer.</p></div>`;
 }
+// Silinmiş ürüne ait satış: mevcut ürüne bağla ya da ürünü maliyetiyle geri getir
+function sheetOrphan(){
+  const sh = S.sheet;
+  if (sh.into) { const to = S.products.get(sh.into); if (!to) { sh.into = null; return sheetOrphan(); }
+    return {title:'Ürüne bağla', body:`<div class="card" style="gap:12px">
+      <div class="item" style="cursor:default;border-top:0">${thumb({name:sh.name})}<div class="main"><div class="ttl">${esc(sh.name)}</div><div class="meta"><span class="mono">${esc(sh.sku || '')}</span><span class="pill p-warn">silinmiş</span></div></div></div>
+      <div class="small muted" style="text-align:center">↓ bu ürünün satışları şuna bağlanacak ↓</div>
+      <div class="item" style="cursor:default;border-top:0">${thumb(to)}<div class="main"><div class="ttl">${esc(to.name)}</div><div class="meta"><span class="mono">${esc(to.code)}</span>${to.cost!=null?`<span>· alış ${tl2(to.cost)}</span>`:'<span style="color:var(--warn)">· alış fiyatı yok</span>'}</div></div></div>
+      <p class="muted small" style="margin:0">Geçmiş siparişler, iadeler ve hâlâ bu ürüne bağlı ilanlar seçtiğin ürüne aktarılır; kâr hesabı onun alış fiyatını kullanır. Stok değişmez. Raporlar arka planda yeniden hesaplanır.</p>
+      <div class="row"><button class="btn" data-act="orph-back">Geri</button><button class="btn primary" data-act="orph-link">Bağla</button></div></div>`}; }
+  const q = searchNorm(sh.q || '');
+  const ps = productsArr().filter(p => !p.merged && (!q || searchNorm(`${p.name} ${p.code} ${p.sku} ${p.barcode}`).includes(q))).slice(0, 60);
+  return {title:'Ürün listede yok', sub:`<span class="mono">${esc(sh.sku || '')}</span> <span>${esc(sh.name)}</span>`, body:`<div class="card"><p class="muted small" style="margin:0">Bu satış silinmiş bir ürüne ait, bu yüzden maliyeti bulunamıyor. Aynı ürün listede başka bir kayıtla duruyorsa ona bağla; yoksa ürünü alış fiyatıyla geri getir.</p></div>
+    <div class="card" style="gap:10px"><h3 style="margin:0">Mevcut ürüne bağla</h3><input class="input" id="oq" type="search" placeholder="Ürün adı, Lilya kodu, stok kodu" value="${esc(sh.q || '')}" autocomplete="off">
+    <div class="list" id="olist">${ps.map(p => `<button class="item" data-act="orph-pick" data-id="${esc(p.id)}">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.code)}</span>${p.cost!=null?`<span>· alış ${tl2(p.cost)}</span>`:''}</div></div><div class="end"><div class="qty">${fmtN(p.qty)}<small>adet</small></div></div></button>`).join('') || '<p class="muted small">Eşleşen ürün yok.</p>'}</div></div>
+    <div class="card"><h3 style="margin:0">Ürünü geri getir</h3>
+    <form id="f-orph-new" class="grid2"><label class="f">Ürün adı<input class="input" id="on-name" value="${esc(sh.name)}" required autocomplete="off"></label><label class="f">Alış fiyatı (TL)<input class="input num" id="on-cost" inputmode="decimal" placeholder="Örn. 42,50" autocomplete="off"></label>
+    <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Geri getir</button><span class="muted small">Stok 0 ile yeni Lilya koduyla açılır.</span></div></form></div>`};
+}
 // Birleştirme: bu ürünün ilanları seçilen ürüne bağlanır
 function sheetMerge(){
   const sh = S.sheet, from = S.products.get(sh.from); if (!from) return {title:'Birleştir', body:'<div class="card"><p class="muted">Ürün bulunamadı.</p></div>'};
@@ -2859,7 +2878,7 @@ function viewProfit(){
       <th class="r">Satış</th>
       <th class="r">Net kâr</th>
       <th class="r">Marj</th></tr></thead>
-      <tbody>${ps.slice(0,300).map(x => `<tr data-act="product" data-id="${esc(x.key)}" style="cursor:pointer"><td><div class="pcell">${thumb({name:x.name, image:x.image})}<div style="min-width:0"><span>${esc(x.name)}</span><span class="mono muted" style="font-size:11.5px">${esc(x.sku)}${x.costKnown?'':' · <b style="color:var(--warn)">maliyet yok</b>'}${x.retUnits?` · <b style="color:var(--warn)">${fmtN(x.retUnits)} iade</b>`:''}</span></div></div></td>
+      <tbody>${ps.slice(0,300).map(x => `<tr data-act="${x.orphan?'orphan':'product'}" data-id="${esc(x.key)}" style="cursor:pointer"><td><div class="pcell">${thumb({name:x.name, image:x.image})}<div style="min-width:0"><span>${esc(x.name)}</span><span class="mono muted" style="font-size:11.5px">${esc(x.sku)}${x.orphan?' · <b style="color:var(--warn)">ürün silinmiş · bağla</b>':x.costKnown?'':' · <b style="color:var(--warn)">maliyet yok</b>'}${x.retUnits?` · <b style="color:var(--warn)">${fmtN(x.retUnits)} iade</b>`:''}</span></div></div></td>
         <td class="r num">${fmtN(x.units)}</td><td class="r num">${fmtTL(x.revenue)}</td><td class="r num" style="${profitCls(x.profit)}"><b>${tlS(x.profit)}</b></td><td class="r num">${pct(x.margin)}</td></tr>`).join('')}</tbody></table></div>
       <p class="muted small">Sipariş başı kargo, iade kargosu ve hizmet bedeli ürünlere sipariş içindeki paylarına göre dağıtılır. İadesi onaylanan adetler satıştan düşülür; kargo ve hizmet bedeli zararı iade edilen ürüne yazılır.</p>`;
   }
@@ -3622,12 +3641,12 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
-    if (sh.type === 'scanout' || sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
+    if (sh.type === 'orphan' || sh.type === 'scanout' || sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
     if (sh.type === 'labels' && document.activeElement && /^lbl-(w|h)$/.test(document.activeElement.id)) return; // formları bozma
     const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; const hadFocus = document.activeElement && document.activeElement.id === 'bdq'; b.innerHTML = r.body; enhanceTables(b); applyBdFilter(); if (hadFocus) { const i = $('#bdq'); if (i) { i.focus(); const L = i.value.length; try { i.setSelectionRange(L, L); } catch(e){} } } existing.scrollTop = st; return;
   }
@@ -3692,6 +3711,7 @@ document.addEventListener('change', e => { const t = e.target; if (!t || t.id !=
 document.addEventListener('change', e => { const t = e.target; if (t && t.dataset && t.dataset.af && S.tab === 'addr') render();
   if (t && t.dataset && t.dataset.srsel) { const A = aS(); A.sel = A.sel || new Set(); if (t.checked) A.sel.add(t.dataset.srsel); else A.sel.delete(t.dataset.srsel); render(); } });
 document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.qid) qS().drafts[t.dataset.qid] = t.value;
+  if (t && t.id === 'oq' && S.sheet && S.sheet.type === 'orphan') { S.sheet.q = t.value; const box = $('#olist'); if (box) { const tmp = document.createElement('div'); tmp.innerHTML = sheetOrphan().body; const nl = tmp.querySelector('#olist'); if (nl) box.innerHTML = nl.innerHTML; } }
   if (t && t.id === 'mq' && S.sheet && S.sheet.type === 'merge') { S.sheet.q = t.value; const box = $('#mlist'); if (box) { const tmp = document.createElement('div'); tmp.innerHTML = sheetMerge().body; const nl = tmp.querySelector('#mlist'); if (nl) box.innerHTML = nl.innerHTML; } } });
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
@@ -3857,6 +3877,10 @@ document.addEventListener('click', async e => {
     case 'plabel-all': { const ps = filteredProducts(); if (!ps.length) { toast('Listede ürün yok.', true); break; } if (!(await confirmBox(`Listede görünen ${fmtN(ps.length)} ürünün her biri için 1 koli etiketi (${plSize().replace('x','×')} mm) hazırlansın mı? Ölçüyü ürün sayfasından değiştirebilirsin; arama ve süzgeçle listeyi daraltabilirsin.`, 'Hazırla'))) break; await printProductLabels(ps, 1); break; }
     case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;
     case 'merge-pick': S.sheet.into = id; renderSheet(true); break;
+    case 'orphan': { const x = ((profS().data || {}).products || []).find(p => p.key === id) || {}; openSheet('orphan', {id, key: id, name: x.name || '', sku: x.sku || ''}); break; }
+    case 'orph-pick': S.sheet.into = id; renderSheet(true); break;
+    case 'orph-back': S.sheet.into = null; renderSheet(true); break;
+    case 'orph-link': { const sh = S.sheet; await run(async () => { const r = await api('/api/products/relink', {key: sh.key, into: sh.into}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast('Satışlar ürüne bağlandı.'); openSheet('product', {id: r.key, mode: 'in'}); }); break; }
     case 'merge-back': S.sheet.into = null; renderSheet(true); break;
     case 'merge-do': { const sh = S.sheet, factor = Number(($('#mg-factor') || {}).value) || 1; await run(async () => { await api('/api/products/merge', {from: sh.from, into: sh.into, factor}); await refresh(true); toast('Birleştirildi.'); if (sh.match) { sh.match.done = true; S.sheet = sh.matchSheet; renderSheet(true); } else openSheet('product', {id: sh.into, mode: 'in'}); }); break; }
     case 'match-do': { const sh = S.sheet, x = sh.data.list[Number(id)], f = Number((document.querySelector(`[data-mf="${id}"]`) || {}).value) || x.factor; await run(async () => { await api('/api/products/merge', {from: x.from.key, into: x.into.key, factor: f}); x.done = true; await refresh(true); renderSheet(false); toast('Birleştirildi.'); }); break; }
@@ -4103,6 +4127,9 @@ document.addEventListener('submit', async e => {
     return;
   }
   if (id === 'f-new') submitNewProduct();
+  else if (id === 'f-orph-new') { const sh = S.sheet, name = (($('#on-name') || {}).value || '').trim(), cv = (($('#on-cost') || {}).value || '').trim(), cost = cv ? num(cv) : null;
+    if (!name) { toast('Ürün adı gerekli.', true); return; } if (cv && !(cost >= 0)) { toast('Alış fiyatı geçersiz.', true); return; }
+    await run(async () => { await api('/api/products/restore', {key: sh.key, name, sku: sh.sku, cost}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(cost === null ? 'Ürün geri getirildi; alış fiyatını ürün sayfasından gir.' : 'Ürün geri getirildi, maliyet kâra yansıdı.'); openSheet('product', {id: sh.key, mode: 'in'}); }); }
   else if (id === 'f-move') submitMove();
   else if (id === 'f-info') submitInfo();
   else if (id === 'f-order') submitNewOrder();
