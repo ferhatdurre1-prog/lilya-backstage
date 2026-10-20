@@ -3075,6 +3075,7 @@ function viewShCheck(P){
   if (!D) return h + loading();
   h += `<p class="small muted" style="margin:10px 2px">${fmtN(D.checked)} sipariş kontrol edildi${D.noData ? ` · ${fmtN(D.noData)} siparişin Shopify tutarı henüz okunmadı` : ''} · <b style="color:${D.items.length ? 'var(--bad)' : 'var(--good)'}">${D.items.length ? fmtN(D.items.length) + ' hatalı sipariş · toplam fark ' + tl2(D.sum) : 'hata yok'}</b></p>`;
   if (!D.items.length) return h;
+  h += `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-act="shc-xls">Excel'e aktar</button></div>`;
   return h + `<div class="list">${D.items.map(x => `<button class="item" data-act="order" data-id="${esc(x.id)}" style="align-items:flex-start"><div class="main"><div class="ttl"><span class="mono">#${esc(String(x.orderNo || '').replace(/^#/, ''))}</span> · ${esc(x.method)}${x.undelivered ? ' · <span style="color:var(--bad)">teslim edilemedi</span>' : ''}</div>
     <div class="meta"><span>${esc(fmtDate(x.date))}</span><span>ürün ${tl2(x.sub)} + kargo ${tl2(x.shipE)} + kapıda ${tl2(x.codE)} = <b>${tl2(x.exp)}</b></span></div>
     ${x.issues.map(i => `<div class="meta" style="color:var(--bad)"><span>${esc(i)}</span></div>`).join('')}${x.shipGot !== null ? `<div class="meta"><span class="muted">Shopify'daki kargo/ek ücret satırı: ${tl2(x.shipGot)}${x.gateway ? ' · ' + esc(x.gateway) : ''}</span></div>` : ''}</div>
@@ -3658,6 +3659,10 @@ document.addEventListener('click', async e => {
     case 'need-open': openSheet('need', {}); break;
     case 'pch': { const P = profS(); P.ch = id || ''; P.key = ''; render(); loadProfit(true); break; }
     case 'shret-del': { const no = b.dataset.no; if (!(await confirmBox('Bu iade kargosu silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/shret/del', {id: Number(id)}); delete S.shret[no]; const P = profS(); P.cache = {}; P.key = ''; loadProfit(true); toast('Silindi.'); renderSheet(false); }); break; }
+    case 'shc-xls': { const P = profS(), D = (P.shc || {}).data; if (!D || !D.items.length) break;
+      const rows = D.items.map(x => ({'Sipariş no': '#' + String(x.orderNo || '').replace(/^#/, ''), 'Tarih': fmtDate(x.date), 'Ödeme': x.method, 'Ödeme yöntemi (Shopify)': x.gateway, 'Ürün tutarı': x.sub, 'Beklenen kargo': x.shipE, 'Beklenen kapıda ödeme': x.codE, 'Olması gereken': x.exp, 'Shopify tahsil': x.got, 'Shopify kargo/ek ücret': x.shipGot, 'Kargo kapıda tahsil': x.collected, 'Fark': x.diff, 'Teslim edilemedi': x.undelivered ? 'Evet' : '', 'Açıklama': x.issues.join(' · ')}));
+      const ws = XLSX.utils.json_to_sheet(rows); ws['!cols'] = [10, 16, 12, 22, 11, 11, 13, 13, 12, 14, 14, 10, 10, 70].map(w => ({wch: w}));
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Hatalı siparişler'); XLSX.writeFile(wb, `shopify-hesap-kontrolu-${todayTR()}.xlsx`); break; }
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'cari-paynew': { const C = cS(); C.open = C.open === '__new' ? '' : '__new'; C.det = null; render(); break; }
     case 'cari-open': { const C = cS(); C.terms = false; C.tk = null; C.pre = null; if (C.open === id) { C.open = ''; C.det = null; } else { C.open = id; if (id !== '__new') loadCariDet(id); } render(); break; }
