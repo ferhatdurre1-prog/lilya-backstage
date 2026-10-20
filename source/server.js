@@ -911,7 +911,7 @@ function srMatch(rows, ship) {
   return byName.length === 1 ? byName[0] : null;
 }
 // Takip no sütunu: önce "Kargo Takip No" benzeri, sonra diğer takip/barkod sütunları; bizim/müşterinin referans sütunları (web, özel, müşteri, sipariş) kullanılmaz. Excel'de sayı 1,23E+12 / 123.0 gibi gelebilir
-const srCellNo = (v) => { let t = String(v ?? '').trim().replace(/\s/g, ''); if (/^\d+(\.0+)?$/.test(t)) t = t.replace(/\.0+$/, ''); return /^\d{8,20}$/.test(t) ? t : ''; };
+const srCellNo = (v) => { let t = String(v ?? '').trim().replace(/\s/g, ''); if (/^\d+(\.0+)?$/.test(t)) t = t.replace(/\.0+$/, ''); t = t.toLocaleUpperCase('tr').replace(/[^A-Z0-9]/g, ''); return t.length >= 8 && t.length <= 30 && (t.match(/\d/g) || []).length >= 6 && !/^LH/.test(t) ? t : ''; }; // harfli takip no da kabul (ör. SRT…); bizim LH barkodumuz hariç
 const srRowTrack = (r) => { const E = Object.entries(r), K = (k) => srNorm(k), bad = /WEB|OZEL|ÖZEL|MUSTERI|MÜŞTERI|SIPARIS|SİPARİŞ|REFERANS|IRSALIYE/;
   for (const re of [/KARGOTAKIP|^TAKIPNO|^TAKIPNUMARA/, /TAKIP/, /BARKOD/]) for (const [k, v] of E) { const kk = K(k); if (re.test(kk) && !bad.test(kk)) { const n = srCellNo(v); if (n) return n; } }
   return ''; };
@@ -947,7 +947,7 @@ async function srTrackOne(env, row, cr, c) {
     tr = q.no; msg = q.no ? (q.durum || q.raw) : q.raw; }
   const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 600))];
   let fulfilled = false, ferr = '';
-  if (tr && !row.fulfilled_at && shConfigured(c)) { try { await shFulfill(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } }
+  if (tr && !row.fulfilled_at && shConfigured(c)) { try { const fr = await shFulfill(env, c, row.gid, tr); if (fr && fr.already) await shFixTracking(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } } // Shopify'da zaten kargolanmışsa takip no güncellenir
   if (fulfilled) st.push(env.DB.prepare('UPDATE sr_ship SET fulfilled_at=?2, fulfill_err=NULL WHERE gid=?1').bind(row.gid, iso()));
   else if (ferr) st.push(env.DB.prepare('UPDATE sr_ship SET fulfill_err=?2 WHERE ref=?1').bind(row.ref, ferr));
   await env.DB.batch(st);
@@ -3163,7 +3163,9 @@ ${catalog}` });
       if (row0 && !row0.tracking && cr0.cari) { try { const L = await srList(env, cr0, 6), m = L && srMatch(L.rows, row0), tn = m && srRowTrack(m); if (tn) { row0.tracking = tn; row0.track_msg = srRowState(m) || 'Sürat listesinden'; return json({ ok: true, r: await srTrackOne(env, row0, cr0, await shCreds(env)) }); } } catch (e) {} } }
     const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
     const row = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(); if (!row) return bad('Bu siparişin Sürat barkodu yok.');
-    if (body.number !== undefined) { const n = String(body.number || '').replace(/\D/g, ''); if (n.length < 6) return bad('Takip numarası geçersiz.'); row.tracking = n; row.track_msg = 'Elle girildi'; }
+    if (body.number !== undefined) { const n = String(body.number || '').toLocaleUpperCase('tr').replace(/[^A-Z0-9]/g, ''); if (n.length < 8 || (n.match(/\d/g) || []).length < 6) return bad('Takip numarası en az 8 karakter olmalı (Sürat eKargo\'daki "Kargo Takip No").');
+      if (row.fulfilled_at) { const c0 = await shCreds(env); try { if (shConfigured(c0)) await shFixTracking(env, c0, row.gid, n); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(row.ref, n, 'Elle düzeltildi (önceki: ' + (row.tracking || '-') + ')', iso()).run(); return json({ ok: true, r: { ref: row.ref, tracking: n, fulfilled: true, fixed: true } }); } catch (e) { return bad(String(e.message || e)); } }
+      row.tracking = n; row.track_msg = 'Elle girildi'; }
     try { return json({ ok: true, r: await srTrackOne(env, row, cr, await shCreds(env)) }); } catch (e) { return bad(String(e.message || e)); }
   }
   if (path === '/api/surat/disconnect') { await env.DB.batch([setStmt(env, 'sr_cari', ''), setStmt(env, 'sr_user', ''), setStmt(env, 'sr_pass', ''), setStmt(env, 'sr_web', '')]); return json({ ok: true }); }
