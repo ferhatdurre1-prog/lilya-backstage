@@ -386,6 +386,8 @@ function bkDelivered(o) { const out = []; const walk = (x, d) => { if (!x || typ
       if (/deliver/i.test(k) && !/address|adres|type|fee|price|estimat|plan|expect|count|method/i.test(k)) { const dd = dlvDay(v); if (dd) out.push(dd); }
       else if (stt && /time|date|tarih|created/i.test(k)) { const dd = dlvDay(v); if (dd) out.push(dd); } } };
   walk(o, 0); return out.sort().pop() || null; }
+// Sürat kapıda tahsilatı: teslimin olduğu haftanın ertesi haftası perşembe günü yatırır
+function srPayDay(d) { if (!d) return null; const t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; const off = (new Date(t).getUTCDay() + 6) % 7; return new Date(t - off * 86400000 + 10 * 86400000).toISOString().slice(0, 10); }
 function bkRow(o) {
   const c = o.content || {}, pi = o.priceInfo || {}, ci = o.codInfo || {}, sh = o.shipmentInfo || {}, N = (v) => v === null || v === undefined || v === '' ? null : Number(v);
   const no = String(o.orderNumber || c.code || o.foreignCode || o.code || '').replace(/\D/g, ''); // orderNumber = Shopify sipariş no (2002); content.code Shopify'ın iç kimliği
@@ -3275,15 +3277,21 @@ ${catalog}` });
     // Sürat cari: alacak = kapıda tahsil edilen; borç = kargo ücretleri; hareketler = Sürat'ın aktardığı (in) / bizim ödediğimiz (out) / düzeltme
     const t = await env.DB.prepare(`SELECT COUNT(*) n, SUM(fee) fee, SUM(CASE WHEN cod>0 THEN cod END) codAll, SUM(CASE WHEN cod>0 THEN 1 END) codN, SUM(CASE WHEN cod>0 AND collected=1 THEN COALESCE(NULLIF(coll_amt,0), cod) END) coll, SUM(CASE WHEN cod>0 AND collected=1 THEN 1 END) collN, SUM(CASE WHEN cod>0 AND collected=0 THEN cod END) pend, MIN(day) a, MAX(day) b FROM sr_rows`).first();
     const mv = (await env.DB.prepare('SELECT * FROM sr_mov WHERE deleted=0 ORDER BY day DESC, id DESC LIMIT 200').all()).results;
+    // Ödeme takvimi: teslim edilen kapıda ödemeli gönderiler, teslim haftasının ertesi haftası perşembe
+    const { results: cr } = await env.DB.prepare(`SELECT s.takip, s.cod, s.coll_amt, s.collected, c.teslim FROM sr_rows s LEFT JOIN sr_cost c ON c.tracking = s.takip WHERE s.cod > 0`).all();
+    const today = trToday(), sch = new Map(); let noDl = 0, noDlAmt = 0;
+    for (const x of cr) { const dl = dlvDay(x.teslim), amt = r2(x.collected && x.coll_amt ? x.coll_amt : x.cod || 0); if (!dl) { if (x.collected) { noDl++; noDlAmt = r2(noDlAmt + amt); } continue; }
+      const pd = srPayDay(dl), g = sch.get(pd) || { day: pd, amount: 0, n: 0 }; g.amount = r2(g.amount + amt); g.n++; sch.set(pd, g); }
+    const inMv = mv.filter(x => x.kind === 'in'), schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const got = r2(inMv.filter(x => Math.abs(Date.parse(x.day) - Date.parse(g.day)) <= 2 * 86400000).reduce((a, x) => a + (x.amount || 0), 0)); return { ...g, got, st: g.day > today ? 'future' : got >= g.amount - 1 ? 'paid' : 'late' }; });
     const sumK = (k) => r2(mv.filter(x => x.kind === k).reduce((a, x) => a + (x.amount || 0), 0));
     const fee = r2(t.fee || 0), coll = r2(t.coll || 0), inn = sumK('in'), out = sumK('out'), adj = sumK('adj');
     const bal = r2(coll - fee - inn + out + adj); // + : Sürat bize borçlu, − : biz Sürat'a borçluyuz
-    return json({ ok: true, n: t.n || 0, fee, codAll: r2(t.codAll || 0), codN: t.codN || 0, coll, collN: t.collN || 0, pend: r2(t.pend || 0), from: t.a || '', to: t.b || '', inn, out, adj, bal, moves: mv });
+    return json({ ok: true, schedule, noDl, noDlAmt, next: schedule.find(x => x.day >= today) || null, n: t.n || 0, fee, codAll: r2(t.codAll || 0), codN: t.codN || 0, coll, collN: t.collN || 0, pend: r2(t.pend || 0), from: t.a || '', to: t.b || '', inn, out, adj, bal, moves: mv });
   }
   if (path === '/api/srcari/recon') {
     // Sipariş bazında Sürat mutabakatı (17.10.2026 10:00 sonrası Shopify): bizim beklediğimiz (tahsilat − ücret) ile Sürat raporundaki (tahsilat − ücret)
     const rs = await reportStart(env), from = iso(Math.max(Date.parse(SURAT_DIRECT_FROM), /^\d{4}-\d{2}-\d{2}$/.test(rs || '') ? dayStartTR(rs) : 0));
-    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday
+    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday
       FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN sr_rows s ON s.takip = c.tracking
       WHERE o.channel='shopify' AND o.date >= ?1 ORDER BY o.date DESC LIMIT 2000`).bind(from), env.DB.prepare('SELECT key, desi FROM products')]);
     const fee = await loadFees(env), dz = new Map(pR.results.map(x => [x.key, Number(x.desi) || null])), out = [];
@@ -3294,8 +3302,8 @@ ${catalog}` });
       const und = !!r.undelivered, base = r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, r.date)), codFee = cod && !und ? suratDirectCod(total) : 0;
       const eColl = cod && !und ? total : 0, eFee = r2(und ? base * 1.5 : base + codFee), eNet = r2(eColl - eFee);
       const has = r.sfee !== null && r.sfee !== undefined, sColl = has ? r2(r.scod || 0) : null, sFee = has ? r2(r.sfee || 0) : null, sNet = has ? r2(sColl - sFee) : null;
-      const diff = has ? r2(sNet - eNet) : null;
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi, miss, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, durum: r.sdurum || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
+      const diff = has ? r2(sNet - eNet) : null, deliv = dlvDay(r.teslim), payDay = cod && !und && deliv ? srPayDay(deliv) : null;
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi, miss, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, durum: r.sdurum || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
     }
     const sum = (f, k) => r2(out.filter(f).reduce((a, x) => a + (x[k] || 0), 0)), m = (x) => x.st !== 'nodata';
     return json({ ok: true, items: out, n: out.length, matched: out.filter(m).length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
