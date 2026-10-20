@@ -388,6 +388,42 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 .srf{display:grid;gap:6px;background:var(--surface-2);border-radius:12px;padding:10px}
 .afb{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.afb .btn{white-space:normal;min-width:0;padding-inline:8px}
 @media (max-width:560px){.afr,.afr.open{grid-template-columns:minmax(0,1fr) auto}.afr .afk{grid-column:1/-1}.afr.open .afe{grid-column:1/-1}}
+/* ===== Bilgisayar (≥1000px): tam genişlik; ana ekran kaydırmadan tek ekrana sığar ===== */
+@media (min-width:1000px){
+.wrap{max-width:none;padding-inline:24px}
+}
+@media (min-width:1000px) and (min-height:560px){
+body[data-tab="home"]{height:100vh;height:100dvh;overflow:hidden;display:flex;flex-direction:column}
+body[data-tab="home"] .hero{flex:none;margin-bottom:10px;padding-bottom:8px}
+body[data-tab="home"] .hero .top{padding-block:10px 8px}
+body[data-tab="home"] .hero .ticker{margin:0}
+body[data-tab="home"]>.wrap{flex:1;min-height:0;display:flex;flex-direction:column;width:100%;box-sizing:border-box}
+body[data-tab="home"] .tabs{flex:none;margin-bottom:10px}
+body[data-tab="home"] main{flex:1;min-height:0;padding-bottom:14px!important;margin-top:0}
+body[data-tab="home"] #view{height:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1.25fr) minmax(0,.8fr) minmax(0,1fr);gap:12px}
+body[data-tab="home"] #view>*{margin:0!important;min-height:0}
+body[data-tab="home"] #view>.h-ban{grid-column:1/-1;grid-row:1}
+body[data-tab="home"] #view>.hk-grid{grid-column:1/-1;grid-row:2;grid-template-columns:110px repeat(3,minmax(0,1fr));grid-template-rows:auto repeat(4,minmax(0,1fr));height:100%}
+body[data-tab="home"] #view>.h-rec{grid-column:1;grid-row:3/5}
+body[data-tab="home"] #view>.h-act{grid-column:2;grid-row:3}
+body[data-tab="home"] #view>.h-sc{grid-column:2;grid-row:4}
+body[data-tab="home"] .hk-ch{font-size:clamp(13px,1.7vh,18px);padding:6px 4px}
+body[data-tab="home"] .hk-row{font-size:clamp(12px,1.6vh,16px);padding:10px 8px 0 14px;display:flex;align-items:center;padding-top:0}
+body[data-tab="home"] .hk{height:auto;padding:1px 14px;display:flex;flex-direction:column;justify-content:center}
+body[data-tab="home"] .hk .v{font-size:clamp(15px,3.1vh,38px);line-height:1.1}body[data-tab="home"] .hk .s{line-height:1.15}body[data-tab="home"] .hk .v .x{font-size:.6em}
+body[data-tab="home"] .hk .s{font-size:clamp(10.5px,1.5vh,17px)}
+body[data-tab="home"] .h-sc .act.sc .n svg{width:clamp(18px,2.6vh,28px);height:clamp(18px,2.6vh,28px)}
+body[data-tab="home"] #view>.card{display:flex;flex-direction:column;gap:10px;padding:14px 16px;overflow:hidden}
+body[data-tab="home"] #view>.card h3{font-size:clamp(15px,1.9vh,20px)}
+body[data-tab="home"] .h-rec .hlist{flex:1;min-height:0;display:grid;grid-auto-rows:minmax(0,1fr);overflow:hidden}
+body[data-tab="home"] .h-rec .hlist .item{padding-top:0;padding-bottom:0;min-height:0;overflow:hidden}
+body[data-tab="home"] .h-rec .hlist .ttl{font-size:clamp(13px,1.7vh,17px)}body[data-tab="home"] .h-rec .hlist .meta{font-size:clamp(11px,1.4vh,14px)}
+body[data-tab="home"] .h-rec .hlist .thumb{width:clamp(34px,4.6vh,52px);height:clamp(34px,4.6vh,52px)}
+body[data-tab="home"] .h-act .act-grid,body[data-tab="home"] .h-sc .act-grid{flex:1;min-height:0;grid-auto-rows:minmax(0,1fr);gap:10px}
+body[data-tab="home"] .h-act .act-grid .act:not(.sc){min-height:0;height:100%;align-content:center}
+body[data-tab="home"] .h-sc .sc-grid .act.sc{height:100%;min-height:0}
+body[data-tab="home"] .act-grid .act .l{font-size:clamp(12px,1.55vh,16px)}body[data-tab="home"] .act-grid .act .n{font-size:clamp(15px,2.3vh,24px)}
+}
 </style>
 
 <div class="hero"><div class="wrap">
@@ -750,7 +786,7 @@ function render(){
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
-  v.innerHTML = banners() + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr, buy:viewBuy, cari:viewCari}[S.tab])();
+  const bn = banners(); v.innerHTML = (S.tab === 'home' && bn ? `<div class="h-ban">${bn}</div>` : bn) + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr, buy:viewBuy, cari:viewCari}[S.tab])();
   enhanceTables(v); if (S.tab === 'cari') wkSync(); renderAlerts();
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
@@ -1553,7 +1589,7 @@ function viewHome(){
   const act = (label, n, act, id, hot) => `<button class="act${n ? (hot ? ' hot' : '') : ' zero'}" data-act="${act}"${id ? ` data-id="${id}"` : ''}><span class="l">${label}</span><span class="n">${fmtN(n)} Adet${n ? chev : ''}</span></button>`;
   let conn = '';
   if (st.cls === 'err' || st.cls === 'warn') conn = `<button class="alert-row" data-act="open-import" style="margin-top:4px"><div class="ic" style="background:var(--bad-soft);color:var(--bad)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.link}</svg></div><div class="tx"><b>${esc(st.text)}</b><span>${esc(st.err || 'Bağlantıyı kontrol et')}</span></div></button>`;
-  h += `<div class="card"><h3 style="margin:0">Aksiyonlar</h3>${conn}<div class="act-grid">
+  h += `<div class="card h-act"><h3 style="margin:0">Aksiyonlar</h3>${conn}<div class="act-grid">
     ${act('Aksiyon bekleyen iade', pendN, 'ret-tab', 'action')}
     ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true)}
     ${act('Zarar eden ürün', losers, 'home-losers', '', true)}
@@ -1561,7 +1597,7 @@ function viewHome(){
   </div></div>`;
   // Kısayollar: sık kullanılan işlemler
   const sc = (label, icon, a, id) => `<button class="act sc" data-act="${a}"${id ? ` data-id="${id}"` : ''}><span class="n" style="color:var(--accent)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span><span class="l">${label}</span></button>`;
-  h += `<div class="card"><h3 style="margin:0">Kısayollar</h3><div class="act-grid sc-grid">
+  h += `<div class="card h-sc"><h3 style="margin:0">Kısayollar</h3><div class="act-grid sc-grid">
     ${sc('Gelir / gider', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>', 'add-expense')}
     ${sc('Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>', 'ws-open')}
     ${sc('Adres düzeltme', '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', 'tab', 'addr')}
@@ -1579,15 +1615,15 @@ function loadProf(os, tab){ const ids = os.map(o => o.id); if (!ids.length) retu
   api('/api/orders/prof', {ids}).then(r => { for (const id of ids) if (r.prof[id]) S.profC.set(id, r.prof[id]); if (S.tab === tab) render(); }).catch(() => {}); }
 // Ana ekran: son gelen siparişler (kârıyla), dokununca sipariş açılır
 function homeRecent(){
-  const N = 3;
-  if (!S.homeOrd || S.homeOrd.rev !== S.rev) {
+  const N = matchMedia('(min-width:1000px) and (min-height:560px)').matches ? (innerHeight >= 1000 ? 8 : innerHeight >= 850 ? 7 : innerHeight >= 760 ? 5 : 4) : 3; // bilgisayarda sol sütunu doldurur
+  if (!S.homeOrd || S.homeOrd.rev !== S.rev || (S.homeOrd.n || 3) < N) {
     if (S.homeOrdLoading !== S.rev) { const rev = S.rev; S.homeOrdLoading = rev;
-      api('/api/orders/page', {page:1, filter:'all', size:N, prof:false}).then(r => { S.homeOrd = {rev, orders: r.orders.slice(0, N)}; S.homeOrdLoading = null; if (S.tab === 'home') render(); loadProf(r.orders, 'home'); }).catch(() => { S.homeOrdLoading = null; }); }
+      api('/api/orders/page', {page:1, filter:'all', size:N, prof:false}).then(r => { S.homeOrd = {rev, n: N, orders: r.orders.slice(0, N)}; S.homeOrdLoading = null; if (S.tab === 'home') render(); loadProf(r.orders, 'home'); }).catch(() => { S.homeOrdLoading = null; }); }
   }
-  const os = withProf((S.homeOrd && S.homeOrd.orders) || S.orders.slice(0, N));
+  const os = withProf((S.homeOrd && S.homeOrd.orders) || S.orders.slice(0, N)).slice(0, N);
   if (!os.length) return '';
   S.extraOrders = S.extraOrders || {}; for (const o of os) if (!findOrder(o.id)) S.extraOrders[o.id] = o;
-  return `<div class="card"><div class="spread"><h3 style="margin:0">Son siparişler</h3><button class="pill" data-act="tab" data-id="orders" style="background:var(--warn-soft);color:var(--orange);border:0;cursor:pointer">Tümü ›</button></div>
+  return `<div class="card h-rec"><div class="spread"><h3 style="margin:0">Son siparişler</h3><button class="pill" data-act="tab" data-id="orders" style="background:var(--warn-soft);color:var(--orange);border:0;cursor:pointer">Tümü ›</button></div>
     <div class="list hlist">${os.map(o => { const units = (o.lines||[]).reduce((n,l) => n + (l.status==='cancelled'?0:l.qty), 0), st = OST[orderStatus(o)];
       return `<button class="item" data-act="order" data-id="${esc(o.id)}">${orderThumb((o.lines||[]).map(l => l.pkey), (o.lines||[]).map(l => l.name))}<div class="main"><div class="ttl"><span class="mono">#${esc(String(o.orderNo || '').replace(/^#/, ''))}</span>${o.cname?` <span style="font-weight:500">${esc(o.cname)}</span>`:''}</div><div class="meta">${chBadge(o.channel)}<span>${esc(fmtDate(o.date))}</span><span>· ${fmtN(units)} adet</span></div></div><div class="end">${o.prof ? `<b class="oprof" style="${profitCls(o.prof.p)}">${tlS(o.prof.p)}</b>` : ''}${orderStatus(o) !== 'active' ? `<span class="pill ${st[1]}">${st[0]}</span>` : ''}</div></button>`; }).join('')}</div></div>`;
 }
