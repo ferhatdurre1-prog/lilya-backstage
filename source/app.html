@@ -400,11 +400,11 @@ body[data-tab="home"] .hero .ticker{margin:0}
 body[data-tab="home"]>.wrap{flex:1;min-height:0;display:flex;flex-direction:column;width:100%;box-sizing:border-box}
 body[data-tab="home"] .tabs{flex:none;margin-bottom:10px}
 body[data-tab="home"] main{flex:1;min-height:0;padding-bottom:14px!important;margin-top:0}
-body[data-tab="home"] #view{height:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1.25fr) minmax(0,.8fr) minmax(0,1fr);gap:12px}
+body[data-tab="home"] #view{height:100%;display:grid;grid-template-columns:minmax(0,38fr) minmax(0,62fr);grid-template-rows:auto minmax(0,1.25fr) minmax(0,.8fr) minmax(0,1fr);gap:12px}
 body[data-tab="home"] #view>*{margin:0!important;min-height:0}
 body[data-tab="home"] #view>.h-ban{grid-column:1/-1;grid-row:1}
-body[data-tab="home"] #view>.hk-grid{grid-column:1/-1;grid-row:2;grid-template-columns:110px repeat(3,minmax(0,1fr));grid-template-rows:auto repeat(4,minmax(0,1fr));height:100%}
-body[data-tab="home"] #view>.h-rec{grid-column:1;grid-row:3/5}
+body[data-tab="home"] #view>.hk-grid{grid-column:2;grid-row:2;grid-template-columns:96px repeat(3,minmax(0,1fr));grid-template-rows:auto repeat(4,minmax(0,1fr));height:100%}
+body[data-tab="home"] #view>.h-rec{grid-column:1;grid-row:2/5}
 body[data-tab="home"] #view>.h-act{grid-column:2;grid-row:3}
 body[data-tab="home"] #view>.h-sc{grid-column:2;grid-row:4}
 body[data-tab="home"] .hk-ch{font-size:clamp(13px,1.7vh,18px);padding:6px 4px}
@@ -1615,7 +1615,7 @@ function loadProf(os, tab){ const ids = os.map(o => o.id); if (!ids.length) retu
   api('/api/orders/prof', {ids}).then(r => { for (const id of ids) if (r.prof[id]) S.profC.set(id, r.prof[id]); if (S.tab === tab) render(); }).catch(() => {}); }
 // Ana ekran: son gelen siparişler (kârıyla), dokununca sipariş açılır
 function homeRecent(){
-  const N = matchMedia('(min-width:1000px) and (min-height:560px)').matches ? (innerHeight >= 1000 ? 8 : innerHeight >= 850 ? 7 : innerHeight >= 760 ? 5 : 4) : 3; // bilgisayarda sol sütunu doldurur
+  const N = matchMedia('(min-width:1000px) and (min-height:560px)').matches ? (innerHeight >= 1000 ? 14 : innerHeight >= 850 ? 12 : innerHeight >= 760 ? 10 : 8) : 3; // bilgisayarda sol sütunu doldurur
   if (!S.homeOrd || S.homeOrd.rev !== S.rev || (S.homeOrd.n || 3) < N) {
     if (S.homeOrdLoading !== S.rev) { const rev = S.rev; S.homeOrdLoading = rev;
       api('/api/orders/page', {page:1, filter:'all', size:N, prof:false}).then(r => { S.homeOrd = {rev, n: N, orders: r.orders.slice(0, N)}; S.homeOrdLoading = null; if (S.tab === 'home') render(); loadProf(r.orders, 'home'); }).catch(() => { S.homeOrdLoading = null; }); }
