@@ -3000,9 +3000,33 @@ async function api(req, env, path, ctx) {
     const note = String(body.note || 'Barkodla çıkış').slice(0, 300), units = items.reduce((a, x) => a + x.n, 0);
     const lst = await env.DB.prepare(`INSERT INTO out_lists(t, reason, note, markup, disc, items, units, total) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) RETURNING id`).bind(iso(), String(body.reason || '').slice(0, 60), String(body.extra || '').slice(0, 200), numOrNull(body.markup), numOrNull(body.disc) || 0, JSON.stringify(items), units, numOrNull(body.total)).first();
     const st = []; for (const x of items) st.push(...changeQty(env, x.key, -x.n, { type: 'out', channel: 'manuel', ref: 'out:' + lst.id, note: note + ' · liste #' + lst.id }));
+    // Kayıtlı cariye satış: listenin genel toplamı o carinin bize borcu (alacak) olarak yazılır
+    const cust = String(body.customer || '').trim().slice(0, 120), ctot = r2(numOrNull(body.total) || 0);
+    if (cust && ctot > 0) { await env.DB.batch([env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(cust, iso()), env.DB.prepare('UPDATE suppliers SET manual=1 WHERE name=?1').bind(cust)]);
+      st.push(env.DB.prepare(`INSERT INTO sup_mov(t, supplier, date, kind, amount, note, src) VALUES(?1,(SELECT name FROM suppliers WHERE name=?2),?3,'credit',?4,?5,'out')`).bind(iso(), cust, trToday(), ctot, `Satış · çıkış listesi #${lst.id} · ${units} adet`));
+      st.push(env.DB.prepare('UPDATE out_lists SET note=?2 WHERE id=?1').bind(lst.id, [String(body.extra || '').slice(0, 150), 'Cari: ' + cust].filter(Boolean).join(' · '))); }
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await env.DB.batch([REV(env)]);
-    return json({ ok: true, id: lst.id, n: items.length, units });
+    return json({ ok: true, id: lst.id, n: items.length, units, cari: cust && ctot > 0 ? cust : null });
+  }
+  if (path === '/api/stock/in-bulk') {
+    // Barkodla giriş: tedarikçiden alınan ürünler stoğa eklenir, birim fiyat ürünün alış fiyatı olur, toplam o tedarikçinin carisine borç yazılır (alış kaydı)
+    const supplier = String(body.supplier || '').trim().slice(0, 120); if (!supplier) return bad('Kimden alındığını yaz.');
+    const raw = (Array.isArray(body.items) ? body.items : []).map(x => ({ pkey: String(x.key || ''), qty: intOr(x.n, 0), unit: Math.max(0, Number(String(x.unit ?? '').replace(',', '.')) || 0), name: String(x.name || '').slice(0, 200), code: String(x.code || '').slice(0, 60), image: String(x.image || '').slice(0, 500) })).filter(x => x.pkey && x.qty > 0 && x.qty <= 100000).slice(0, 500);
+    if (!raw.length) return bad('Giriş yapılacak ürün yok.');
+    const cur = new Map(); for (const p of await selectIn(env, 'SELECT key, name, code, qty, cost, cost_date FROM products', 'key', [...new Set(raw.map(x => x.pkey))])) cur.set(p.key, { ...p });
+    const items = raw.filter(x => cur.has(x.pkey)); if (!items.length) return bad('Ürünler bulunamadı.');
+    await env.DB.batch([env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(supplier, iso()), env.DB.prepare('UPDATE suppliers SET manual=1 WHERE name=?1').bind(supplier)]);
+    const sup = await env.DB.prepare('SELECT id, name FROM suppliers WHERE name=?1').bind(supplier).first();
+    const today = trToday(), units = items.reduce((a, x) => a + x.qty, 0), total = r2(items.reduce((a, x) => a + x.qty * x.unit, 0)), note = String(body.note || '').slice(0, 200);
+    for (const x of items) { const p = cur.get(x.pkey); x.pcode = p.code || ''; x.pname = p.name; x.stocked = true;
+      if (x.unit > 0 && Math.abs((Number(p.cost) || 0) - x.unit) > 0.004) { x.prevCost = p.cost === undefined ? null : p.cost; x.prevDate = p.cost_date || null; x.newCost = r2(x.unit); p.cost = x.newCost; p.cost_date = today; p.touched = true; } }
+    const id = (await env.DB.prepare(`INSERT INTO purchases(t, supplier_id, supplier, doc_no, doc_date, items, units, total, status, stocked_at, cari_at, note) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'stocked',?1,?1,?9) RETURNING id`).bind(iso(), sup.id, sup.name, 'Barkodla giriş', today, JSON.stringify(items), units, total, note).first()).id;
+    const st = []; for (const x of items) st.push(...changeQty(env, x.pkey, x.qty, { type: 'in', channel: 'manuel', ref: 'pur:' + id, note: `Barkodla giriş · ${sup.name} · alış #${id}${note ? ' · ' + note : ''}` }));
+    for (const [k, p] of cur) if (p.touched) st.push(env.DB.prepare('UPDATE products SET cost=?2, cost_date=?4, updated_at=?3 WHERE key=?1').bind(k, p.cost, iso(), p.cost_date));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    await env.DB.batch([REV(env)]);
+    return json({ ok: true, id, n: items.length, units, total, supplier: sup.name });
   }
   if (path === '/api/outlists/list') {
     const { results } = await env.DB.prepare('SELECT * FROM out_lists ORDER BY id DESC LIMIT 200').all();
@@ -3307,7 +3331,8 @@ ${catalog}` });
     if (r.status === 'reverted') return bad('Bu liste zaten geri alınmış.');
     const upd = await env.DB.prepare(`UPDATE out_lists SET status='reverted', reverted_at=?2 WHERE id=?1 AND status<>'reverted'`).bind(id, iso()).run();
     if (!upd.meta || !upd.meta.changes) return bad('Bu liste zaten geri alınmış.');
-    const st = []; for (const x of JSON.parse(r.items || '[]')) { let k = x.key; const p = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(k).first(); if (p && p.merged_into) k = p.merged_into; st.push(...changeQty(env, k, x.n, { type: 'in', channel: 'manuel', ref: 'out:' + id, note: 'Barkodla çıkış geri alındı · liste #' + id })); }
+    const st = [env.DB.prepare(`UPDATE sup_mov SET deleted=1 WHERE deleted=0 AND src='out' AND note LIKE ?1`).bind(`Satış · çıkış listesi #${id} ·%`)]; // cariye yazılan satış da silinir
+    for (const x of JSON.parse(r.items || '[]')) { let k = x.key; const p = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(k).first(); if (p && p.merged_into) k = p.merged_into; st.push(...changeQty(env, k, x.n, { type: 'in', channel: 'manuel', ref: 'out:' + id, note: 'Barkodla çıkış geri alındı · liste #' + id })); }
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await env.DB.batch([REV(env)]);
     return json({ ok: true });

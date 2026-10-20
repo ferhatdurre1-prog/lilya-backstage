@@ -1764,7 +1764,7 @@ function viewStock(){
   const total = ps.filter(p => !p.set).reduce((n,p) => n + Math.max(0,p.qty), 0); // setler fiziksel stok değil, içindekiler sayılır
   const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0 && !p.mto && !p.set).length, need = ps.filter(p => p.mto && p.qty < 0);
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
-    <div class="row"><button class="btn" data-act="ws-open">Kusurlu ürün düş</button><button class="btn" data-act="need-open">Alınacaklar${need.length ? ` <span class="pill p-warn">${fmtN(need.length)}</span>` : ''}</button><button class="btn" data-act="psel-mode">${S.psel ? 'Seçimi kapat' : 'Toplu seç'}</button><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
+    <div class="row"><button class="btn" data-act="ws-open">Kusurlu ürün düş</button><button class="btn" data-act="need-open">Alınacaklar${need.length ? ` <span class="pill p-warn">${fmtN(need.length)}</span>` : ''}</button><button class="btn" data-act="psel-mode">${S.psel ? 'Seçimi kapat' : 'Toplu seç'}</button><button class="btn" data-act="scanin-open">Barkodla giriş</button><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
       <button class="kpi" style="--c:var(--accent)" data-act="filter" data-id="all"><span class="k">Ürün çeşidi</span><span class="v">${fmtN(ps.length)}</span></button>
       <button class="kpi" style="--c:var(--blue)" data-act="filter" data-id="all"><span class="k">Toplam stok adedi</span><span class="v">${fmtN(total)}</span></button>
@@ -1943,7 +1943,7 @@ async function scanHandle(raw){
     p = S.products.get(r.product.key) || {id: r.product.key, ...r.product}; f = r.factor || 1; }
   scanBeep(true);
   let it = sh.items.find(x => x.key === p.id);
-  if (it) { it.n += f; sh.items.splice(sh.items.indexOf(it), 1); sh.items.unshift(it); } else { it = {key: p.id, code: p.code, name: p.name, image: p.image, qty: p.qty, cost: p.cost, n: f}; sh.items.unshift(it); }
+  if (it) { it.n += f; sh.items.splice(sh.items.indexOf(it), 1); sh.items.unshift(it); } else { it = {key: p.id, code: p.code, name: p.name, image: p.image, qty: p.qty, cost: p.cost, n: f, unit: p.cost > 0 ? String(p.cost).replace('.', ',') : ''}; sh.items.unshift(it); }
   sh.last = {code, name: p.name, f}; soList();
 }
 function soMarkup(v){ try { if (v !== undefined) { localStorage.setItem('so_markup', String(v)); return Number(v); } const x = Number(localStorage.getItem('so_markup')); if (x >= 0 && x <= 1000) return x; } catch(e) {} return 25; }
@@ -1997,8 +1997,17 @@ async function soSalesPdf(items, disc, note){
   if (items.some(x => !(x.cost > 0))) { y += mm(8); font(c, 3, false); c.fillText('— : fiyatı tanımlı olmayan ürün (toplama dahil değil)', m, y); }
   return doc.output();
 }
+// Barkodla giriş: satır başına adet + birim alış fiyatı; toplam tedarikçiye borç
+const siUnit = (x) => Math.max(0, Number(String(x.unit ?? '').replace(/\s/g, '').replace(',', '.')) || 0);
+function siSum(){ const sh = S.sheet; if (!sh || sh.mode !== 'in') return; const units = sh.items.reduce((a, x) => a + x.n, 0), tot = sh.items.reduce((a, x) => a + x.n * siUnit(x), 0), miss = sh.items.filter(x => !(siUnit(x) > 0)).length;
+  const tt = $('#so-total'); if (tt) tt.innerHTML = sh.items.length ? `<b>Toplam ${tl2(tot)}</b> · ${fmtN(sh.items.length)} ürün, ${fmtN(units)} adet${miss ? ` · <span style="color:var(--bad)">${fmtN(miss)} üründe fiyat yok</span>` : ''}` : '';
+  const sv = $('#so-save'); if (sv) { sv.disabled = !sh.items.length; sv.textContent = sh.items.length ? `Girişi kaydet · ${fmtN(units)} adet · ${tl2(tot)}` : 'Girişi kaydet'; } }
 function soList(){
   const sh = S.sheet, el = $('#so-list'); if (!el || !sh) return;
+  if (sh.mode === 'in') { const last = sh.last ? (sh.last.bad ? `<div class="banner bad small" style="margin:0 0 8px"><div>Bulunamadı: <b class="mono">${esc(sh.last.code)}</b></div></div>` : `<div class="small" style="margin:0 0 8px;color:var(--good)">✓ ${esc(sh.last.name)}${sh.last.f > 1 ? ` (paket: ${fmtN(sh.last.f)} adet)` : ''}</div>`) : '';
+    el.innerHTML = last + (sh.items.length ? `<div class="list">${sh.items.map((x, i) => `<div class="item" style="align-items:center;grid-template-columns:auto minmax(0,1fr)">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code)}</span><span>· stokta ${fmtN(x.qty)} → <b id="si-q${i}">${fmtN((x.qty || 0) + x.n)}</b></span>${x.cost > 0 ? `<span>· kayıtlı alış ${tl2(x.cost)}</span>` : ''}</div>
+      <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap;align-items:flex-end"><label class="f" style="width:96px;margin:0"><span class="small">Adet</span><input class="input num si-n" data-i="${i}" inputmode="numeric" value="${x.n}"></label><label class="f" style="width:130px;margin:0"><span class="small">Birim alış (TL)</span><input class="input num si-u" data-i="${i}" inputmode="decimal" value="${esc(String(x.unit ?? ''))}" placeholder="0,00"></label><span class="small" id="si-t${i}" style="padding-bottom:10px">= ${tl2(x.n * siUnit(x))}</span><button class="btn sm ghost" type="button" data-act="scan-del" data-id="${i}" aria-label="Sil" style="margin-left:auto">✕</button></div></div></div>`).join('')}</div>` : '<div class="card"><p class="muted small" style="margin:0">Henüz ürün okutulmadı. Gelen ürünlerin barkodunu okut; her üründe adet ve alış fiyatını yaz.</p></div>');
+    siSum(); return; }
   const units = sh.items.reduce((a, x) => a + x.n, 0);
   const last = sh.last ? (sh.last.bad ? `<div class="banner bad small" style="margin:0 0 8px"><div>Bulunamadı: <b class="mono">${esc(sh.last.code)}</b></div></div>` : `<div class="small" style="margin:0 0 8px;color:var(--good)">✓ ${esc(sh.last.name)}${sh.last.f > 1 ? ` (paket: ${fmtN(sh.last.f)} adet)` : ''}</div>`) : '';
   el.innerHTML = last + (sh.items.length ? `<div class="list">${sh.items.map((x, i) => `<div class="item" style="align-items:center">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code)}</span><span>· stokta ${fmtN(x.qty)}</span>${x.n > x.qty ? '<span class="pill p-bad">Stok yetmiyor</span>' : ''}</div><div class="meta">${x.cost > 0 ? `<span>alış ${tl2(x.cost)} → müşteriye <b>${tl2(soPrice(x.cost))}</b>${sh.disc ? ` (liste ${tl2(soLP(x.cost, sh.disc))})` : ''}</span><span>· tutar ${tl2(soPrice(x.cost) * x.n)}</span>` : '<span class="pill p-warn">Alış fiyatı yok</span>'}</div></div><div class="end" style="display:flex;align-items:center;gap:6px"><button class="btn sm" type="button" data-act="scan-dec" data-id="${i}" aria-label="Azalt">−</button><b class="num" style="min-width:28px;text-align:center;font-size:18px">${fmtN(x.n)}</b><button class="btn sm" type="button" data-act="scan-inc" data-id="${i}" aria-label="Arttır">+</button><button class="btn sm ghost" type="button" data-act="scan-del" data-id="${i}" aria-label="Sil">✕</button></div></div>`).join('')}</div>` : '<div class="card"><p class="muted small" style="margin:0">Henüz ürün okutulmadı. Koli etiketini ya da ürünün barkodunu okut.</p></div>');
@@ -2035,23 +2044,37 @@ function scanStop(){
   const v = $('#so-video'); if (v) { try { v.srcObject = null; } catch(e) {} }
   const box = $('#so-cam'); if (box) box.style.display = 'none'; const btn = $('#so-cambtn'); if (btn) btn.textContent = '📷 Kamerayla okut';
 }
+function cariNames(sh){ if (!sh.sups && !sh.supLoading) { sh.supLoading = true; api('/api/cari/list', {}).then(d => { sh.sups = [...new Set([...(d.list || []).map(x => x.supplier), ...(d.suppliers || []).map(x => x.name || x)])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'tr')); const dl = $('#cari-dl'); if (dl) dl.innerHTML = sh.sups.map(n => `<option value="${esc(n)}"></option>`).join(''); }).catch(() => {}); }
+  return `<datalist id="cari-dl">${(sh.sups || []).map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>`; }
 function sheetScanOut(){
   const sh = S.sheet, R = ['Elden satış', 'Hasarlı / fire', 'Numune', 'Diğer'];
-  // Tam yeniden çizimde liste geri yazılır, açık kamera yeni görüntü alanında yeniden başlatılır
-  setTimeout(() => { if (S.sheet !== sh) return; soList(); if (sh.cam && !$('#so-video').srcObject && !sh.zx) { sh.cam = false; try { sh.stream && sh.stream.getTracks().forEach(t => t.stop()); } catch(e) {} scanStart(); } }, 0);
-  return {title: 'Barkodla çıkış', sub: '<span class="muted">Her okutma 1 adet · paket ilanı barkodu içindeki adet kadar</span>', body: `
-    <div class="card" style="gap:8px">
+  const scanBox = `<div class="card" style="gap:8px">
       <label class="f">Barkod okut ya da kodu yaz<input class="input mono" id="so-in" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="LH-0001 ya da ürün barkodu" style="font-size:18px"></label>
       <p class="muted small" style="margin:0">USB okuyucuda imleç bu kutudayken okut; okuyucu kodu yazıp kendisi onaylar.</p>
       <button class="btn" type="button" id="so-cambtn" data-act="scan-cam">📷 Kamerayla okut</button>
       <div id="so-cam" style="display:none;position:relative;border-radius:14px;overflow:hidden;background:#000"><video id="so-video" playsinline muted style="width:100%;max-height:46vh;object-fit:cover;display:block"></video><div style="position:absolute;left:12%;right:12%;top:50%;height:2px;background:#ff3b30;box-shadow:0 0 8px #ff3b30"></div></div>
-    </div>
+    </div>`;
+  if (sh.mode === 'in') {
+    setTimeout(() => { if (S.sheet !== sh) return; soList(); if (sh.cam && !$('#so-video').srcObject && !sh.zx) { sh.cam = false; try { sh.stream && sh.stream.getTracks().forEach(t => t.stop()); } catch(e) {} scanStart(); } }, 0);
+    return {title: 'Barkodla giriş', sub: '<span class="muted">Okut · adet ve alış fiyatını yaz · stoğa eklenir, tedarikçiye borç yazılır</span>', body: `${cariNames(sh)}
+    <div class="card" style="gap:8px"><label class="f" style="margin:0"><span class="small" style="font-weight:600">Kimden alındı?</span><input class="input" id="si-sup" list="cari-dl" autocomplete="off" placeholder="Cari seç ya da yeni isim yaz" value="${esc(sh.supplier || '')}"></label></div>
+    ${scanBox}
+    <div id="so-list"></div>
+    <div class="card" style="gap:8px;margin-top:12px"><input class="input" id="so-note" maxlength="120" placeholder="Not (isteğe bağlı) · ör. irsaliye no"><div class="small" id="so-total"></div>
+      <p class="muted small" style="margin:0">Kaydedince: adetler stoğa eklenir (Trendyol / Shopify güncellenir), yazdığın fiyat ürünün alış fiyatı olur, toplam bu tedarikçinin carisine senin borcun olarak yazılır (Alış listelerinde görünür).</p></div>
+    <button class="btn primary" type="button" id="so-save" data-act="scan-save" style="width:100%;margin-top:12px" disabled>Girişi kaydet</button>`};
+  }
+  // Tam yeniden çizimde liste geri yazılır, açık kamera yeni görüntü alanında yeniden başlatılır
+  setTimeout(() => { if (S.sheet !== sh) return; soList(); if (sh.cam && !$('#so-video').srcObject && !sh.zx) { sh.cam = false; try { sh.stream && sh.stream.getTracks().forEach(t => t.stop()); } catch(e) {} scanStart(); } }, 0);
+  return {title: 'Barkodla çıkış', sub: '<span class="muted">Her okutma 1 adet · paket ilanı barkodu içindeki adet kadar</span>', body: `
+    ${scanBox}
     <div id="so-list"></div>
     <div class="card" style="gap:8px;margin-top:12px">
       <div class="small" style="font-weight:600">Çıkış sebebi</div>
       <div class="chips">${R.map(r => `<button class="chip" type="button" data-act="scan-reason" data-id="${esc(r)}" aria-pressed="${sh.reason === r}">${esc(r)}</button>`).join('')}</div>
+      <label class="f" id="so-custw" style="margin:0;${sh.reason === 'Elden satış' ? '' : 'display:none'}"><span class="small">Kime satıldı? (isteğe bağlı · cari seçersen tutar onun borcu olarak yazılır)</span><input class="input" id="so-cust" list="cari-dl" autocomplete="off" placeholder="Boş bırak ya da cari seç / yaz" value="${esc(sh.customer || '')}"></label>
       <input class="input" id="so-note" maxlength="120" placeholder="Not (isteğe bağlı)">
-    </div>
+    </div>${cariNames(sh)}
     <div class="card" style="gap:8px;margin-top:12px">
       <label class="chk"><input type="checkbox" id="so-pdf" ${sh.pdf ? 'checked' : ''}><span><b>Satış listesi PDF'i hazırla</b> (kaydedince açılır)</span></label>
       <label class="small">Alışın 100'ünde kaç kâr? <input class="input num" id="so-mk" type="number" inputmode="decimal" min="0" max="1000" value="${soMarkup()}" style="display:inline-block;width:80px;padding:2px 6px"> <span class="muted">(100 → alış 100, satış 200)</span></label>
@@ -4121,6 +4144,7 @@ document.addEventListener('click', async e => {
       if (!(await confirmBox(on ? 'Bu ürün stoksuz satışa alınsın mı? Stok yokken de kanallarda en az 10 adet görünür.' : 'Bu ürün stoksuz satıştan çıkarılsın mı?', on ? 'Stoksuz satış yap' : 'Çıkar'))) break;
       await run(async () => { await api('/api/products/mto', {keys: [id], on}); await refresh(true); toast(on ? 'Stoksuz satışa alındı.' : 'Stoksuz satıştan çıkarıldı.'); renderSheet(true); }); break; }
     case 'match-open': openSheet('match', {}); break;
+    case 'scanin-open': scanAudio(); scanIndex(); openSheet('scanout', {items: [], mode: 'in', supplier: ''}); setTimeout(() => { const i = $('#si-sup'); if (i) i.focus(); }, 60); break;
     case 'scan-open': scanAudio(); scanIndex(); openSheet('scanout', {items: [], reason: 'Elden satış', pdf: true, disc: 0}); setTimeout(() => { const i = $('#so-in'); if (i) i.focus(); }, 60); break;
     case 'pur-open': openSheet('purchase', {step: 'upload'}); break;
     case 'purl-open': openSheet('purchases', {}); break;
@@ -4169,13 +4193,18 @@ document.addEventListener('click', async e => {
       await run(async () => { await api('/api/outlists/revert', {id: L.id}); await refresh(true); toast(`Liste #${L.id} geri alındı, ${fmtN(L.units)} adet stoğa eklendi.`); S.sheet.data = null; renderSheet(false); }); break; }
     case 'outl-reload': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break; scanAudio(); scanIndex(); const items = L.items.map(x => { const p = scanOwner(x.key) || {}; return {key: p.id || x.key, code: p.code || x.code, name: p.name || x.name, image: p.image || x.image, qty: p.qty ?? 0, cost: p.cost ?? x.cost, n: x.n}; }); openSheet('scanout', {items, reason: L.reason || 'Elden satış', pdf: true, disc: Number(L.disc) || 0}); toast('Liste yüklendi. Düzenleyip yeniden çıkış yapabilirsin.'); break; }
     case 'scan-cam': S.sheet && S.sheet.cam ? scanStop() : scanStart(); break;
-    case 'scan-reason': if (S.sheet) { S.sheet.reason = id; document.querySelectorAll('[data-act="scan-reason"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.id === id))); scanFocus(); } break;
+    case 'scan-reason': if (S.sheet) { S.sheet.reason = id; { const w = $('#so-custw'); if (w) w.style.display = id === 'Elden satış' ? '' : 'none'; } document.querySelectorAll('[data-act="scan-reason"]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.id === id))); scanFocus(); } break;
     case 'scan-inc': case 'scan-dec': case 'scan-del': { const sh = S.sheet; const it = sh && sh.items[Number(id)]; if (!it) break; if (b.dataset.act === 'scan-del') sh.items.splice(Number(id), 1); else it.n = Math.max(1, it.n + (b.dataset.act === 'scan-inc' ? 1 : -1)); soList(); scanFocus(); break; }
     case 'scan-save': { const sh = S.sheet; if (!sh || !sh.items.length) { toast('Önce ürün okut.', true); break; }
+      if (sh.mode === 'in') { const sup = (($('#si-sup') || {}).value || '').trim(); if (!sup) { toast('Kimden alındığını yaz.', true); const i = $('#si-sup'); if (i) i.focus(); break; }
+        const units = sh.items.reduce((a, x) => a + x.n, 0), tot = sh.items.reduce((a, x) => a + x.n * siUnit(x), 0), miss = sh.items.filter(x => !(siUnit(x) > 0)).length;
+        if (!(await confirmBox(`${fmtN(sh.items.length)} üründen ${fmtN(units)} adet stoğa eklenecek. ${esc(sup)} carisine ${tl2(tot)} borç yazılacak.${miss ? ` ${fmtN(miss)} üründe fiyat yok (0 TL sayılır, alış fiyatı değişmez).` : ''}`, 'Girişi kaydet'))) { scanFocus(); break; }
+        await run(async () => { const r = await api('/api/stock/in-bulk', {supplier: sup, note: (($('#so-note') || {}).value || '').trim(), items: sh.items.map(x => ({key: x.key, n: x.n, unit: siUnit(x), code: x.code, name: x.name, image: x.image}))}); sh.saved = true; scanStop(); await refresh(true); toast(`Giriş kaydedildi: ${fmtN(r.units)} adet · ${r.supplier} carisine ${tl2(r.total)} borç.`); if (S.cari) S.cari.at = 0; closeSheetForce(); }); break; }
+      const cust = sh.reason === 'Elden satış' ? (($('#so-cust') || {}).value || '').trim() : '';
       const units = sh.items.reduce((a, x) => a + x.n, 0), neg = sh.items.filter(x => x.n > x.qty);
-      if (!(await confirmBox(`${fmtN(sh.items.length)} üründen toplam ${fmtN(units)} adet stoktan düşülecek (${esc(sh.reason)}).${neg.length ? ` ${fmtN(neg.length)} üründe stok eksiye inecek.` : ''}`, 'Çıkışı kaydet'))) { scanFocus(); break; }
+      if (!(await confirmBox(`${fmtN(sh.items.length)} üründen toplam ${fmtN(units)} adet stoktan düşülecek (${esc(sh.reason)}).${neg.length ? ` ${fmtN(neg.length)} üründe stok eksiye inecek.` : ''}${cust ? ` ${esc(cust)} carisine ${tl2(soTotals(sh.items, sh.disc).total)} alacak (onun borcu) yazılacak.` : ''}`, 'Çıkışı kaydet'))) { scanFocus(); break; }
       const note = 'Barkodla çıkış · ' + sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '');
-      await run(async () => { await api('/api/stock/out-bulk', {items: sh.items.map(x => ({key: x.key, n: x.n, code: x.code, name: x.name, image: x.image, cost: x.cost})), note, reason: sh.reason, extra: (($('#so-note') || {}).value || '').trim(), markup: soMarkup(), disc: sh.disc || 0, total: soTotals(sh.items, sh.disc).total}); sh.saved = true; scanStop(); if (sh.pdf) { try { await deliverPdf(await soSalesPdf(sh.items, sh.disc, sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '')), `satis-listesi-${todayTR()}.pdf`, 0, 'Satış listesi'); } catch (e) { toast('PDF hazırlanamadı: ' + errText(e), true); } } await refresh(true); toast(`Çıkış kaydedildi: ${fmtN(units)} adet.`); closeSheetForce(); }); break; }
+      await run(async () => { await api('/api/stock/out-bulk', {items: sh.items.map(x => ({key: x.key, n: x.n, code: x.code, name: x.name, image: x.image, cost: x.cost})), note, reason: sh.reason, extra: (($('#so-note') || {}).value || '').trim(), markup: soMarkup(), disc: sh.disc || 0, total: soTotals(sh.items, sh.disc).total, customer: cust}); if (cust && S.cari) S.cari.at = 0; sh.saved = true; scanStop(); if (sh.pdf) { try { await deliverPdf(await soSalesPdf(sh.items, sh.disc, sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '')), `satis-listesi-${todayTR()}.pdf`, 0, 'Satış listesi'); } catch (e) { toast('PDF hazırlanamadı: ' + errText(e), true); } } await refresh(true); toast(`Çıkış kaydedildi: ${fmtN(units)} adet.`); closeSheetForce(); }); break; }
     case 'plabel': { const p = S.products.get(id); const sz = ($('#pl-size') || {}).value; if (sz) plSize(sz); if (p) await printProductLabels([p], ($('#pl-copies') || {}).value); break; }
     case 'plabel-all': { const ps = filteredProducts(); if (!ps.length) { toast('Listede ürün yok.', true); break; } if (!(await confirmBox(`Listede görünen ${fmtN(ps.length)} ürünün her biri için 1 koli etiketi (${plSize().replace('x','×')} mm) hazırlansın mı? Ölçüyü ürün sayfasından değiştirebilirsin; arama ve süzgeçle listeyi daraltabilirsin.`, 'Hazırla'))) break; await printProductLabels(ps, 1); break; }
     case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;
@@ -4459,6 +4488,9 @@ document.addEventListener('input', e => {
   if (t.id === 'q') { S.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(() => { const l = $('#plist'); if (l) l.innerHTML = productList(); }, 120); }
   if (t.id === 'oq') { S.oq = t.value; S.opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 300); }
   if (t.id === 'bdq') { if (S.sheet) S.sheet.q = t.value; applyBdFilter(); }
+  if (t.classList && (t.classList.contains('si-n') || t.classList.contains('si-u')) && S.sheet && S.sheet.mode === 'in') { const x = S.sheet.items[Number(t.dataset.i)]; if (x) { if (t.classList.contains('si-n')) x.n = Math.max(1, parseInt(t.value, 10) || 1); else x.unit = t.value; const e = $('#si-t' + t.dataset.i); if (e) e.textContent = '= ' + tl2(x.n * siUnit(x)); const q = $('#si-q' + t.dataset.i); if (q) q.textContent = fmtN((x.qty || 0) + x.n); siSum(); } }
+  if (t.id === 'si-sup' && S.sheet) S.sheet.supplier = t.value;
+  if (t.id === 'so-cust' && S.sheet) S.sheet.customer = t.value;
   if (t.id === 'so-disc' && S.sheet) { S.sheet.disc = Math.min(95, Math.max(0, Number(t.value) || 0)); soList(); }
   if (t.id === 'so-mk' && t.value !== '') { soMarkup(Math.min(1000, Math.max(0, Number(t.value) || 0))); soList(); }
   if (t.id === 'pq') { profS().q = t.value; profS().opage = 1; clearTimeout(qTimer); qTimer = setTimeout(render, 200); }
