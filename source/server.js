@@ -982,7 +982,7 @@ const xmlEsc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&'
 const xmlAttrs = (tag) => { const o = {}; for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1]] = m[2]; return o; };
 async function srSchema(env, force) {
   const s = await getSettings(env, ['sr_schema', 'sr_schema_at']);
-  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 7) return c; } catch (e) {} }
+  if (!force && s.sr_schema && Date.now() - (Number(s.sr_schema_at) || 0) < 86400000) { try { const c = JSON.parse(s.sr_schema); if (c.v === 8) return c; } catch (e) {} }
   const r = await srFetch(SR_URL + '?WSDL');
   if (!r.ok) throw new Error(`Sürat web servisine ulaşılamadı (${r.status}).`);
   const w = await r.text();
@@ -999,8 +999,8 @@ async function srSchema(env, force) {
   const ct = new RegExp(`<(?:\\w+:)?complexType[^>]*name="${gp.type}"[^>]*>([\\s\\S]*?)</(?:\\w+:)?complexType>`).exec(w);
   if (!ct) throw new Error('Sürat gönderi alanları okunamadı.');
   let query = null; for (const m of ['WebSiparisKodu', 'WebSiparisKoduToplu']) { const b = elBlock(m); if (b) { query = { method: m, params: fields(b) }; break; } }
-  const lists = {}; for (const m of ['CariKoduveSifre', 'KargoTakipHareketDetayliV2', 'WebSiparisKodundanKargoTeslimatBilgisi', 'KargoBarkoduSiparis', 'KargoBarkodu', 'Barkod', 'WebSiparisKoduAlicidan']) { const b = elBlock(m); if (b) lists[m] = fields(b); }
-  const sc = { v: 7, ns, method, params, alts, ops, lists, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
+  const lists = {}; for (const m of ['GonderiGeriCek', 'CariKoduveSifre', 'KargoTakipHareketDetayliV2', 'WebSiparisKodundanKargoTeslimatBilgisi', 'KargoBarkoduSiparis', 'KargoBarkodu', 'Barkod', 'WebSiparisKoduAlicidan']) { const b = elBlock(m); if (b) lists[m] = fields(b); }
+  const sc = { v: 8, ns, method, params, alts, ops, lists, gonderi: { param: gp.name, type: gp.type, fields: fields(ct[1]) }, query, at: iso() };
   await env.DB.batch([setStmt(env, 'sr_schema', JSON.stringify(sc)), setStmt(env, 'sr_schema_at', String(Date.now()))]);
   return sc;
 }
@@ -1048,6 +1048,21 @@ async function srFetchBarcode(env, cr, ref) {
 }
 // Takip: bizim barkodumuzla (WebSiparisKodu) Sürat'ın takip numarası sorulur; şube okutunca dolar
 const SR_TRACK_URL = (no) => `https://suratkargo.com.tr/KargoTakip/?kargotakipno=${encodeURIComponent(no)}`;
+// Sürat'taki gönderiyi geri çek (iptal): "Bekleyene geri al"da kullanılır. Başarılıysa {ok:true}, değilse {ok:false, msg}
+async function srCancel(env, creds, ref, tracking) {
+  const sc = await srSchema(env, false), ps = sc.lists && sc.lists.GonderiGeriCek; if (!ps) return { ok: false, msg: 'Sürat web servisinde iptal (GonderiGeriCek) işlemi bulunamadı.' };
+  const reason = 'Sipariş düzenlendi, gönderi yeniden oluşturulacak';
+  const px = ps.map(p => { const n = p.name;
+    const v = /cari|kullanici/i.test(n) ? creds.cari : /sifre|password|parola/i.test(n) ? (creds.pass || creds.web) : /iptal|neden|aciklama|sebep/i.test(n) ? reason : /kargotakip|takipno/i.test(n) ? (tracking || ref) : /siparis|referans|ozel|kod|barkod|takip/i.test(n) ? ref : (p.min === 0 ? null : '');
+    return v == null ? '' : `<${n}>${xmlEsc(v)}</${n}>`; }).join('');
+  const body = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><GonderiGeriCek xmlns="${sc.ns}">${px}</GonderiGeriCek></soap:Body></soap:Envelope>`;
+  const r = await srFetch(SR_URL, { method: 'POST', headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: `"${sc.ns.replace(/\/?$/, '/')}GonderiGeriCek"` }, body });
+  const raw = await r.text(), fault = /<faultstring>([\s\S]*?)<\/faultstring>/.exec(raw);
+  if (fault) return { ok: false, msg: 'Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 200) };
+  const t = srText(raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')).replace(/\s+/g, ' ').trim();
+  const ok = r.ok && /ba[sş]ar|iptal edil|geri [çc]ekil|\btrue\b|\bok\b/i.test(t) && !/hata|bulunamad|yap[ıi]lamaz|edilemez|ge[çc]ersiz|\bfalse\b/i.test(t);
+  return ok ? { ok: true, msg: t.slice(0, 200) } : { ok: false, msg: 'Sürat: ' + (t.slice(0, 200) || ('HTTP ' + r.status)) };
+}
 async function srQuery(env, creds, ref) {
   const sc = await srSchema(env, false); const q = sc.query; if (!q) throw new Error('Sürat web servisinde gönderi sorgulama bulunamadı.');
   const px = q.params.map(p => { const n = p.name;
@@ -3870,8 +3885,11 @@ ${catalog}` });
     const gid = String(body.gid || ''); if (!gid) return bad('Sipariş bulunamadı.');
     const f = await env.DB.prepare('SELECT 1 FROM sr_ship WHERE gid=?1 AND fulfilled_at IS NOT NULL').bind(gid).first();
     if (f) return bad("Bu sipariş Shopify'da kargolandı olarak işlendi; geri alınamaz.");
+    // Web servisiyle Sürat'a gönderilmiş kayıtlar Sürat'ta da geri çekilir; çekilemezse yine de bekleyene alınır, uyarı döner
+    const { results: rows } = await env.DB.prepare(`SELECT ref, acct, tracking, order_no FROM sr_ship WHERE gid=?1 AND mode='api'`).bind(gid).all(), warn = [];
+    for (const x of rows) { try { const r = await srCancel(env, await srCreds(env, x.acct || ''), x.ref, x.tracking); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { warn.push(`${x.ref}: ${String(e.message || e).slice(0, 160)}`); } }
     await env.DB.prepare('DELETE FROM sr_ship WHERE gid=?1').bind(gid).run();
-    return json({ ok: true });
+    return json({ ok: true, cancelled: rows.length - warn.length, warn });
   }
   // ---------- Yeni Shopify siparişi (elle) ----------
   if (path === '/api/shorder/products') {
