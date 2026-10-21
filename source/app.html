@@ -406,7 +406,7 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 .bnav button svg{width:22px;height:22px}
 .bnav button[aria-current="page"]{color:var(--accent);background:var(--accent-soft)}
 .bnav .dot{position:absolute;top:2px;left:calc(50% + 8px);min-width:16px;height:16px;border-radius:8px;background:var(--warn);color:var(--surface);font-size:10px;line-height:16px;text-align:center;padding:0 4px}
-.qbtn{display:flex;align-items:center;justify-content:center;gap:10px;position:fixed;bottom:14px;z-index:20;height:66px;width:210px;box-sizing:border-box;border:1px solid var(--line);border-radius:22px;background:var(--surface);box-shadow:0 10px 30px rgba(16,40,30,.18);color:var(--ink);font:inherit;font-size:15px;font-weight:700;cursor:pointer;padding:0 14px;text-align:left;line-height:1.2}
+.qbtn{display:flex;white-space:normal;align-items:center;justify-content:center;gap:10px;position:fixed;bottom:14px;z-index:20;height:66px;width:210px;box-sizing:border-box;border:1px solid var(--line);border-radius:22px;background:var(--surface);box-shadow:0 10px 30px rgba(16,40,30,.18);color:var(--ink);font:inherit;font-size:15px;font-weight:700;cursor:pointer;padding:0 14px;text-align:left;line-height:1.2}
 .qbtn:hover{background:var(--surface-2)}
 .qbtn svg{width:26px;height:26px;flex:none;color:var(--accent)}
 .qbtn.ql{right:calc(50% + min(260px, 50% - 24px) + 12px)}
@@ -999,6 +999,18 @@ function suratXls(ships, tag){
   XLSX.writeFile(wb, `surat-gonderi-${tag ? tag + '-' : ''}${todayTR()}-${ships.length}.xls`, {bookType: 'biff8'});
 }
 // Kayıtlı sekmesi: her siparişin son Sürat barkodu (toplu etiket yazdırma için)
+// Kayıtlı (Sürat barkodu oluşturulmuş) siparişlerin etiketlerini yazdır: id === 'sel' ise A.sel'deki seçililer
+async function srPrintSel(id){ const A = aS(), dl = srDoneList(A).filter(x => id !== 'sel' || (A.sel && A.sel.has(x.gid))); if (!dl.length) return;
+      // elle kayıtlıya alınanların barkodu yok: önce Sürat barkodu oluşturulur, sonra hepsi birlikte basılır
+      const man = dl.filter(x => x.mode === 'manual'), ready = dl.filter(x => x.mode !== 'manual');
+      if (man.length && !(await confirmBox(`Seçtiklerinden ${fmtN(man.length)} tanesinin Sürat barkodu yok (elle kayıtlıya alınmış). Önce onlara barkod oluşturulup hepsi birlikte yazdırılsın mı? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi.`, 'Oluştur ve yazdır'))) return;
+      const errs = []; let k = 0;
+      for (const x of man) { A.bulk = `${++k}/${man.length}`; render();
+        try { const r = await api('/api/surat/ship', {gid: x.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); srAddShip(A, r.ship); ready.push(r.ship); } catch (err) { errs.push(`${x.order_no}: ${errText(err)}`); } }
+      A.bulk = null; render();
+      if (ready.length) await suratPrint(ready);
+      if (errs.length) toast(`${fmtN(errs.length)} siparişte barkod oluşturulamadı: ${errs.slice(0, 2).join(' · ')}`, true);
+}
 function srDoneList(A){ const ships = (A.data && A.data.ships) || [], last = new Map(); for (const x of ships) last.set(x.gid, x); return ((A.data && A.data.orders) || []).filter(o => last.has(o.gid)).map(o => last.get(o.gid)); }
 // gerçek barkod oluşunca aynı siparişin "elle kayıtlı" satırı listeden düşer
 function srAddShip(A, sh){ A.data.ships = (A.data.ships || []).filter(x => !(x.gid === sh.gid && x.mode === 'manual')); A.data.ships.push(sh); }
@@ -2554,6 +2566,25 @@ function lblSort(list){
 const lblCar = p => /ptt/i.test(p.provider || '') ? 'ptt' : /trendyol|express|tex/i.test(p.provider || '') ? 'tex' : 'other';
 const LBL_CAR = {tex:'Trendyol Express', ptt:'PTT Kargo', other:'Diğer kargo'};
 function lblView(L){ L.data = (L.all || []).filter(p => lblCar(p) === L.car && (L.view === 'printed' ? !!p.printedAt : !p.printedAt)); L.sel = new Set(L.data.map(p => p.pkgId)); }
+// Sağ panel: Kayıtlı (barkodu oluşturuldu) — bilgisayardaki sağ kısayoldan açılır; Kargo etiketi yazdır paneliyle aynı düzen
+function sheetKayitli(){
+  const K = S.sheet, A = aS();
+  if (!A.data) { if (!K.wait) { K.wait = true; Promise.resolve(loadAddr(false)).finally(() => { const poll = () => { if (S.sheet !== K) return; if (aS().data || !aS().loading) { K.wait = false; renderSheet(false); } else setTimeout(poll, 500); }; poll(); }); }
+    return {title: 'Kayıtlı (barkodu oluşturuldu)', body: A.err ? `<div class="banner bad"><div>${esc(A.err)}</div></div>` : loading()}; }
+  const ships = srDoneList(A), ob = new Map(A.data.orders.map(o => [o.gid, o]));
+  if (!K.sel) K.sel = new Set(ships.map(x => x.gid));
+  const ns = ships.filter(x => K.sel.has(x.gid)).length;
+  const nm = o => { const a = (o && o.addr) || {}; return [a.firstName, a.lastName].filter(Boolean).join(' ') || '—'; }, yer = o => { const a = (o && o.addr) || {}; return [a.city, a.province].filter(Boolean).join(' / '); };
+  const rows = ships.map(x => { const o = ob.get(x.gid) || {}, g = esc(x.gid);
+    return `<label class="lrow" style="display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line);cursor:pointer"><input type="checkbox" data-kysel="${g}" ${K.sel.has(x.gid) ? 'checked' : ''} style="margin-top:3px">
+      <div style="min-width:0;flex:1"><div><b class="mono">${esc(o.name || x.order_no || '')}</b> <b>${esc(nm(o))}</b></div><div class="small muted">${esc(yer(o))}${o.cod && o.cod.tip ? ' · kapıda ödeme' : ''}</div>
+      <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((o.items || []).join(', '))}</div>
+      <div class="small">${x.mode === 'manual' ? '<span class="muted">Elle kayıtlı · Sürat barkodu yok (yazdırırken oluşturulur)</span>' : `Barkod <b class="mono">${esc(x.ref || '')}</b> · ${x.tracking ? `takip no <b class="mono">${esc(x.tracking)}</b>` : '<span class="muted">takip no bekleniyor</span>'}`}</div></div></label>`; }).join('');
+  return {title: 'Kayıtlı (barkodu oluşturuldu)', sub: `<span>${fmtN(ships.length)} sipariş</span>`, body: !ships.length ? `<div class="panel empty"><h4>Kayıtlı sipariş yok</h4><p>Barkodu oluşturulan siparişler burada görünür.</p></div>` : `
+    <div class="card" style="gap:10px;flex-direction:row;align-items:center;flex-wrap:wrap"><button class="btn sm" type="button" data-act="ky-selall">${ns === ships.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(ns)} / ${fmtN(ships.length)} seçili</span><button class="btn sm primary" type="button" data-act="ky-print" style="margin-left:auto" ${ns && !A.bulk ? '' : 'disabled'}>${A.bulk ? 'Barkod oluşturuluyor ' + esc(A.bulk) : '🖨 Seçilenleri yazdır (' + fmtN(ns) + ')'}</button></div>
+    <div class="card" style="padding:0;gap:0;margin-top:12px;overflow:hidden">${rows}</div>
+    <p class="small muted" style="margin:10px 2px 0">Etiket Sürat ölçüsünde (100×200) basılır; Adres düzeltme → Kayıtlı sekmesindeki yazdırmayla aynı.</p>`};
+}
 function sheetLabels(){
   const L = S.sheet;
   if (!L.data) {
@@ -3986,7 +4017,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -4074,6 +4105,7 @@ document.addEventListener('keydown', e => { const t = e.target; if (!t || t.id !
 document.addEventListener('input', e => { const t = e.target; if (t && t.id === 'sr-man') aS().srmVal = t.value; });
 document.addEventListener('change', e => { const t = e.target; if (!t || t.id !== 'ct-kind') return; const C = cS(), base = (C.det && C.det.terms) || {}; C.tk = {...base, ...(C.tk || {}), kind: t.value}; render(); });
 document.addEventListener('change', e => { const t = e.target; if (t && t.dataset && t.dataset.af && S.tab === 'addr') render();
+  if (t && t.dataset && t.dataset.kysel && S.sheet && S.sheet.type === 'kayitli') { const K = S.sheet; K.sel = K.sel || new Set(); if (t.checked) K.sel.add(t.dataset.kysel); else K.sel.delete(t.dataset.kysel); renderSheet(false); }
   if (t && t.dataset && t.dataset.srsel) { const A = aS(); A.sel = A.sel || new Set(); if (t.checked) A.sel.add(t.dataset.srsel); else A.sel.delete(t.dataset.srsel); render(); } });
 document.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.qid) qS().drafts[t.dataset.qid] = t.value;
   if (t && t.id === 'oq' && S.sheet && S.sheet.type === 'orphan') { S.sheet.q = t.value; const box = $('#olist'); if (box) { const tmp = document.createElement('div'); tmp.innerHTML = sheetOrphan().body; const nl = tmp.querySelector('#olist'); if (nl) box.innerHTML = nl.innerHTML; } }
@@ -4308,7 +4340,9 @@ document.addEventListener('click', async e => {
     case 'ret-reject': await returnDecision(id, false); break;
     case 'ret-shape': openSheet('ret-shape'); break;
     case 'labels': openSheet('labels', {sel: new Set()}); break;
-    case 'q-kayitli': { S.drawer = false; renderDrawer(); const A = aS(); A.view = 'done'; A.sr = null; A.sel = null; setTab('addr'); window.scrollTo(0, 0); break; }
+    case 'q-kayitli': { S.drawer = false; renderDrawer(); openSheet('kayitli', {sel: null}); break; }
+    case 'ky-selall': { const K = S.sheet; if (!K || K.type !== 'kayitli') break; const all = srDoneList(aS()).map(x => x.gid); if (K.sel && all.every(g => K.sel.has(g))) K.sel.clear(); else K.sel = new Set(all); renderSheet(false); break; }
+    case 'ky-print': { const K = S.sheet; if (!K || K.type !== 'kayitli' || !K.sel || !K.sel.size) break; const A = aS(); A.sel = new Set(K.sel); await srPrintSel('sel'); if (S.sheet === K) renderSheet(false); break; }
     case 'lbl-sel': { const L = S.sheet; if (!L || !L.data) break; L.sel.has(id) ? L.sel.delete(id) : L.sel.add(id); renderSheet(false); break; }
     case 'lbl-all': { const L = S.sheet; if (!L || !L.data) break; if (L.sel.size === L.data.length) L.sel.clear(); else L.data.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); break; }
     case 'lbl-size': { const [w, h] = id.split('x').map(Number); lblSize({w, h}); renderSheet(false); break; }
@@ -4416,16 +4450,7 @@ document.addEventListener('click', async e => {
       if (!(await confirmBox(`${fmtN(can.length)} sipariş "Barkod bekleyen"e geri alınsın mı? Basılan etiketler kullanılmamalı.${done.length ? ` ${fmtN(done.length)} sipariş Shopify'da kargolandığı için atlanacak.` : ''}`, 'Geri al'))) break;
       await run(async () => { let n = 0; const errs = []; for (const x of can) { try { await api('/api/surat/unship', {gid: x.gid}); A.data.ships = (A.data.ships || []).filter(y => y.gid !== x.gid); n++; } catch (err) { errs.push(`${x.order_no}: ${errText(err)}`); } }
         A.sel.clear(); render(); toast(`${fmtN(n)} sipariş bekleyene alındı.${errs.length ? ' ' + errs.slice(0, 2).join(' · ') : ''}`, !!errs.length); }); break; }
-    case 'sr-printall': { const A = aS(), dl = srDoneList(A).filter(x => id !== 'sel' || (A.sel && A.sel.has(x.gid))); if (!dl.length) break;
-      // elle kayıtlıya alınanların barkodu yok: önce Sürat barkodu oluşturulur, sonra hepsi birlikte basılır
-      const man = dl.filter(x => x.mode === 'manual'), ready = dl.filter(x => x.mode !== 'manual');
-      if (man.length && !(await confirmBox(`Seçtiklerinden ${fmtN(man.length)} tanesinin Sürat barkodu yok (elle kayıtlıya alınmış). Önce onlara barkod oluşturulup hepsi birlikte yazdırılsın mı? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi.`, 'Oluştur ve yazdır'))) break;
-      const errs = []; let k = 0;
-      for (const x of man) { A.bulk = `${++k}/${man.length}`; render();
-        try { const r = await api('/api/surat/ship', {gid: x.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); srAddShip(A, r.ship); ready.push(r.ship); } catch (err) { errs.push(`${x.order_no}: ${errText(err)}`); } }
-      A.bulk = null; render();
-      if (ready.length) await suratPrint(ready);
-      if (errs.length) toast(`${fmtN(errs.length)} siparişte barkod oluşturulamadı: ${errs.slice(0, 2).join(' · ')}`, true); break; }
+    case 'sr-printall': await srPrintSel(id); break;
     case 'sr-selall': { const A = aS(), el = A.view === 'done' ? srDoneList(A) : srBulkList(A); A.sel = A.sel || new Set(); if (el.every(o => A.sel.has(o.gid))) A.sel.clear(); else el.forEach(o => A.sel.add(o.gid)); render(); break; }
     case 'sr-bulk': { const A = aS(), list = srBulkList(A).filter(o => id !== 'sel' || (A.sel && A.sel.has(o.gid))); if (!list.length) break;
       const skipped = id === 'sel' ? 0 : A.data.orders.length - list.length - new Set((A.data.ships || []).map(x => x.gid)).size;
