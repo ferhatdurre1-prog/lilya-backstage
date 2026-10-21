@@ -885,6 +885,12 @@ function ilCode(name){ const A = aS(), f = trFold(name); if (A.codes[f]) return 
   const fmt = A.codeFmt || {pre: 'TR-', w: 2}; return fmt.pre + String(i + 1).padStart(fmt.w, '0'); } // Shopify Türkiye il kodu: TR-plaka
 function addrLearnCodes(orders){ const A = aS(); for (const o of orders) { const a = o.addr; if (!a || !a.province || !a.provinceCode) continue; A.codes[trFold(a.province)] = a.provinceCode;
   const i = ilFind(a.province), m = /^(\D*)(\d+)$/.exec(a.provinceCode); if (i != null && m && Number(m[2]) === i + 1) A.codeFmt = {pre: m[1], w: m[2].length}; } }
+// Ana ekran: barkodu henüz oluşturulmamış ve adresinde kontrol edilecek bir şey olan Shopify siparişleri (5 dakikada bir sayılır)
+function addrProb(){ const calc = (d) => { const has = new Set((d.ships || []).map(x => x.gid)); return (d.orders || []).filter(o => !has.has(o.gid) && addrIssues(addrForm(o.addr || {}), o).length).length; };
+  const A = S.addr; if (A && A.data && !A.q && Date.now() - A.at < 300000) return calc(A.data);
+  const C = S.addrCnt; if ((!C || Date.now() - C.at > 300000) && !(C && C.loading)) { S.addrCnt = {...(C || {}), loading: true};
+    api('/api/shaddr/list', {}).then(d => { S.addrCnt = {n: calc(d), at: Date.now()}; if (S.tab === 'home') render(); }).catch(() => { S.addrCnt = {n: C ? C.n || 0 : 0, at: Date.now()}; }); }
+  return (S.addrCnt && S.addrCnt.n) || 0; }
 async function loadAddr(force){
   if (!S.shop) { S.shop = {loading: true}; api('/api/shopify/status', {}).then(d => { S.shop = {...d, loadedAt: Date.now()}; if (S.tab === 'addr') render(); }).catch(() => { S.shop = null; }); }
   const A = aS(); if (A.loading || (!force && A.data && Date.now() - A.at < 30000)) return;
@@ -1616,7 +1622,7 @@ function viewHome(){
   h += `<div class="card h-sc"><h3 style="margin:0">Kısayollar</h3><div class="act-grid sc-grid">
     ${sc('Gelir / gider', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>', 'add-expense')}
     ${sc('Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>', 'ws-open')}
-    ${(() => { const w = ((S.sync.trendyol || {}).newOrders || {}).srStuck || 0; return sc(`Adres düzeltme${w ? ` <b style="color:var(--bad)" title="1 günden eski, takip numarası gelmemiş Sürat barkodu">${fmtN(w)}</b>` : ''}`, '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', 'tab', 'addr', w > 0); })()}
+    ${(() => { const w = addrProb(); return sc(`Adres düzeltme${w ? ` <b style="color:var(--bad)" title="Adresinde kontrol edilecek bir şey olan sipariş">${fmtN(w)}</b>` : ''}`, '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', 'tab', 'addr', w > 0); })()}
     ${sc('Cariler', '<path d="M4 7h16M4 12h16M4 17h10"/>', 'tab', 'cari')}
     ${(() => { const n = ps.filter(p => p.mto && p.qty < 0).length; return sc(`Alınacaklar${n ? ` <b style="color:var(--orange)">${fmtN(n)}</b>` : ''}`, '<path d="M6 6h15l-1.5 9h-12z"/><path d="M6 6L5 3H2"/><circle cx="9" cy="20" r="1.3"/><circle cx="18" cy="20" r="1.3"/>', 'need-open', '', n > 0); })()}
     ${sc('Barkodla giriş / çıkış', '<path d="M4 6v12M7 6v12M10 6v12M14 6v12M17 6v12M20 6v12"/>', 'scan-pick')}
