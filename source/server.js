@@ -25,6 +25,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS sr_rows(takip TEXT PRIMARY KEY, day TEXT, alici TEXT, fee REAL, cod REAL, collected INTEGER, coll_amt REAL, iade TEXT, durum TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_mov(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, kind TEXT, amount REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS paytr_tx(k TEXT PRIMARY KEY, siparis_no TEXT, tip TEXT, tutar REAL, kesinti REAL, net REAL, oran REAL, tarih TEXT, odeme_tipi TEXT, at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS pt_link(k TEXT PRIMARY KEY, no TEXT, kind TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sh_carrier(no TEXT PRIMARY KEY, carrier TEXT, info TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_online(no TEXT PRIMARY KEY, amount REAL, paid INTEGER NOT NULL DEFAULT 0, paid_at TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_cost(no TEXT PRIMARY KEY, tracking TEXT, cost REAL, desi REAL, cod_amount REAL, undelivered INTEGER, durum TEXT, teslim TEXT, at TEXT)`,
@@ -2418,10 +2419,11 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
     env.DB.prepare(`SELECT * FROM paytr_tx WHERE tip='S' AND tarih >= ?1 AND tarih <= ?2`).bind(addDay(dayFrom, -1), addDay(dayTo, 1)),
     env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
+  const ptLk = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, ptLinkNo = new Map(ptLk.filter(x => x.kind === 'match').map(x => [x.no, x.k])), ptLinkedK = new Set(ptLk.map(x => x.k));
   const ptTx = ptR.results, ptUsed = new Set(), ptRate = ptTx.filter(x => x.oran > 0).reduce((a, x, i, arr) => a + x.oran / arr.length, 0);
-  const ptFind = (no, total, day, txIds) => { let m = ptTx.find(x => !ptUsed.has(x.k) && String(x.siparis_no || '').replace(/\D/g, '') === no);
-    if (!m && txIds && txIds.length) m = ptTx.find(x => !ptUsed.has(x.k) && x.siparis_no && txIds.some(t => t && (t === x.siparis_no || t.includes(x.siparis_no))));
-    if (!m) { const c = ptTx.filter(x => !ptUsed.has(x.k) && Math.abs((x.tutar || 0) - total) < 0.06 && x.tarih === day); if (c.length) m = c[0]; } // aynı gün aynı tutar: komisyon da aynı olduğundan herhangi biri
+  const ptFind = (no, total, day, txIds) => { if (ptLinkNo.has(no)) { const lm = ptTx.find(x => x.k === ptLinkNo.get(no)); if (lm) { ptUsed.add(lm.k); return lm; } } let m = ptTx.find(x => !ptUsed.has(x.k) && !ptLinkedK.has(x.k) && String(x.siparis_no || '').replace(/\D/g, '') === no);
+    if (!m && txIds && txIds.length) m = ptTx.find(x => !ptUsed.has(x.k) && !ptLinkedK.has(x.k) && x.siparis_no && txIds.some(t => t && (t === x.siparis_no || t.includes(x.siparis_no))));
+    if (!m) { const c = ptTx.filter(x => !ptUsed.has(x.k) && !ptLinkedK.has(x.k) && Math.abs((x.tutar || 0) - total) < 0.06 && x.tarih === day); if (c.length) m = c[0]; } // aynı gün aynı tutar: komisyon da aynı olduğundan herhangi biri
     if (m) ptUsed.add(m.k); return m; };
   const shPay = new Map(spR.results.map(x => [x.no, x])), srCost = new Map(scR.results.map(x => [x.no, x])), shRet = new Map(srtR.results.map(x => [x.no, x]));
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
@@ -2518,7 +2520,7 @@ async function computeProfit(env, from, to, ch0) {
       // Shopify kuralları: 700 TL altı müşteri 100 TL kargo öder; kapıda nakit +50 TL, kapıda kart +100 TL (müşteriden). Gider: kargo firmasının ücreti
       const no = String(ord.order_no || '').replace(/\D/g, ''), bk = bkMap.get(no), pay = shPay.get(no), post = String(ord.date || '') >= SURAT_DIRECT_FROM && !(bk && bk.fee !== null && bk.fee !== undefined) && !bkMark.has(no); // Basit Kargo ücreti olan sipariş tarihi ne olursa olsun Basit Kargo
       const gross = rows.reduce((a, x) => a + x.full, 0);
-      let cod = null, card = false; if (bk && !post) { cod = !!bk.cod; card = bk.cod_type === 'CREDIT_CARD'; } else if (pay) { cod = !!pay.cod; card = !!pay.card; }
+      let cod = null, card = false; if (bk && !post) { cod = !!bk.cod; card = bk.cod_type === 'CREDIT_CARD'; } else if (pay) { cod = !!pay.cod; card = !!pay.card; } if (ptLinkNo.has(no)) { cod = false; card = false; } // PayTR'den kartla ödendiği elle eşlendi
       const shipInc = gross > 0 && gross < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codInc = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0; shInc = shipInc + codInc;
       const pm = cod === null ? 'ödeme yöntemi bilinmiyor (online sayıldı)' : cod ? (card ? 'kapıda kart' : 'kapıda nakit') : 'online';
       if (cod === false || (cod === null && pay)) { const m = ptFind(no, r2(gross + shInc), trDay(Date.parse(ord.date)), pay && pay.tx ? String(pay.tx).split(' ') : null); if (m && m.kesinti !== null) { ptFee = r2(m.kesinti); ptTxt = ` · PayTR komisyonu ${ptFee} TL`; } else if (ptRate > 0) { ptFee = r2((gross + shInc) * ptRate / 100); ptTxt = ` · PayTR komisyonu tahmini %${r2(ptRate)} (${ptFee} TL)`; } }
@@ -3563,19 +3565,24 @@ ${catalog}` });
   if (path === '/api/paytr/recon') {
     // PayTR mutabakatı: Shopify online siparişlerde beklenen tutar (ürün + 700 TL altı 100 TL kargo) ile PayTR'nin işlediği tutar, komisyonu, neti ve hesaba yattığı gün
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs));
-    const [oR, tR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.subtotal, p.total, p.tx, p.gateway, p.delivered shd, s.teslim srd, b.delivered bkd FROM orders o JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost s ON s.no = p.no LEFT JOIN bk_ship b ON b.no = p.no WHERE o.channel='shopify' AND o.date >= ?1 AND COALESCE(p.cod,0)=0 ORDER BY o.date`).bind(from),
+    const [oR, tR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.subtotal, p.total, p.tx, p.gateway, p.delivered shd, s.teslim srd, b.delivered bkd FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost s ON s.no = replace(o.order_no,'#','') LEFT JOIN bk_ship b ON b.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1 AND ((p.no IS NOT NULL AND COALESCE(p.cod,0)=0) OR replace(o.order_no,'#','') IN (SELECT no FROM pt_link WHERE kind='match')) ORDER BY o.date`).bind(from),
       env.DB.prepare(`SELECT * FROM paytr_tx WHERE tarih >= ?1 ORDER BY tarih`).bind(addDayStr(rs, -1)), env.DB.prepare('SELECT * FROM pt_payout WHERE day >= ?1 ORDER BY day DESC').bind(rs)]);
     const sales = tR.results.filter(x => x.tip === 'S'), refunds = tR.results.filter(x => x.tip === 'I'), used = new Set(), out = [];
+    // Elle eşleme / yok sayma (turuncu kutudaki düğmeler)
+    const lkR = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, linkNo = new Map(lkR.filter(x => x.kind === 'match').map(x => [x.no, x.k])), linkedK = new Set(lkR.map(x => x.k)), ignK = new Set(lkR.filter(x => x.kind === 'ignore').map(x => x.k));
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'); if (!act.length) continue;
       const sub = r2(r.subtotal !== null ? r.subtotal : act.reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0)), exp = r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0)), day = trDay(Date.parse(r.date)), ids = String(r.tx || '').split(' ').filter(Boolean);
-      let m = ids.length ? sales.find(x => !used.has(x.k) && x.siparis_no && ids.some(t => t === x.siparis_no || t.includes(x.siparis_no))) : null;
-      if (!m) m = sales.find(x => !used.has(x.k) && Math.abs((x.tutar || 0) - exp) < 0.06 && x.tarih === day) || sales.find(x => !used.has(x.k) && Math.abs((x.tutar || 0) - exp) < 0.06 && Math.abs(Date.parse(x.tarih) - Date.parse(day)) <= 86400000);
-      if (!m) { const c = sales.filter(x => !used.has(x.k) && x.tarih === day && Math.abs((x.tutar || 0) - exp) <= exp * 0.15).sort((a, b) => Math.abs(a.tutar - exp) - Math.abs(b.tutar - exp)); if (c.length) m = c[0]; } // aynı gün en yakın tutar: fark olarak gösterilir
+      const ono = String(r.order_no || '').replace(/\D/g, ''), man = linkNo.has(ono), free = x => !used.has(x.k) && !linkedK.has(x.k);
+      let m = man ? sales.find(x => x.k === linkNo.get(ono)) || null : null;
+      if (!m && !man && ids.length) m = sales.find(x => free(x) && x.siparis_no && ids.some(t => t === x.siparis_no || t.includes(x.siparis_no)));
+      if (!m && !man) m = sales.find(x => free(x) && Math.abs((x.tutar || 0) - exp) < 0.06 && x.tarih === day) || sales.find(x => free(x) && Math.abs((x.tutar || 0) - exp) < 0.06 && Math.abs(Date.parse(x.tarih) - Date.parse(day)) <= 86400000);
+      if (!m && !man) { const c = sales.filter(x => free(x) && x.tarih === day && Math.abs((x.tutar || 0) - exp) <= exp * 0.15).sort((a, b) => Math.abs(a.tutar - exp) - Math.abs(b.tutar - exp)); if (c.length) m = c[0]; } // aynı gün en yakın tutar: fark olarak gösterilir
       if (m) used.add(m.k);
       const lag = m && m.paid_day ? Math.round((Date.parse(m.paid_day) - Date.parse(m.tarih)) / 86400000) : null;
       const deliv = dlvDay(r.srd) || r.bkd || r.shd || null, dlag = m && m.paid_day && deliv ? Math.round((Date.parse(m.paid_day) - Date.parse(deliv)) / 86400000) : null; // PayTR ödemeyi teslimata göre yapar
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, deliv, dlag, due: deliv ? ptPayDay(deliv) : null, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff' }); }
-    const orphan = sales.filter(x => !used.has(x.k)).map(x => ({ siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day, odeme: x.odeme_tipi || '' }));
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, deliv, dlag, due: deliv ? ptPayDay(deliv) : null, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff', manual: man, k: m ? m.k : (man ? linkNo.get(ono) : null) }); }
+    const ignored = sales.filter(x => ignK.has(x.k)).map(x => ({ k: x.k, siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih }));
+    const orphan = sales.filter(x => !used.has(x.k) && !linkedK.has(x.k)).map(x => ({ k: x.k, siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day, odeme: x.odeme_tipi || '' }));
     // Eşleşmeyen her PayTR işlemi için aday Shopify siparişleri (±1 gün, tutar ±%15): neden eşleşmediği yazılır
     if (orphan.length) { const { results: cand } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, p.gateway FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1`).bind(iso(dayStartTR(addDayStr(rs, -2)))).all();
       for (const x of orphan.slice(0, 50)) { const t0 = Date.parse(x.tarih + 'T12:00:00+03:00');
@@ -3589,9 +3596,20 @@ ${catalog}` });
     const today = trToday(), dueM = new Map(); for (const x of out) if (x.st !== 'nodata' && !x.paid && x.due) { const g = dueM.get(x.due) || { day: x.due, net: 0, n: 0 }; g.net = r2(g.net + (x.net || 0)); g.n++; dueM.set(x.due, g); }
     const dueList = [...dueM.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => ({ ...g, late: g.day < today }));
     const pend = mm('net', x => !x.paid), paidTot = r2(pR.results.reduce((a, x) => a + (x.net || 0), 0));
-    return json({ ok: true, items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
+    return json({ ok: true, ignored, items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { exp: mm('exp'), pt: mm('pt'), kes: mm('kes'), net: mm('net'), pend, paid: paidTot, refunds: r2(refunds.reduce((a, x) => a + (x.tutar || 0), 0)) },
       lag: lags.length ? { min: lags[0], max: lags[lags.length - 1], med: lags[Math.floor(lags.length / 2)], n: lags.length } : null, lagD: st3('dlag'), dueList, noDue: out.filter(x => x.st !== 'nodata' && !x.paid && !x.due).length, delivN: out.filter(x => x.deliv).length, payouts: pR.results.slice(0, 60), orphan: orphan.slice(0, 50), orphanN: orphan.length });
+  }
+  if (path === '/api/paytr/link') { // PayTR işlemini elle bir Shopify siparişine bağla / yok say / geri al
+    const k = String(body.k || ''), kind = body.kind === 'ignore' ? 'ignore' : body.kind === 'remove' ? 'remove' : 'match';
+    const tx = await env.DB.prepare('SELECT k, tarih FROM paytr_tx WHERE k=?1').bind(k).first(); if (!tx) return bad('PayTR işlemi bulunamadı.');
+    if (kind === 'remove') await env.DB.prepare('DELETE FROM pt_link WHERE k=?1').bind(k).run();
+    else { let no = ''; if (kind === 'match') { no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş numarasını yaz.');
+        const o = await env.DB.prepare(`SELECT 1 FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(no).first(); if (!o) return bad(`#${no} numaralı Shopify siparişi bulunamadı.`);
+        await env.DB.prepare(`DELETE FROM pt_link WHERE no=?1 AND kind='match' AND k<>?2`).bind(no, k).run(); }
+      await env.DB.prepare('INSERT INTO pt_link(k, no, kind, at) VALUES(?1,?2,?3,?4) ON CONFLICT(k) DO UPDATE SET no=excluded.no, kind=excluded.kind, at=excluded.at').bind(k, no, kind, iso()).run(); }
+    await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(addDayStr(String(tx.tarih || '').slice(0, 10) || trToday(), -3)), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true });
   }
   if (path === '/api/paytr/rawdiag') { const cr = await ptCreds(env); const d = trToday(); const a = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-dokumu/', { start_date: addDayStr(d, -14), end_date: d }, cr.id + addDayStr(d, -14) + d + cr.salt).catch(e => ({ err: String(e.message) }));
     const p1 = a.list && a.list[0]; const day = p1 ? ptDay(String(p1.date_paid || '')) : addDayStr(d, -1); const b = await ptPost(cr, 'https://www.paytr.com/rapor/odeme-detayi/', { date: day }, cr.id + day + cr.salt).catch(e => ({ err: String(e.message) }));
