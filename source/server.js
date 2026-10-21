@@ -159,7 +159,7 @@ async function init0(env) {
   // Sürat Kargo gönderileri: kendi barkodumuz (OzelKargoTakipNo) ve Sürat'a bildirilen adres
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ship(ref TEXT PRIMARY KEY, gid TEXT, order_no TEXT, adet INTEGER, desi REAL, addr TEXT, lines TEXT, msg TEXT, at TEXT)').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS sr_ship_gid ON sr_ship(gid)').run();
-  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT', 'printed_at TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_costreset1'`).first())) {
@@ -3462,7 +3462,7 @@ ${catalog}` });
         total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0).map(l => `${l.unfulfilledQuantity}× ${l.name}`),
         addr: o.shippingAddress || null, cod: shCod(o) }));
       const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
-      const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err, exported_at, mode FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
+      const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err, exported_at, mode, printed_at FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
       return json({ ok: true, orders, log, ships, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
   }
@@ -3845,6 +3845,12 @@ ${catalog}` });
     const all = !!body.all;
     const { results } = await env.DB.prepare(`SELECT ref, gid, order_no, adet, desi, addr, lines, at, exported_at, acct FROM sr_ship s WHERE COALESCE(mode,'excel')='excel' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND ${all ? 'at > ?1' : 'exported_at IS NULL AND at > ?1'} ORDER BY at`).bind(iso(Date.now() - (all ? 7 : 30) * 86400000)).all();
     return json({ ok: true, ships: results.map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) });
+  }
+  if (path === '/api/surat/printed') { // etiket yazdırıldı (Sürat yazdırıldı sekmesi) / geri al
+    const refs = (Array.isArray(body.refs) ? body.refs : []).map(String).slice(0, 500); if (!refs.length) return json({ ok: true });
+    const at = body.printed === false ? null : iso(), st = refs.map(r => env.DB.prepare('UPDATE sr_ship SET printed_at=?2 WHERE ref=?1').bind(r, at));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    return json({ ok: true, at });
   }
   if (path === '/api/surat/exported') {
     const refs = (Array.isArray(body.refs) ? body.refs : []).map(String).slice(0, 500); if (!refs.length) return json({ ok: true });

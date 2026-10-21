@@ -943,26 +943,27 @@ function sentHtml(A){
 }
 const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(' / '), a.zip].filter(Boolean).map(esc).join(' · ') : '<span class="muted">Adres yok</span>';
 function viewAddr(){
-  const A = aS(); if (A.view === 'sent') A.view = 'pending'; /* Gönderilmiş sekmesi kaldırıldı (21.10.2026); kayıtlar duruyor */ loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
+  const A = aS(); if (!['bad', 'pending', 'done', 'printed'].includes(A.view)) A.view = 'bad'; /* açılışta Sürat sorunlu */ loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Kargolanmamış bütün Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
-  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const has = new Set(((A.data && A.data.ships) || []).map(x => x.gid)), all = (A.data && A.data.orders) || [], nDone = all.filter(o => has.has(o.gid)).length; return `<button class="chip" data-act="ad-view" data-id="pending" aria-pressed="${A.view !== 'done' && A.view !== 'sent'}">Sürat bekleyen · ${fmtN(all.length - nDone)}</button><button class="chip" data-act="ad-view" data-id="done" aria-pressed="${A.view === 'done'}">Sürat kayıtlı · ${fmtN(nDone)}</button>`; })()}${A.view === 'sent' ? `<button class="chip" data-act="sent-miss" aria-pressed="${!!A.sentMiss}">Sadece Sürat verisi olmayanlar</button>` : `<button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button>`}</div>
+  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const cnt = {bad: 0, pending: 0, done: 0, printed: 0}; for (const o of ((A.data && A.data.orders) || [])) { const t = adTab(A, o); if (t) cnt[t]++; } return [['bad', 'Sürat sorunlu'], ['pending', 'Sürat bekleyen'], ['done', 'Sürat kayıtlı'], ['printed', 'Sürat yazdırıldı']].map(([v, t]) => `<button class="chip" data-act="ad-view" data-id="${v}" aria-pressed="${A.view === v}">${t}${A.data ? ' · ' + fmtN(cnt[v]) : ''}</button>`).join(''); })()}</div>
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
   h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px"><div class="small"><b>Sürat Kargo</b> · ${(() => { const pend = (A.data.ships || []).filter(x => x.mode !== 'api' && !x.exported_at).length; return pend ? `<b style="color:var(--orange)">${fmtN(pend)} gönderi Sürat'a yüklenmeyi bekliyor</b>` : 'Yüklenmeyi bekleyen gönderi yok'; })()}<div class="muted">Barkod bas → Sürat Excel indir → Sürat eKargo'da Gönderi Girişi Excel'e yükle. Takip no için: Sürat eKargo → Gönderi Raporu → Getir → Excel'e aktar → buraya "Sürat raporunu yükle".</div></div><div class="row" style="gap:6px;flex-wrap:wrap">${(() => { if (A.bulk) return `<button class="btn sm" disabled>Oluşturuluyor… ${A.bulk}</button>`;
-      if (A.view === 'done') { const dl = srDoneList(A), ns = dl.filter(x => A.sel && A.sel.has(x.gid)).length; return `<button class="btn sm" data-act="sr-selall" ${dl.length ? '' : 'disabled'}>${ns && ns === dl.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><button class="btn sm primary" data-act="sr-printall" data-id="sel" ${ns ? '' : 'disabled'}>🖨 Seçilenleri yazdır (${fmtN(ns)})</button><button class="btn sm ghost" data-act="sr-unshipsel" ${ns ? '' : 'disabled'}>↩ Seçilenleri bekleyene al (${fmtN(ns)})</button>`; }
+      if (A.view === 'done' || A.view === 'printed') { const dl = srDoneList(A), ns = dl.filter(x => A.sel && A.sel.has(x.gid)).length; return `<button class="btn sm" data-act="sr-selall" ${dl.length ? '' : 'disabled'}>${ns && ns === dl.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><button class="btn sm primary" data-act="sr-printall" data-id="sel" ${ns ? '' : 'disabled'}>🖨 Seçilenleri ${A.view === 'printed' ? 'tekrar ' : ''}yazdır (${fmtN(ns)})</button>${A.view === 'printed' ? `<button class="btn sm" data-act="sr-unprint" ${ns ? '' : 'disabled'}>↩ Seçilenleri kayıtlıya geri al (${fmtN(ns)})</button>` : ''}<button class="btn sm ghost" data-act="sr-unshipsel" ${ns ? '' : 'disabled'}>↩ Seçilenleri bekleyene al (${fmtN(ns)})</button>`; }
+      if (A.view === 'bad') return '';
       const el = srBulkList(A), ns = el.filter(o => A.sel && A.sel.has(o.gid)).length; return `<button class="btn sm" data-act="sr-selall" ${el.length ? '' : 'disabled'}>${ns && ns === el.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><button class="btn sm primary" data-act="sr-bulk" data-id="sel" ${ns ? '' : 'disabled'}>📦 Seçilenlere barkod oluştur (${fmtN(ns)})</button><button class="btn sm" data-act="sr-mark" ${ns ? '' : 'disabled'} title="Barkod oluşturmadan Kayıtlı sekmesine al">➡ Seçilenleri kayıtlıya al (${fmtN(ns)})</button>`; })()}<button class="btn sm primary" data-act="sr-xls" data-id="new">⬇ Sürat Excel indir</button><label class="btn sm" style="cursor:pointer" title="Sürat eKargo → Gönderi Raporu → Getir → Excel'e aktar ile inen dosya">${A.trk ? 'İşleniyor…' : '📥 Sürat raporunu yükle'}<input type="file" id="sr-rep" accept=".xls,.xlsx,.csv" hidden ${A.trk ? 'disabled' : ''}></label><button class="btn sm ghost" data-act="sr-xls" data-id="all">Son 7 gün</button></div></div>`;
-  const hasBc = new Set((A.data.ships || []).map(x => x.gid)), done = A.view === 'done';
+  const done = A.view === 'done' || A.view === 'printed';
   if (!done) h += A.no ? newOrderForm() : `<div style="margin:0 0 12px"><button class="btn" data-act="no-open">➕ Yeni sipariş oluştur</button></div>`;
-  const rows = A.data.orders.filter(o => hasBc.has(o.gid) === done).map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
+  const rows = A.data.orders.filter(o => adTab(A, o) === A.view).map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
   const nBad = rows.filter(r => r.issues.length).length;
   h += `<div class="small muted" style="margin:0 0 10px">${fmtN(rows.length)}${A.data.after ? '+' : ''} sipariş · <b style="color:${nBad ? 'var(--bad)' : 'var(--good)'}">${nBad ? fmtN(nBad) + ' tanesinde kontrol edilecek bir şey var' : 'hepsi düzgün görünüyor'}</b></div>`;
-  const list = rows.filter(r => !A.only || r.issues.length || r.e).sort((x, y) => String(y.o.createdAt).localeCompare(String(x.o.createdAt))); // sipariş tarihine göre, en yeni üstte
-  if (!list.length && done) h += `<div class="panel empty"><h4>Kayıtlı sipariş yok</h4><p>Barkodu oluşturulan siparişler burada görünür.</p></div>`;
-  else if (!list.length) h += `<div class="panel empty"><h4>${rows.length ? 'Sorunlu adres yok' : 'Sürat bekleyen sipariş yok'}</h4><p>${rows.length ? '"Sadece sorunlular" filtresini kapatıp hepsini görebilirsin.' : A.q ? 'Aramayla eşleşen sipariş bulunamadı.' : 'Kargolanmamış Shopify siparişi yok.'}</p></div>`;
+  const list = rows.sort((x, y) => String(y.o.createdAt).localeCompare(String(x.o.createdAt))); // sipariş tarihine göre, en yeni üstte
+  if (!list.length) { const E = {bad: ['Sorunlu sipariş yok', 'Adresinde uyarı olan, barkodu oluşturulmamış siparişler burada görünür.'], pending: ['Sürat bekleyen sipariş yok', 'Adresi sorunsuz, barkodu oluşturulmamış siparişler burada görünür.'], done: ['Sürat kayıtlı sipariş yok', 'Barkodu oluşturulmuş, etiketi henüz yazdırılmamış siparişler burada görünür.'], printed: ['Yazdırılmış sipariş yok', 'Etiketi yazdırılan siparişler takip no gelene kadar burada durur.']}[A.view];
+    h += `<div class="panel empty"><h4>${E[0]}</h4><p>${A.q ? 'Aramayla eşleşen sipariş bulunamadı.' : E[1]}</p></div>`; }
   for (const {o, e, issues} of list) {
     const g = esc(o.gid), busy = A.busy[o.gid], orig = addrForm(o.addr || {}), cur = e || orig, F = A.field && A.field.gid === o.gid ? A.field : null;
-    const selOk = done || (!e && !issues.some(i => i[0] === 'bad')); // Kayıtlı: toplu etiket · Bekleyen: toplu barkod (kırmızı sorunlu / kaydedilmemiş değişikliği olan seçilemez)
+    const selOk = done || (A.view === 'pending' && !e); // Kayıtlı: toplu etiket · Bekleyen: toplu barkod (kırmızı sorunlu / kaydedilmemiş değişikliği olan seçilemez)
     h += `<div class="card" style="gap:8px"><div style="min-width:0">${selOk ? `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px"><input type="checkbox" data-srsel="${g}" ${A.sel && A.sel.has(o.gid) ? 'checked' : ''}></label>` : `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px;opacity:.4" title="Seçmek için önce kırmızı sorunları düzelt / değişiklikleri Shopify'a kaydet"><input type="checkbox" disabled></label>`}<b>${esc(o.name)}</b> <span class="muted small">${esc(fmtDate(o.createdAt))}</span> ${o.fulfill === 'PARTIALLY_FULFILLED' ? '<span class="pill p-warn">Kısmen kargolandı</span>' : '<span class="pill p-brass">Kargolanmadı</span>'}
       <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.items.join(', '))}</div></div>`;
     if (issues.length) h += `<div class="row" style="gap:5px;flex-wrap:wrap">${issues.map(([l, m]) => `<span class="pill ${l === 'bad' ? 'p-bad' : 'p-warn'}">${esc(m)}</span>`).join('')}</div>`;
@@ -1000,7 +1001,7 @@ function suratXls(ships, tag){
 }
 // Kayıtlı sekmesi: her siparişin son Sürat barkodu (toplu etiket yazdırma için)
 // Kayıtlı (Sürat barkodu oluşturulmuş) siparişlerin etiketlerini yazdır: id === 'sel' ise A.sel'deki seçililer
-async function srPrintSel(id){ const A = aS(), dl = srDoneList(A).filter(x => id !== 'sel' || (A.sel && A.sel.has(x.gid))); if (!dl.length) return;
+async function srPrintSel(id, view){ const A = aS(), dl = srDoneList(A, view).filter(x => id !== 'sel' || (A.sel && A.sel.has(x.gid))); if (!dl.length) return;
       // elle kayıtlıya alınanların barkodu yok: önce Sürat barkodu oluşturulur, sonra hepsi birlikte basılır
       const man = dl.filter(x => x.mode === 'manual'), ready = dl.filter(x => x.mode !== 'manual');
       if (man.length && !(await confirmBox(`Seçtiklerinden ${fmtN(man.length)} tanesinin Sürat barkodu yok (elle kayıtlıya alınmış). Önce onlara barkod oluşturulup hepsi birlikte yazdırılsın mı? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi.`, 'Oluştur ve yazdır'))) return;
@@ -1011,12 +1012,17 @@ async function srPrintSel(id){ const A = aS(), dl = srDoneList(A).filter(x => id
       if (ready.length) await suratPrint(ready);
       if (errs.length) toast(`${fmtN(errs.length)} siparişte barkod oluşturulamadı: ${errs.slice(0, 2).join(' · ')}`, true);
 }
-function srDoneList(A){ const ships = (A.data && A.data.ships) || [], last = new Map(); for (const x of ships) last.set(x.gid, x); return ((A.data && A.data.orders) || []).filter(o => last.has(o.gid)).map(o => last.get(o.gid)); }
+function srDoneList(A, view){ const ships = (A.data && A.data.ships) || [], last = new Map(); for (const x of ships) last.set(x.gid, x); const v = view || (A.view === 'printed' ? 'printed' : 'done');
+  // takip no bağlanan gönderi listeden düşer; yazdırılmamışlar "Sürat kayıtlı", yazdırılmışlar "Sürat yazdırıldı"
+  return ((A.data && A.data.orders) || []).filter(o => last.has(o.gid)).map(o => last.get(o.gid)).filter(x => !x.tracking && (v === 'printed' ? !!x.printed_at : !x.printed_at)); }
+// Adres düzeltme sekmesi: sorunlu (barkodsuz + adres uyarısı) · bekleyen (barkodsuz, sorunsuz) · kayıtlı (barkodlu, yazdırılmadı) · yazdırıldı
+function adTab(A, o){ const last = ((A.data && A.data.ships) || []).filter(x => x.gid === o.gid).pop();
+  if (!last) return addrIssues(addrForm(o.addr || {}), o).length ? 'bad' : 'pending';
+  if (last.tracking) return null; return last.printed_at ? 'printed' : 'done'; }
 // gerçek barkod oluşunca aynı siparişin "elle kayıtlı" satırı listeden düşer
 function srAddShip(A, sh){ A.data.ships = (A.data.ships || []).filter(x => !(x.gid === sh.gid && x.mode === 'manual')); A.data.ships.push(sh); }
 // Toplu barkod: listede Sürat barkodu olmayan, kırmızı sorunu ve kaydedilmemiş değişikliği bulunmayan siparişler
-function srBulkList(A){ const has = new Set((A.data.ships || []).map(x => x.gid));
-  return A.data.orders.filter(o => !has.has(o.gid) && !A.edit[o.gid] && !addrIssues(addrForm(o.addr || {}), o).some(i => i[0] === 'bad')); }
+function srBulkList(A){ return A.data.orders.filter(o => adTab(A, o) === 'pending' && !A.edit[o.gid]); }
 // Sürat Kargo: barkodu olan sipariş için etiket, olmayan için oluşturma
 function suratBlock(o, e, issues){
   const A = aS(), ships = (A.data.ships || []).filter(x => x.gid === o.gid), last = ships[ships.length - 1], g = esc(o.gid), busy = A.busy['sr' + o.gid], sr = S.surat || {};
@@ -1088,6 +1094,9 @@ async function suratPrint(list){
         total: (sh.lines || []).reduce((t, l) => t + (Number(l.unit) || 0) * (Number(l.qty) || 0), 0) };
       for (let i = 0; i < Math.max(1, sh.adet || 1); i++) drawLabelPages(p, w, h, '', mk); } // her koliye bir etiket
     await deliverPdf(doc.output(), `surat-etiket-${list.length === 1 ? list[0].ref : list.length + '-gonderi'}-${todayTR()}.pdf`, list.reduce((t, x) => t + Math.max(1, x.adet || 1), 0));
+    // yazdırılanlar "Sürat yazdırıldı" sekmesine geçer
+    const refs = list.filter(x => x.mode !== 'manual' && !x.printed_at).map(x => x.ref);
+    if (refs.length) { try { const r = await api('/api/surat/printed', {refs}); const A = aS(); for (const x of ((A.data && A.data.ships) || [])) if (refs.includes(x.ref)) x.printed_at = r.at; for (const x of list) if (refs.includes(x.ref)) x.printed_at = r.at; A.sel = null; render(); if (S.sheet && S.sheet.type === 'kayitli') { S.sheet.sel = null; renderSheet(false); } } catch (e) {} }
   });
 }
 function srApply(gid, r){ const A = aS(), sh = (A.data.ships || []).filter(x => x.gid === gid).pop(); if (!sh || !r) return; sh.tracking = r.tracking || sh.tracking; sh.track_at = new Date().toISOString(); sh.track_msg = r.msg || sh.track_msg; if (r.fulfilled) sh.fulfilled_at = sh.track_at; sh.fulfill_err = r.err || null; }
@@ -2571,7 +2580,7 @@ function sheetKayitli(){
   const K = S.sheet, A = aS();
   if (!A.data) { if (!K.wait) { K.wait = true; Promise.resolve(loadAddr(false)).finally(() => { const poll = () => { if (S.sheet !== K) return; if (aS().data || !aS().loading) { K.wait = false; renderSheet(false); } else setTimeout(poll, 500); }; poll(); }); }
     return {title: 'Shopify Barkod', body: A.err ? `<div class="banner bad"><div>${esc(A.err)}</div></div>` : loading()}; }
-  const ships = srDoneList(A), ob = new Map(A.data.orders.map(o => [o.gid, o]));
+  const ships = srDoneList(A, 'done'), ob = new Map(A.data.orders.map(o => [o.gid, o]));
   if (!K.sel) K.sel = new Set(ships.map(x => x.gid));
   const ns = ships.filter(x => K.sel.has(x.gid)).length;
   const nm = o => { const a = (o && o.addr) || {}; return [a.firstName, a.lastName].filter(Boolean).join(' ') || '—'; }, yer = o => { const a = (o && o.addr) || {}; return [a.city, a.province].filter(Boolean).join(' / '); };
@@ -4341,8 +4350,8 @@ document.addEventListener('click', async e => {
     case 'ret-shape': openSheet('ret-shape'); break;
     case 'labels': openSheet('labels', {sel: new Set()}); break;
     case 'q-kayitli': { S.drawer = false; renderDrawer(); openSheet('kayitli', {sel: null}); break; }
-    case 'ky-selall': { const K = S.sheet; if (!K || K.type !== 'kayitli') break; const all = srDoneList(aS()).map(x => x.gid); if (K.sel && all.every(g => K.sel.has(g))) K.sel.clear(); else K.sel = new Set(all); renderSheet(false); break; }
-    case 'ky-print': { const K = S.sheet; if (!K || K.type !== 'kayitli' || !K.sel || !K.sel.size) break; const A = aS(); A.sel = new Set(K.sel); await srPrintSel('sel'); if (S.sheet === K) renderSheet(false); break; }
+    case 'ky-selall': { const K = S.sheet; if (!K || K.type !== 'kayitli') break; const all = srDoneList(aS(), 'done').map(x => x.gid); if (K.sel && all.every(g => K.sel.has(g))) K.sel.clear(); else K.sel = new Set(all); renderSheet(false); break; }
+    case 'ky-print': { const K = S.sheet; if (!K || K.type !== 'kayitli' || !K.sel || !K.sel.size) break; const A = aS(); A.sel = new Set(K.sel); await srPrintSel('sel', 'done'); if (S.sheet === K) renderSheet(false); break; }
     case 'lbl-sel': { const L = S.sheet; if (!L || !L.data) break; L.sel.has(id) ? L.sel.delete(id) : L.sel.add(id); renderSheet(false); break; }
     case 'lbl-all': { const L = S.sheet; if (!L || !L.data) break; if (L.sel.size === L.data.length) L.sel.clear(); else L.data.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); break; }
     case 'lbl-size': { const [w, h] = id.split('x').map(Number); lblSize({w, h}); renderSheet(false); break; }
@@ -4451,7 +4460,9 @@ document.addEventListener('click', async e => {
       await run(async () => { let n = 0; const errs = []; for (const x of can) { try { await api('/api/surat/unship', {gid: x.gid}); A.data.ships = (A.data.ships || []).filter(y => y.gid !== x.gid); n++; } catch (err) { errs.push(`${x.order_no}: ${errText(err)}`); } }
         A.sel.clear(); render(); toast(`${fmtN(n)} sipariş bekleyene alındı.${errs.length ? ' ' + errs.slice(0, 2).join(' · ') : ''}`, !!errs.length); }); break; }
     case 'sr-printall': await srPrintSel(id); break;
-    case 'sr-selall': { const A = aS(), el = A.view === 'done' ? srDoneList(A) : srBulkList(A); A.sel = A.sel || new Set(); if (el.every(o => A.sel.has(o.gid))) A.sel.clear(); else el.forEach(o => A.sel.add(o.gid)); render(); break; }
+    case 'sr-unprint': { const A = aS(), dl = srDoneList(A, 'printed').filter(x => A.sel && A.sel.has(x.gid)); if (!dl.length) break;
+      try { await api('/api/surat/printed', {refs: dl.map(x => x.ref), printed: false}); for (const x of dl) x.printed_at = null; A.sel = null; render(); toast(`${fmtN(dl.length)} sipariş Sürat kayıtlı'ya geri alındı.`); } catch (e) { toast(errText(e), true); } break; }
+    case 'sr-selall': { const A = aS(), el = (A.view === 'done' || A.view === 'printed') ? srDoneList(A) : srBulkList(A); A.sel = A.sel || new Set(); if (el.every(o => A.sel.has(o.gid))) A.sel.clear(); else el.forEach(o => A.sel.add(o.gid)); render(); break; }
     case 'sr-bulk': { const A = aS(), list = srBulkList(A).filter(o => id !== 'sel' || (A.sel && A.sel.has(o.gid))); if (!list.length) break;
       const skipped = id === 'sel' ? 0 : A.data.orders.length - list.length - new Set((A.data.ships || []).map(x => x.gid)).size;
       if (!(await confirmBox(`${fmtN(list.length)} siparişe Sürat barkodu oluşturulsun mu? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi olur; etiketler tek PDF'te açılır.${skipped > 0 ? `<br><br><span class="small muted">${fmtN(skipped)} sipariş adres sorunu ya da kaydedilmemiş değişiklik yüzünden atlanacak.</span>` : ''}`, 'Oluştur'))) break;
