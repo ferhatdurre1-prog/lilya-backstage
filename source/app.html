@@ -161,7 +161,12 @@ body[data-tab="home"] .act .n{font-size:17px}
 .tabs button[aria-current="page"]{color:var(--ink);border-bottom-color:var(--brand)}
 .tabs .cnt{display:inline-block;min-width:18px;padding:0 5px;margin-left:5px;border-radius:9px;background:var(--warn-soft);color:var(--warn);font-size:11px;font-weight:600;text-align:center}
 .bnav{display:none}
-.qbtn{display:none} /* bilgisayarda alt çubuğun iki yanındaki büyük kısayollar */
+.qbtn{display:none}
+.prog{position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
+.prog .pbox{background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 20px 50px rgba(0,0,0,.35);padding:28px 36px;min-width:260px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}
+.prog .spin{width:54px;height:54px;border-radius:50%;border:5px solid var(--accent-soft);border-top-color:var(--accent);animation:pspin .8s linear infinite}
+.prog .pt{font-size:20px;font-weight:700}.prog .pn{font-size:34px;font-weight:800;letter-spacing:.5px}.prog .ps{font-size:14px;color:var(--ink-3)}
+@keyframes pspin{to{transform:rotate(360deg)}} /* bilgisayarda alt çubuğun iki yanındaki büyük kısayollar */
 @media (max-width:720px){
   .tabs{display:none}
   .bnav{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
@@ -665,6 +670,10 @@ function toast(msg, bad=false){
   const r = $('#toast-root'); r.innerHTML = `<div class="toast ${bad?'bad':''}">${esc(msg)}</div>`;
   clearTimeout(toast.t); toast.t = setTimeout(() => { r.innerHTML = ''; }, bad ? 6000 : 3200);
 }
+// Ortada ilerleme kutusu: dönen simge + "2 / 5" sayaç (barkod oluşturma gibi uzun işlemler)
+function progShow(title, k, n, sub){ let r = document.getElementById('prog-root'); if (!r) { r = document.createElement('div'); r.id = 'prog-root'; document.body.appendChild(r); }
+  r.innerHTML = `<div class="prog" role="status" aria-live="polite"><div class="pbox"><div class="spin" aria-hidden="true"></div><div class="pt">${esc(title)}</div><div class="pn">${fmtN(k)} / ${fmtN(n)}</div>${sub ? `<div class="ps">${esc(sub)}</div>` : ''}</div></div>`; }
+function progHide(){ const r = document.getElementById('prog-root'); if (r) r.innerHTML = ''; }
 function confirmBox(text, ok='Onayla', danger=false){
   return new Promise(res => {
     const r = $('#dialog-root');
@@ -1006,8 +1015,8 @@ async function srPrintSel(id, view){ const A = aS(), dl = srDoneList(A, view).fi
       const man = dl.filter(x => x.mode === 'manual'), ready = dl.filter(x => x.mode !== 'manual');
       if (man.length && !(await confirmBox(`Seçtiklerinden ${fmtN(man.length)} tanesinin Sürat barkodu yok (elle kayıtlıya alınmış). Önce onlara barkod oluşturulup hepsi birlikte yazdırılsın mı? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi.`, 'Oluştur ve yazdır'))) return;
       const errs = []; let k = 0;
-      for (const x of man) { A.bulk = `${++k}/${man.length}`; render();
-        try { const r = await api('/api/surat/ship', {gid: x.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); srAddShip(A, r.ship); ready.push(r.ship); } catch (err) { errs.push(`${x.order_no}: ${errText(err)}`); } }
+      try { for (const x of man) { A.bulk = `${++k}/${man.length}`; render(); progShow('Barkod oluşturuluyor', k, man.length, x.order_no);
+        try { const r = await api('/api/surat/ship', {gid: x.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); srAddShip(A, r.ship); ready.push(r.ship); } catch (err) { errs.push(`${x.order_no}: ${errText(err)}`); } } } finally { progHide(); }
       A.bulk = null; render();
       if (ready.length) await suratPrint(ready);
       if (errs.length) toast(`${fmtN(errs.length)} siparişte barkod oluşturulamadı: ${errs.slice(0, 2).join(' · ')}`, true);
@@ -4454,9 +4463,9 @@ document.addEventListener('click', async e => {
       // Sürat bekleyen → Sürat kayıtlı: barkod oluşturulur (etiket hemen yazdırılmaz; Sürat kayıtlı'dan yazdırılınca "Sürat yazdırıldı"ya geçer)
       if (!(await confirmBox(`${fmtN(list.length)} siparişe Sürat barkodu oluşturulup "Sürat kayıtlı"ya alınsın mı? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi olur.`, 'Kayıtlıya al'))) break;
       const made = [], errs = []; let k = 0;
-      for (const o of list) { A.bulk = `${++k}/${list.length}`; render();
+      try { for (const o of list) { A.bulk = `${++k}/${list.length}`; render(); progShow('Barkod oluşturuluyor', k, list.length, o.name);
         try { const r = await api('/api/surat/ship', {gid: o.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); srAddShip(A, r.ship); made.push(r.ship); }
-        catch(err) { errs.push(`${o.name}: ${errText(err)}`); } }
+        catch(err) { errs.push(`${o.name}: ${errText(err)}`); } } } finally { progHide(); }
       A.bulk = null; if (A.sel) made.forEach(x => A.sel.delete(x.gid)); render();
       toast(`${fmtN(made.length)} sipariş Sürat kayıtlı'ya alındı${errs.length ? ` · ${fmtN(errs.length)} hata: ${errs.slice(0, 2).join(' · ')}` : ''}.`, !!errs.length);
       break; }
