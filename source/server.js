@@ -3734,8 +3734,12 @@ ${catalog}` });
       const diff = has ? r2(sNet - eNet) : null, deliv = dlvDay(r.teslim), payDay = cod && !und && deliv ? srPayDay(deliv) : null, planned = dlvDay(r.planned), estPay = cod && !und && !deliv && planned ? srPayDay(planned) : null;
       out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi: srDesi, miss: 0, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, planned, estPay, durum: r.sdurum || '', flag, short, accept, expColl, owe, opaid: !!r.fpaid, opaidAt: r.fpaid_at || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
     }
+    // Sürat raporunda olup hiçbir Shopify siparişine bağlanmayan gönderiler (eski/hatalı kayıtlar, Trendyol'un Sürat gönderileri vb.)
+    const used = new Set(out.map(x => x.tracking).filter(Boolean));
+    const { results: srAll } = await env.DB.prepare(`SELECT takip, day, alici, fee, cod, collected, durum, iade FROM sr_rows WHERE COALESCE(day, '') >= ?1 ORDER BY day DESC, alici`).bind(String(from).slice(0, 10)).all();
+    const srOrphan = srAll.filter(x => !used.has(x.takip)).map(x => ({ takip: x.takip, day: x.day, alici: x.alici || '', fee: r2(x.fee || 0), cod: r2(x.cod || 0), durum: x.durum || '', iade: x.iade || '' }));
     const sum = (f, k) => r2(out.filter(f).reduce((a, x) => a + (x[k] || 0), 0)), m = (x) => x.st !== 'nodata';
-    return json({ ok: true, items: out, n: out.length, matched: out.filter(m).length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
+    return json({ ok: true, srOrphan, srTotal: srAll.length, items: out, n: out.length, matched: out.filter(m).length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { eColl: sum(m, 'eColl'), eFee: sum(m, 'eFee'), eNet: sum(m, 'eNet'), sColl: sum(m, 'sColl'), sFee: sum(m, 'sFee'), sNet: sum(m, 'sNet'), eNetAll: sum(() => true, 'eNet') } });
   }
   if (path === '/api/srcari/online') { // kutucuk: "Sürat'a online gitti" işareti aç/kapat
