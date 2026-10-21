@@ -1102,6 +1102,8 @@ function srMatch(rows, ship) {
   return byName.length === 1 ? byName[0] : null;
 }
 // Takip no sütunu: önce "Kargo Takip No" benzeri, sonra diğer takip/barkod sütunları; bizim/müşterinin referans sütunları (web, özel, müşteri, sipariş) kullanılmaz. Excel'de sayı 1,23E+12 / 123.0 gibi gelebilir
+// Rapor satırını takip numarasıyla bul (web servisten gelen ya da elle girilen takip no); isimden önce denenir
+const srByTrack = (rows, tracking) => { const tn = srCellNo(tracking); if (!tn) return null; return rows.find(m => Object.values(m).some(v => srCellNo(v) === tn)) || null; };
 const srCellNo = (v) => { let t = String(v ?? '').trim().replace(/\s/g, ''); if (/^\d+(\.0+)?$/.test(t)) t = t.replace(/\.0+$/, ''); t = t.toLocaleUpperCase('tr').replace(/[^A-Z0-9]/g, ''); return t.length >= 8 && t.length <= 30 && (t.match(/\d/g) || []).length >= 6 && !/^LH/.test(t) ? t : ''; }; // harfli takip no da kabul (ör. SRT…); bizim LH barkodumuz hariç
 const srRowTrack = (r) => { const E = Object.entries(r), K = (k) => srNorm(k), bad = /WEB|OZEL|ÖZEL|MUSTERI|MÜŞTERI|SIPARIS|SİPARİŞ|REFERANS|IRSALIYE/;
   for (const re of [/KARGOTAKIP|^TAKIPNO|^TAKIPNUMARA/, /TAKIP/, /BARKOD/]) for (const [k, v] of E) { const kk = K(k); if (re.test(kk) && !bad.test(kk)) { const n = srCellNo(v); if (n) return n; } }
@@ -3753,7 +3755,7 @@ ${catalog}` });
     const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND COALESCE(mode,'') <> 'manual' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
     const out = [], miss = [], fixed = []; let already = 0;
     const costSt = [];
-    for (const r of results) { const m = srMatch(rows, r), tn = m && srRowTrack(m);
+    for (const r of results) { const m = srByTrack(rows, r.tracking) || srMatch(rows, r), tn = m && srRowTrack(m);
       if (m) { const g = srPick(m); if (g.cost !== null || g.undelivered) costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, planned) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(no) DO UPDATE SET planned=excluded.planned, tracking=excluded.tracking, cost=COALESCE(excluded.cost, sr_cost.cost), desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=excluded.cod_amount, undelivered=excluded.undelivered, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn || null, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso(), g.planned || null)); }
       if (!tn) { if (!r.fulfilled_at) miss.push(r.order_no); continue; }
       if (r.fulfilled_at) { // zaten kargolandı: numara farklıysa (eski hatalı okuma) düzelt
