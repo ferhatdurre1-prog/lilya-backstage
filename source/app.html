@@ -161,6 +161,7 @@ body[data-tab="home"] .act .n{font-size:17px}
 .tabs button[aria-current="page"]{color:var(--ink);border-bottom-color:var(--brand)}
 .tabs .cnt{display:inline-block;min-width:18px;padding:0 5px;margin-left:5px;border-radius:9px;background:var(--warn-soft);color:var(--warn);font-size:11px;font-weight:600;text-align:center}
 .bnav{display:none}
+.qbtn{display:none} /* bilgisayarda alt çubuğun iki yanındaki büyük kısayollar */
 @media (max-width:720px){
   .tabs{display:none}
   .bnav{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
@@ -405,6 +406,11 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 .bnav button svg{width:22px;height:22px}
 .bnav button[aria-current="page"]{color:var(--accent);background:var(--accent-soft)}
 .bnav .dot{position:absolute;top:2px;left:calc(50% + 8px);min-width:16px;height:16px;border-radius:8px;background:var(--warn);color:var(--surface);font-size:10px;line-height:16px;text-align:center;padding:0 4px}
+.qbtn{display:flex;align-items:center;justify-content:center;gap:10px;position:fixed;bottom:14px;z-index:20;height:66px;width:210px;box-sizing:border-box;border:1px solid var(--line);border-radius:22px;background:var(--surface);box-shadow:0 10px 30px rgba(16,40,30,.18);color:var(--ink);font:inherit;font-size:15px;font-weight:700;cursor:pointer;padding:0 14px;text-align:left;line-height:1.2}
+.qbtn:hover{background:var(--surface-2)}
+.qbtn svg{width:26px;height:26px;flex:none;color:var(--accent)}
+.qbtn.ql{right:calc(50% + min(260px, 50% - 24px) + 12px)}
+.qbtn.qr{left:calc(50% + min(260px, 50% - 24px) + 12px)}
 main{padding-bottom:110px!important}
 }
 @media (min-width:1000px) and (min-height:560px){
@@ -458,6 +464,8 @@ body[data-tab="home"] .act-grid .act .l{font-size:clamp(12px,1.55vh,16px)}body[d
   <main id="view"></main>
 </div>
 <nav class="bnav" id="bnav" aria-label="Bölümler"></nav>
+<button class="qbtn ql" id="q-lbl" type="button" data-act="labels" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/></svg>Kargo etiketi yazdır</button>
+<button class="qbtn qr" id="q-kyt" type="button" data-act="q-kayitli" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>Kayıtlı (barkodu oluşturuldu)</button>
 <div id="drawer-root"></div>
 <div id="sheet-root"></div>
 <div id="dialog-root"></div>
@@ -790,7 +798,7 @@ function render(){
   S.dirty = false;
   const logged = S.authed === true;
   document.body.dataset.tab = logged ? S.tab : 'login';
-  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#hdr-actions').hidden = !logged; $('#burger').hidden = !logged;
+  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#q-lbl').hidden = !logged; $('#q-kyt').hidden = !logged; $('#hdr-actions').hidden = !logged; $('#burger').hidden = !logged;
   if (S.authed === false) { $('#view').innerHTML = viewLogin(); setTimeout(() => { const i = $('#lg-pass'); if (i) i.focus(); }, 30); return; }
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
   const pending = retActionCount();
@@ -4300,6 +4308,7 @@ document.addEventListener('click', async e => {
     case 'ret-reject': await returnDecision(id, false); break;
     case 'ret-shape': openSheet('ret-shape'); break;
     case 'labels': openSheet('labels', {sel: new Set()}); break;
+    case 'q-kayitli': { S.drawer = false; renderDrawer(); const A = aS(); A.view = 'done'; A.sr = null; A.sel = null; setTab('addr'); window.scrollTo(0, 0); break; }
     case 'lbl-sel': { const L = S.sheet; if (!L || !L.data) break; L.sel.has(id) ? L.sel.delete(id) : L.sel.add(id); renderSheet(false); break; }
     case 'lbl-all': { const L = S.sheet; if (!L || !L.data) break; if (L.sel.size === L.data.length) L.sel.clear(); else L.data.forEach(p => L.sel.add(p.pkgId)); renderSheet(false); break; }
     case 'lbl-size': { const [w, h] = id.split('x').map(Number); lblSize({w, h}); renderSheet(false); break; }
