@@ -962,11 +962,14 @@ const SH_ADDR_Q = `query($q:String,$after:String){orders(first:25,after:$after,s
 const SR_URL = 'https://webservices.suratkargo.com.tr/services.asmx';
 // Sürat'ın önündeki Cloudflare, kimliksiz istekleri bot sayıp 403 verebiliyor: .NET web servis istemcisi gibi tanıtılır, 403'te bir kez tarayıcı kimliğiyle tekrar denenir
 const SR_UA = ['Mozilla/4.0 (compatible; MSIE 6.0; MS Web Services Client Protocol 4.0.30319.42000)', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'];
+// Sürat'ın sitesi (Cloudflare) art arda gelen istekleri bazen 403 ile keser: istekler arası kısa bekleme, 403'te tarayıcı kimliğiyle ve 3 sn sonra yeniden deneme
+let SR_LAST = 0;
 async function srFetch(url, init = {}) {
-  let r;
-  for (const ua of SR_UA) { r = await fetch(url, { ...init, headers: { 'user-agent': ua, accept: 'text/xml, application/xml, */*', 'accept-language': 'tr-TR,tr;q=0.9', ...(init.headers || {}) } });
+  let r; const wait = 450 - (Date.now() - SR_LAST); if (wait > 0) await new Promise(res => setTimeout(res, wait));
+  for (let i = 0; i < SR_UA.length + 1; i++) { const ua = SR_UA[Math.min(i, SR_UA.length - 1)]; if (i === SR_UA.length) await new Promise(res => setTimeout(res, 3000));
+    SR_LAST = Date.now(); r = await fetch(url, { ...init, headers: { 'user-agent': ua, accept: 'text/xml, application/xml, */*', 'accept-language': 'tr-TR,tr;q=0.9', ...(init.headers || {}) } });
     if (r.status !== 403) return r; const t = await r.clone().text().catch(() => ''); if (!/cloudflare|attention/i.test(t)) return r; }
-  return r;
+  const err = new Error('Sürat 403: Cloudflare engeli (geçici)'); err.cf = true; throw err;
 }
 // Sıra: Sürat barkodu ve takip no'yu hemen veren işlem (Trendyol'un kullandığı), sonra ön kabul işlemleri
 const SR_METHODS = ['GonderiyiKargoyaGonderYeniSiparisBarkodOlustur', 'GonderiyiKargoyaGonderYeni', 'GonderiyiKargoyaGonder'];
@@ -3571,7 +3574,11 @@ ${catalog}` });
     const tk = await getSettings(env, ['sr_track_err', 'sr_mode']);
     const mask = (x) => x ? x.slice(0, 2) + '•••' + x.slice(-2) : '';
     const c2 = await srCreds(env, 'cod');
-    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, cod: c2.acct === 'cod' ? { cari: mask(c2.cari), user: mask(c2.user) } : null, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
+    // takip hatası: son başarılı gönderiden eskiyse gösterilmez; Cloudflare engeli kısa Türkçe metinle
+    let trackErr = tk.sr_track_err || ''; const tAt = Date.parse(trackErr.slice(0, 24)) || 0;
+    if (trackErr && s.sr_ok && Date.parse(s.sr_ok) > tAt) trackErr = '';
+    if (/403|cloudflare|attention/i.test(trackErr)) trackErr = trackErr.slice(0, 27) + `Sürat'ın sitesi takip sorgusunu geçici olarak engelledi (Cloudflare). ${Math.max(1, Math.round((tAt + 90 * 60000 - Date.now()) / 60000))} dk sonra yeniden denenir; barkod oluşturmayı etkilemez.`;
+    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, cod: c2.acct === 'cod' ? { cari: mask(c2.cari), user: mask(c2.user) } : null, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr, ok: s.sr_ok || '' });
   }
   if (path === '/api/surat/connect2') {
     // Kapıda ödeme carisi (ikinci Sürat hesabı); boş gönderilirse kaldırılır
