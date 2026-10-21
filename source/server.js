@@ -1062,7 +1062,7 @@ async function srCancel(env, creds, ref, tracking) {
   if (fault) return { ok: false, msg: 'Sürat: ' + fault[1].replace(/\s+/g, ' ').slice(0, 200) };
   const t = srText(raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')).replace(/\s+/g, ' ').trim();
   const ok = r.ok && /ba[sş]ar|iptal edil|geri [çc]ekil|\btrue\b|\bok\b/i.test(t) && !/hata|bulunamad|yap[ıi]lamaz|edilemez|ge[çc]ersiz|\bfalse\b/i.test(t);
-  return ok ? { ok: true, msg: t.slice(0, 200) } : { ok: false, msg: 'Sürat: ' + (t.slice(0, 200) || ('HTTP ' + r.status)) };
+  return ok ? { ok: true, msg: t.slice(0, 300) || ('HTTP ' + r.status) } : { ok: false, msg: 'Sürat: ' + (t.slice(0, 300) || ('HTTP ' + r.status)) };
 }
 async function srQuery(env, creds, ref) {
   const sc = await srSchema(env, false); const q = sc.query; if (!q) throw new Error('Sürat web servisinde gönderi sorgulama bulunamadı.');
@@ -3904,10 +3904,11 @@ ${catalog}` });
     const f = await env.DB.prepare('SELECT 1 FROM sr_ship WHERE gid=?1 AND fulfilled_at IS NOT NULL').bind(gid).first();
     if (f) return bad("Bu sipariş Shopify'da kargolandı olarak işlendi; geri alınamaz.");
     // Web servisiyle Sürat'a gönderilmiş kayıtlar Sürat'ta da geri çekilir; çekilemezse yine de bekleyene alınır, uyarı döner
-    const { results: rows } = await env.DB.prepare(`SELECT ref, acct, tracking, order_no FROM sr_ship WHERE gid=?1 AND mode='api'`).bind(gid).all(), warn = [];
-    for (const x of rows) { try { const r = await srCancel(env, await srCreds(env, x.acct || ''), x.ref, x.tracking); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { warn.push(`${x.ref}: ${String(e.message || e).slice(0, 160)}`); } }
+    const { results: rows } = await env.DB.prepare(`SELECT ref, acct, tracking, order_no FROM sr_ship WHERE gid=?1 AND mode='api'`).bind(gid).all(), warn = [], replies = [];
+    for (const x of rows) { try { const r = await srCancel(env, await srCreds(env, x.acct || ''), x.ref, x.tracking); replies.push({ ref: x.ref, ok: r.ok, msg: r.msg }); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { const m = String(e.message || e).slice(0, 200); replies.push({ ref: x.ref, ok: false, msg: m }); warn.push(`${x.ref}: ${m}`); } }
+    if (replies.length) await setSetting(env, 'sr_cancel_last', JSON.stringify({ at: iso(), gid, replies }).slice(0, 2000)); // son iptal cevabı (teşhis için)
     await env.DB.prepare('DELETE FROM sr_ship WHERE gid=?1').bind(gid).run();
-    return json({ ok: true, cancelled: rows.length - warn.length, warn });
+    return json({ ok: true, cancelled: rows.length - warn.length, warn, replies });
   }
   // ---------- Yeni Shopify siparişi (elle) ----------
   if (path === '/api/shorder/products') {
