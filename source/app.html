@@ -947,7 +947,7 @@ function suratXls(ships){
   const up = s => String(s || '').toLocaleUpperCase('tr-TR');
   const rows = ships.map(sh => { const a = sh.addr || {}, tel = /^5\d{9}$/.test(a.tel || '') ? Number(a.tel) : '';
     const icerik = a.icerik || (sh.lines || []).map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ');
-    return [a.name || '', '', `${a.adres || ''} ${a.ilce || ''}/${up(a.il)}`.trim(), up(a.il), up(a.ilce), '', '', tel, a.email || '', '', 3, 1, '', '', String(sh.order_no || '').replace(/\D/g, ''), sh.ref, Number(sh.adet) || 1, Number(sh.desi) || 1, 1, String(icerik).slice(0, 100), a.codTip ? Number(a.codTip) : '', a.codTip ? Number(a.cod) || '' : '', 1, 1]; });
+    return [a.name || '', '', `${a.adres || ''} ${a.ilce || ''}/${up(a.il)}`.trim(), up(a.il), up(a.ilce), '', '', tel, a.email || '', '', 3, 1, a.codTip ? 'LH' : '', a.codTip ? String(sh.order_no || '').replace(/\D/g, '') : '', String(sh.order_no || '').replace(/\D/g, ''), sh.ref, Number(sh.adet) || 1, Number(sh.desi) || 1, 1, String(icerik).slice(0, 100), a.codTip ? Number(a.codTip) : '', a.codTip ? Number(a.cod) || '' : '', 1, 1]; });
   const ws = XLSX.utils.aoa_to_sheet([SR_XLS_HEAD, ...rows]); ws['!cols'] = SR_XLS_HEAD.map((h, i) => ({wch: i === 2 ? 60 : i === 0 ? 24 : 14}));
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sayfa1');
   XLSX.writeFile(wb, `surat-gonderi-${todayTR()}-${ships.length}.xls`, {bookType: 'biff8'});

@@ -3820,7 +3820,7 @@ ${catalog}` });
     const cd = shCod(o); let codTip = cd.tip, cod = cd.amt;
     if (body.codTip != null) { codTip = [0, 1, 2].includes(Number(body.codTip)) ? Number(body.codTip) : cd.tip; const t = String(body.cod ?? cod).trim(); cod = codTip ? r2(Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t) || 0) : 0; }
     if (codTip && !(cod > 0)) return bad('Kapıda ödeme tutarı girilmeli.');
-    const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: codTip, kapidanodemetutari: codTip ? cod : 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: '', irsaliyesirano: '' };
+    const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: codTip, kapidanodemetutari: codTip ? cod : 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: codTip ? 'LH' : '', irsaliyesirano: codTip ? String(o.name || '').replace(/\D/g, '') + (ref.length > base.length ? ref.slice(base.length) : '') : '' }; // kapıda ödemede Sürat irsaliye seri/sıra no istiyor
     let res; if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); if (!res.barcode && /daha [öo]nce/i.test(res.msg)) { const fb = await srFetchBarcode(env, cr, ref); if (fb.barcode) res.barcode = fb.barcode; errs.push('barkod sorgusu: ' + fb.log.join(' / ')); } if (errs.length) res.msg = res.msg + ' ‖ ' + errs.join(' | '); break; } catch (e1) { errs.push(a.method.replace('GonderiyiKargoyaGonder', '…') + ': ' + String(e1.message || e1).slice(0, 220)); } } if (!res) throw new Error(errs.join(' | ')); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
     const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik, codTip, cod };
     await env.DB.batch([env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel'), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
@@ -3840,7 +3840,11 @@ ${catalog}` });
     if (input.phone && !/^\+\d{8,15}$/.test(input.phone)) return bad('Telefon +905xxxxxxxxx biçiminde olmalı.');
     try {
       const run = (inp) => shGql(env, c, `mutation($input:OrderInput!){orderUpdate(input:$input){order{id name shippingAddress{${SH_ADDR_F}}}userErrors{field message}}}`, { input: { id: gid, shippingAddress: inp } });
+      // Posta kodu eski ilin koduysa (ör. 34212 İstanbul, il Diyarbakır'a çevriliyor) Shopify ili posta koduna göre geri çeviriyor: posta kodu baştan boşaltılır
+      const plate0 = intOr(body.plate, 0); let zipCleared = false;
+      if (plate0 && input.zip && /^\d{5}$/.test(input.zip) && Number(input.zip.slice(0, 2)) !== plate0) { input.zip = ''; zipCleared = true; }
       let r = await run(input), ue = r.orderUpdate.userErrors || [];
+      if (zipCleared) r._noZip = true;
       const errTxt = () => ue.map(e => (e.field || []).join('.') + ' ' + e.message).join(' ');
       // Posta kodu yeni ille uyuşmuyorsa (ör. il Kayseri→Mersin, posta kodu 38000 kalmış) posta kodu boşaltılıp bir kez daha denenir
       if (ue.length && input.zip && /zip|postal|posta/i.test(errTxt())) { input.zip = ''; r = await run(input); ue = r.orderUpdate.userErrors || []; if (!ue.length) r._noZip = true; }
@@ -3853,7 +3857,9 @@ ${catalog}` });
       if (plate && !okProv(r.orderUpdate.order && r.orderUpdate.order.shippingAddress)) {
         const pp = String(plate).padStart(2, '0'), tried = [input.provinceCode];
         for (const code of ['TR-' + pp, pp, 'TR' + pp, String(plate)]) { if (tried.includes(code)) continue; tried.push(code);
-          const r2 = await run({ ...input, provinceCode: code }); if ((r2.orderUpdate.userErrors || []).length) continue; r = r2; if (okProv(r2.orderUpdate.order.shippingAddress)) break; }
+          const r2 = await run({ ...input, zip: '', provinceCode: code }); if ((r2.orderUpdate.userErrors || []).length) continue; r = r2; r._noZip = !!input.zip || zipCleared; if (okProv(r2.orderUpdate.order.shippingAddress)) break; }
+        // son çare: il kodu yerine il adıyla
+        if (want && !okProv(r.orderUpdate.order && r.orderUpdate.order.shippingAddress)) { const { provinceCode, ...rest } = input; tried.push(want); const r3 = await run({ ...rest, zip: '', province: want }); if (!(r3.orderUpdate.userErrors || []).length) { r = r3; r._noZip = true; } }
         const sa = r.orderUpdate.order && r.orderUpdate.order.shippingAddress;
         if (!okProv(sa)) return bad(`Shopify ili değiştirmedi: ${want} istendi, Shopify'da hâlâ ${(sa && sa.province) || '?'} (${(sa && sa.provinceCode) || '?'}). Denenen kodlar: ${tried.filter(Boolean).join(', ')}. Bu siparişin ilini Shopify panelinden değiştir; kodu bana söylersen uygulamayı ona göre ayarlarım.`);
       }
