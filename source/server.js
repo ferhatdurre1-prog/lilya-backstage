@@ -3480,17 +3480,25 @@ ${catalog}` });
       const cost = new Map((nos.length ? await selectIn(env, 'SELECT no, tracking, cost, undelivered FROM sr_cost', 'no', nos) : []).map(r => [r.no, r]));
       const bkm = new Map((nos.length ? await selectIn(env, 'SELECT no, fee, handler FROM bk_ship', 'no', nos) : []).filter(r => r.fee !== null && r.fee !== undefined).map(r => [r.no, r]));
       const ship = new Map(); for (const r of (gids.length ? await selectIn(env, 'SELECT gid, tracking, at FROM sr_ship', 'gid', gids) : [])) { const p = ship.get(r.gid); if (!p || String(r.at) > String(p.at)) ship.set(r.gid, r); }
-      const markBk = [];
+      const markBk = [], carM = new Map((nos.length ? await selectIn(env, 'SELECT no, carrier FROM sh_carrier', 'no', nos) : []).map(r => [r.no, r.carrier]));
       const orders = L.map(o => { const no = String(o.name || '').replace(/\D/g, ''), pr = shPayRow(o), sc = cost.get(no), sh = ship.get(o.id), a = o.shippingAddress || {};
         const ti = (o.fulfillments || []).filter(f => f.status !== 'CANCELLED').flatMap(f => f.trackingInfo || []), shTrack = (ti.map(t => t.number).filter(Boolean))[0] || '';
         const t0 = ti.find(t => t.company || t.url) || {}, host = (() => { try { return t0.url ? new URL(t0.url).hostname.replace(/^www\./, '') : ''; } catch (e) { return ''; } })(), carrier = [t0.company, host].filter(Boolean).join(' · ');
-        const bkShop = ti.some(t => /basit/i.test(String(t.company || '') + ' ' + String(t.url || ''))); // Shopify'da Basit Kargo uygulamasıyla kargolanmış
-        if (bkShop) markBk.push(no);
+        const cs = ti.map(t => String(t.company || '') + ' ' + String(t.url || '')).filter(x => x.trim()), cm = carM.get(no);
+        const bkShop = cs.some(x => /basit/i.test(x)) || (cs.length > 0 && !cs.some(x => /s[üu]rat/i.test(x))); // Basit Kargo ya da Sürat dışı firma (HepsiJET vb.): kendi Sürat anlaşmamız değil
+        if (bkShop && !cm) markBk.push(no);
+        const basitSrc = bkm.has(no) ? 'bk' : cm === 'basit' ? 'mark' : cm === 'surat' ? '' : bkShop ? 'auto' : '';
         return { gid: o.id, name: o.name, createdAt: o.createdAt, customer: a.name || '', city: [a.city, a.province].filter(Boolean).join(' / '), total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0,
-          method: pr.cod ? (pr.card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', tracking: (sh && sh.tracking) || shTrack || '', shTrack, carrier, basit: bkm.has(no) || bkShop, srData: !!(sc && (sc.cost !== null || sc.undelivered)) }; });
-      if (markBk.length) { const now = iso(); const st = markBk.map(no => env.DB.prepare(`INSERT INTO sh_carrier(no, carrier, info, at) VALUES(?1,'basit','Shopify gönderimi Basit Kargo',?2) ON CONFLICT(no) DO NOTHING`).bind(no, now)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
+          method: pr.cod ? (pr.card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', tracking: (sh && sh.tracking) || shTrack || '', shTrack, carrier, basit: !!basitSrc, basitSrc, srData: !!(sc && (sc.cost !== null || sc.undelivered)) }; });
+      if (markBk.length) { const now = iso(); const st = markBk.map(no => env.DB.prepare(`INSERT INTO sh_carrier(no, carrier, info, at) VALUES(?1,'basit','Shopify gönderimi Basit Kargo',?2) ON CONFLICT(no) DO NOTHING`).bind(no, now)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-17'), setStmt(env, 'home_cache', ''), REV(env)]); }
       return json({ ok: true, orders, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
+  }
+  if (path === '/api/shaddr/carrier') { // Gönderilmiş: "Basit Kargo ile gitti" işareti / geri al (geri alınca otomatik tanıma da yapılmaz)
+    const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş yok.');
+    await env.DB.prepare(`INSERT INTO sh_carrier(no, carrier, info, at) VALUES(?1,?2,'elle',?3) ON CONFLICT(no) DO UPDATE SET carrier=excluded.carrier, info=excluded.info, at=excluded.at`).bind(no, body.basit ? 'basit' : 'surat', iso()).run();
+    await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-17'), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true });
   }
   if (path === '/api/shaddr/settrack') {
     // Gönderilmiş siparişe takip no gir/değiştir: Backstage'e kaydedilir (rapor eşleştirmesi için) ve Shopify'daki takip no güncellenir
