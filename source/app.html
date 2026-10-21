@@ -3383,7 +3383,7 @@ function feesCard(fees){
       <p class="muted small" style="grid-column:1/-1;margin:0">Saat ${esc(String(fees.serviceCutoff ?? 15))}:00'dan önce gelen siparişlere ${esc(String(fees.serviceFast ?? 5.99).replace('.',','))} TL, sonrakilere ${esc(String(fees.serviceTy).replace('.',','))} TL tahmini yazılır. Hizmet bedeli faturasının detay dosyası yüklenince gerçek tutar geçer.</p>
       <label class="f">Trendyol paketleme · sipariş başı (TL)<input class="input num" id="fe-pko" inputmode="decimal" value="${esc(String(fees.packOrder ?? 2).replace('.',','))}"></label>
       <label class="f">Trendyol paketleme · ürün adedi başı (TL)<input class="input num" id="fe-pku" inputmode="decimal" value="${esc(String(fees.packUnit ?? 1).replace('.',','))}"></label>
-      <label class="f">Sürat SMS ücreti · gönderi başı (TL)<input class="input num" id="fe-srsms" inputmode="decimal" value="${esc(String(fees.srSms ?? 3.07).replace('.',','))}"></label>
+      <label class="f">Sürat SMS ücreti · kapıda ödemeli gönderi başı (TL)<input class="input num" id="fe-srsms" inputmode="decimal" value="${esc(String(fees.srSms ?? 3.77).replace('.',','))}"></label>
       <label class="f">Sürat SMS iptal tarihi (boşsa devam ediyor)<input class="input" id="fe-srsmsu" type="date" value="${esc(fees.srSmsUntil || '')}"></label>
       <label class="f">Shopify komisyonu · Meta yardımcısı (% ciro)<input class="input num" id="fe-shc" inputmode="decimal" value="${esc(String(fees.shComm ?? 3).replace('.',','))}"></label>
       <label class="f">Shopify paketleme · sipariş başı (TL)<input class="input num" id="fe-pkos" inputmode="decimal" value="${esc(String(fees.packOrderSh ?? 4).replace('.',','))}"></label>
