@@ -2739,21 +2739,24 @@ function lblBarcode(c, text, x, y, w, h){ const o = {}; JsBarcode(o, text, {form
   const mw = w / bits.length; for (let i = 0; i < bits.length; ) { if (bits[i] !== '1') { i++; continue; } let j = i; while (bits[j] === '1') j++; c.fillRect(x + i * mw, y, (j - i) * mw, h); i = j; } }
 const LBL_IMGS = new Map(); // etiket ürün resimleri (yüklenmiş)
 // Sürat etiketlerinin başına "Toplama listesi": yazdırılan siparişlerdeki ürünler, Lilya koduna göre toplam adet (çok adetli ilan × adet)
+// Türkçe sayı eki: 2'li, 3'lü, 6'lı, 9'lu, 10'lu, 100'lü
+function lilu(n){ n = Math.abs(Math.round(Number(n) || 0)); const d = n % 10, t = Math.floor(n / 10) % 10;
+  const v = n === 0 ? 'ı' : d ? ({1:'i',2:'i',3:'ü',4:'ü',5:'i',6:'ı',7:'i',8:'i',9:'u'})[d] : t ? ({1:'u',2:'i',3:'u',4:'ı',5:'i',6:'ı',7:'i',8:'i',9:'ı'})[t] : n % 1000 === 0 ? 'i' : 'ü'; return 'l' + v; }
 function drawPickList(list, W, H, mk){
   const mm = v => v * 8, PW = mm(W), PH = mm(H), m = mm(4), agg = new Map();
-  for (const sh of list) for (const l of (sh.lines || [])) { const k = l.code || l.name || '?', n = (Number(l.qty) || 0) * Math.max(1, Number(l.factor) || 1); const g = agg.get(k) || {code: l.code || '', name: l.name || '', image: l.image || '', qty: 0}; g.qty += n; if (!g.image && l.image) g.image = l.image; agg.set(k, g); }
-  const rows = [...agg.values()].sort((a, b) => b.qty - a.qty || String(a.code).localeCompare(String(b.code), 'tr')), tot = rows.reduce((t, r) => t + r.qty, 0);
+  for (const sh of list) for (const l of (sh.lines || [])) { const f = Math.max(1, Number(l.factor) || 1), k = (l.code || l.name || '?') + '|' + f; const g = agg.get(k) || {code: l.code || '', name: l.name || '', image: l.image || '', qty: 0, f}; g.qty += Number(l.qty) || 0; if (!g.image && l.image) g.image = l.image; agg.set(k, g); } // çoklu ilan takım olarak sayılır
+  const rows = [...agg.values()].sort((a, b) => b.qty - a.qty || String(a.code).localeCompare(String(b.code), 'tr')), tot = rows.filter(r => r.f === 1).reduce((t, r) => t + r.qty, 0), tset = rows.filter(r => r.f > 1).reduce((t, r) => t + r.qty, 0);
   const font = (c, s, b) => { c.font = `${b ? '700 ' : ''}${mm(s)}px Helvetica`; }, RH = mm(19), isz = mm(15);
   let c = null, y = 0, pg = 0;
   const head = () => { c = mk().c; pg++; y = m; font(c, 5, true); c.fillText('TOPLAMA LİSTESİ', m, y); font(c, 3, false); const d = new Date().toLocaleString('tr-TR', {day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'}); c.fillText(d, PW - m - c.measureText(d).width, y + mm(1)); y += mm(7);
-    font(c, 3.4, true); c.fillText(`${list.length} sipariş · ${tot} adet · ${rows.length} çeşit ürün${pg > 1 ? ' · sayfa ' + pg : ''}`, m, y); y += mm(5.5); c.fillRect(m, y, PW - 2 * m, mm(0.5)); y += mm(2); };
+    font(c, 3.4, true); c.fillText(`${list.length} sipariş · ${tot} adet${tset ? ' · ' + tset + ' takım' : ''} · ${rows.length} çeşit${pg > 1 ? ' · sayfa ' + pg : ''}`, m, y); y += mm(5.5); c.fillRect(m, y, PW - 2 * m, mm(0.5)); y += mm(2); };
   head();
   for (const r of rows) { if (y + RH > PH - m) head();
     const img = r.image ? LBL_IMGS.get(r.image) : null; if (img && c.drawPhoto) c.drawPhoto(img, m, y + (RH - isz) / 2, isz, isz); else c.strokeRect(m, y + (RH - isz) / 2, isz, isz);
     const nx = m + isz + mm(3), qw = mm(20), tw = PW - m - qw - nx;
-    if (r.code) { font(c, 3.6, true); c.fillText(String(r.code), nx, y + mm(2)); }
-    font(c, 2.9, false); const ls = wrapText(c, r.name, tw).slice(0, 3); ls.forEach((t, k) => c.fillText(t, nx, y + mm(r.code ? 7 : 2.5) + k * mm(3.4)));
-    font(c, 8, true); const q = String(r.qty); c.fillText(q, PW - m - c.measureText(q).width, y + (RH - mm(8)) / 2 - mm(1)); font(c, 2.6, false); c.fillText('adet', PW - m - c.measureText('adet').width, y + RH / 2 + mm(3.2));
+    if (r.code || r.f > 1) { font(c, 3.6, true); c.fillText(String(r.code || '') + (r.f > 1 ? `${r.code ? ' · ' : ''}${r.f}'${lilu(r.f)}` : ''), nx, y + mm(2)); }
+    font(c, 2.9, false); const ls = wrapText(c, r.name, tw).slice(0, 3); ls.forEach((t, k) => c.fillText(t, nx, y + mm(r.code || r.f > 1 ? 7 : 2.5) + k * mm(3.4)));
+    font(c, 8, true); const q = String(r.qty); c.fillText(q, PW - m - c.measureText(q).width, y + (RH - mm(8)) / 2 - mm(1)); font(c, 2.6, false); const un = r.f > 1 ? 'takım' : 'adet'; c.fillText(un, PW - m - c.measureText(un).width, y + RH / 2 + mm(3.2));
     y += RH; c.fillRect(m, y - mm(0.25), PW - 2 * m, mm(0.25)); }
 }
 function drawLabelPages(p, W, H, sid, mk){
@@ -2843,19 +2846,19 @@ function drawSummaryPages(list, W, H, mk){
   const D = 8, u = Math.min(W, H) / 100, mm = (v) => v * D * u, PW = Math.round(W * D), PH = Math.round(H * D), m = mm(4), cw = PW - 2 * m;
   const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica, Arial, sans-serif`; };
   const agg = new Map();
-  // Ürün koduna göre toplanır; paket ilanı (2'li vb.) paket adedi kadar ürün sayılır
-  for (const p of list) for (const l of p.lines) { const k = l.code || l.sku || l.name; const a = agg.get(k) || {sku: l.code || l.sku, name: l.name, image: l.image || '', qty: 0, orders: new Set()}; a.qty += l.qty * (l.factor || 1); a.orders.add(p.orderNo); agg.set(k, a); }
+  // Ürün kodu + paket büyüklüğüne göre toplanır; çoklu ilan (6'lı vb.) parçaya bölünmez, takım olarak sayılır
+  for (const p of list) for (const l of p.lines) { const f = Math.max(1, Number(l.factor) || 1), k = (l.code || l.sku || l.name) + '|' + f; const a = agg.get(k) || {sku: l.code || l.sku, name: l.name, image: l.image || '', qty: 0, f, orders: new Set()}; a.qty += Number(l.qty) || 0; a.orders.add(p.orderNo); agg.set(k, a); }
   const rows = [...agg.values()].sort((a, b) => b.qty - a.qty || String(a.sku).localeCompare(String(b.sku), 'tr'));
-  const totalQty = rows.reduce((t, r) => t + r.qty, 0);
+  const totalQty = rows.filter(r => r.f === 1).reduce((t, r) => t + r.qty, 0), totalSet = rows.filter(r => r.f > 1).reduce((t, r) => t + r.qty, 0);
   const colQ = mm(14), isz = tall ? mm(11) : 0, nameW = cw - colQ - mm(2) - (tall ? isz + mm(2) : 0), pages = []; let c, y, cv;
   const start = (first) => { if (mk) { const r = mk(); cv = r.c; c = r.c; } else { cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; } y = m;
     font(c, 4.4, true); c.fillText(first ? 'TOPLAM ÜRÜN LİSTESİ' : 'TOPLAM ÜRÜN LİSTESİ (devam)', m, y); y += mm(5.6);
-    font(c, 2.8, false); c.fillText(`${list.length} etiket · ${rows.length} çeşit ürün · ${totalQty} adet · ${new Date().toLocaleDateString('tr-TR')}`, m, y); y += mm(4.2);
+    font(c, 2.8, false); c.fillText(`${list.length} etiket · ${rows.length} çeşit · ${totalQty} adet${totalSet ? ' · ' + totalSet + ' takım' : ''} · ${new Date().toLocaleDateString('tr-TR')}`, m, y); y += mm(4.2);
     c.lineWidth = mm(0.4); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(1.4);
-    font(c, 2.4, true); c.fillText('ÜRÜN', m, y); const a = 'ADET'; c.fillText(a, PW - m - c.measureText(a).width, y); y += mm(3.6); pages.push(cv); };
+    font(c, 2.4, true); c.fillText('ÜRÜN', m, y); const a = 'ADET / TAKIM'; c.fillText(a, PW - m - c.measureText(a).width, y); y += mm(3.6); pages.push(cv); };
   start(true);
   for (const r of rows) {
-    font(c, 2.9, false); const nl = wrapText(c, (r.sku ? r.sku + ' · ' : '') + (r.name || ''), nameW).slice(0, 3); const h = Math.max(nl.length * mm(3.5), isz) + mm(2.2);
+    font(c, 2.9, false); const nl = wrapText(c, (r.sku ? r.sku + ' · ' : '') + (r.f > 1 ? `${r.f}'${lilu(r.f)} TAKIM · ` : '') + (r.name || ''), nameW).slice(0, 3); const h = Math.max(nl.length * mm(3.5), isz) + mm(2.2);
     if (y + h > PH - m) start(false);
     const im = tall && r.image ? LBL_IMGS.get(r.image) : null; if (im && c.drawPhoto) c.drawPhoto(im, m, y, isz, isz);
     font(c, 2.9, false); nl.forEach((t, k) => c.fillText(t, m + (tall ? isz + mm(2) : 0), y + k * mm(3.5)));
