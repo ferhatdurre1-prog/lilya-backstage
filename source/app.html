@@ -464,8 +464,8 @@ body[data-tab="home"] .act-grid .act .l{font-size:clamp(12px,1.55vh,16px)}body[d
   <main id="view"></main>
 </div>
 <nav class="bnav" id="bnav" aria-label="Bölümler"></nav>
-<button class="qbtn ql" id="q-lbl" type="button" data-act="labels" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/></svg>Kargo etiketi yazdır</button>
-<button class="qbtn qr" id="q-kyt" type="button" data-act="q-kayitli" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>Kayıtlı Sürat</button>
+<button class="qbtn ql" id="q-lbl" type="button" data-act="labels" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/></svg>Trendyol Barkod</button>
+<button class="qbtn qr" id="q-kyt" type="button" data-act="q-kayitli" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>Shopify Barkod</button>
 <div id="drawer-root"></div>
 <div id="sheet-root"></div>
 <div id="dialog-root"></div>
@@ -945,7 +945,7 @@ const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(B
 function viewAddr(){
   const A = aS(); if (A.view === 'sent') A.view = 'pending'; /* Gönderilmiş sekmesi kaldırıldı (21.10.2026); kayıtlar duruyor */ loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Kargolanmamış bütün Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
-  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const has = new Set(((A.data && A.data.ships) || []).map(x => x.gid)), all = (A.data && A.data.orders) || [], nDone = all.filter(o => has.has(o.gid)).length; return `<button class="chip" data-act="ad-view" data-id="pending" aria-pressed="${A.view !== 'done' && A.view !== 'sent'}">Sürat bekleyen · ${fmtN(all.length - nDone)}</button><button class="chip" data-act="ad-view" data-id="done" aria-pressed="${A.view === 'done'}">Kayıtlı Sürat · ${fmtN(nDone)}</button>`; })()}${A.view === 'sent' ? `<button class="chip" data-act="sent-miss" aria-pressed="${!!A.sentMiss}">Sadece Sürat verisi olmayanlar</button>` : `<button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button>`}</div>
+  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const has = new Set(((A.data && A.data.ships) || []).map(x => x.gid)), all = (A.data && A.data.orders) || [], nDone = all.filter(o => has.has(o.gid)).length; return `<button class="chip" data-act="ad-view" data-id="pending" aria-pressed="${A.view !== 'done' && A.view !== 'sent'}">Sürat bekleyen · ${fmtN(all.length - nDone)}</button><button class="chip" data-act="ad-view" data-id="done" aria-pressed="${A.view === 'done'}">Sürat kayıtlı · ${fmtN(nDone)}</button>`; })()}${A.view === 'sent' ? `<button class="chip" data-act="sent-miss" aria-pressed="${!!A.sentMiss}">Sadece Sürat verisi olmayanlar</button>` : `<button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button>`}</div>
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
@@ -2570,7 +2570,7 @@ function lblView(L){ L.data = (L.all || []).filter(p => lblCar(p) === L.car && (
 function sheetKayitli(){
   const K = S.sheet, A = aS();
   if (!A.data) { if (!K.wait) { K.wait = true; Promise.resolve(loadAddr(false)).finally(() => { const poll = () => { if (S.sheet !== K) return; if (aS().data || !aS().loading) { K.wait = false; renderSheet(false); } else setTimeout(poll, 500); }; poll(); }); }
-    return {title: 'Kayıtlı Sürat', body: A.err ? `<div class="banner bad"><div>${esc(A.err)}</div></div>` : loading()}; }
+    return {title: 'Shopify Barkod', body: A.err ? `<div class="banner bad"><div>${esc(A.err)}</div></div>` : loading()}; }
   const ships = srDoneList(A), ob = new Map(A.data.orders.map(o => [o.gid, o]));
   if (!K.sel) K.sel = new Set(ships.map(x => x.gid));
   const ns = ships.filter(x => K.sel.has(x.gid)).length;
@@ -2580,16 +2580,16 @@ function sheetKayitli(){
       <div style="min-width:0;flex:1"><div><b class="mono">${esc(o.name || x.order_no || '')}</b> <b>${esc(nm(o))}</b></div><div class="small muted">${esc(yer(o))}${o.cod && o.cod.tip ? ' · kapıda ödeme' : ''}</div>
       <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((o.items || []).join(', '))}</div>
       <div class="small">${x.mode === 'manual' ? '<span class="muted">Elle kayıtlı · Sürat barkodu yok (yazdırırken oluşturulur)</span>' : `Barkod <b class="mono">${esc(x.ref || '')}</b> · ${x.tracking ? `takip no <b class="mono">${esc(x.tracking)}</b>` : '<span class="muted">takip no bekleniyor</span>'}`}</div></div></label>`; }).join('');
-  return {title: 'Kayıtlı Sürat', sub: `<span>${fmtN(ships.length)} sipariş</span>`, body: !ships.length ? `<div class="panel empty"><h4>Kayıtlı sipariş yok</h4><p>Barkodu oluşturulan siparişler burada görünür.</p></div>` : `
+  return {title: 'Shopify Barkod', sub: `<span>${fmtN(ships.length)} sipariş</span>`, body: !ships.length ? `<div class="panel empty"><h4>Kayıtlı sipariş yok</h4><p>Barkodu oluşturulan siparişler burada görünür.</p></div>` : `
     <div class="card" style="gap:10px;flex-direction:row;align-items:center;flex-wrap:wrap"><button class="btn sm" type="button" data-act="ky-selall">${ns === ships.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(ns)} / ${fmtN(ships.length)} seçili</span><button class="btn sm primary" type="button" data-act="ky-print" style="margin-left:auto" ${ns && !A.bulk ? '' : 'disabled'}>${A.bulk ? 'Barkod oluşturuluyor ' + esc(A.bulk) : '🖨 Seçilenleri yazdır (' + fmtN(ns) + ')'}</button></div>
     <div class="card" style="padding:0;gap:0;margin-top:12px;overflow:hidden">${rows}</div>
-    <p class="small muted" style="margin:10px 2px 0">Etiket Sürat ölçüsünde (100×200) basılır; Adres düzeltme → Kayıtlı Sürat sekmesindeki yazdırmayla aynı.</p>`};
+    <p class="small muted" style="margin:10px 2px 0">Etiket Sürat ölçüsünde (100×200) basılır; Adres düzeltme → Sürat kayıtlı sekmesindeki yazdırmayla aynı.</p>`};
 }
 function sheetLabels(){
   const L = S.sheet;
   if (!L.data) {
     if (!L.loading) { L.loading = true; api('/api/labels/pending', {}).then(d => { if (S.sheet === L) { L.all = lblSort(d.packages); L.sid = d.sellerId || ''; L.loading = false; const cs = ['tex','ptt','other'].filter(k => L.all.some(p => lblCar(p) === k)); L.car = L.car && cs.includes(L.car) ? L.car : (cs[0] || 'tex'); L.view = L.view || 'pending'; lblView(L); renderSheet(false); } }).catch(e => { L.loading = false; toast(errText(e), true); closeSheetForce(); }); }
-    return {title:'Kargo etiketi yazdır', body: loading()};
+    return {title:'Trendyol Barkod', body: loading()};
   }
   const z = lblSize(), presets = LBL_SIZES;
   const st = {Created:'Yeni', Picking:'İşleme alındı', Invoiced:'Faturalandı'};
@@ -2598,7 +2598,7 @@ function sheetLabels(){
   const cars = ['tex','ptt','other'].filter(k => (L.all || []).some(p => lblCar(p) === k));
   const carTabs = cars.length ? `<div class="chips" style="margin-bottom:12px">${cars.map(k => `<button class="chip" type="button" data-act="lbl-car" data-id="${k}" aria-pressed="${L.car === k}" style="font-size:15px;padding:9px 16px">${LBL_CAR[k]} · ${fmtN(L.all.filter(p => lblCar(p) === k && !p.printedAt).length)}</button>`).join('')}</div>
     <div class="chips" style="margin:-4px 0 12px">${[['pending','Bekleyen'],['printed','Kayıtlı (PDF yapıldı)']].map(([v, t]) => `<button class="chip" type="button" data-act="lbl-view" data-id="${v}" aria-pressed="${(L.view || 'pending') === v}">${t} · ${fmtN(L.all.filter(p => lblCar(p) === L.car && (v === 'printed' ? !!p.printedAt : !p.printedAt)).length)}</button>`).join('')}</div>` : '';
-  return {title:'Kargo etiketi yazdır', sub:`<span>${fmtN((L.all || L.data).length)} bekleyen paket</span>`, body: carTabs + `<div class="card" style="gap:10px">
+  return {title:'Trendyol Barkod', sub:`<span>${fmtN((L.all || L.data).length)} bekleyen paket</span>`, body: carTabs + `<div class="card" style="gap:10px">
       <div><b>Kağıt ölçüsü</b> <span class="muted small">(etiket yazıcının kağıdı)</span></div>
       <div class="chips">${presets.map(([w,h]) => `<button class="chip" type="button" data-act="lbl-size" data-id="${w}x${h}" aria-pressed="${z.w===w && z.h===h}">${w}×${h} mm${h > w ? ' · ürün resimli' : ''}</button>`).join('')}</div>
       <p class="muted small" style="margin:0">100×150'de ürün resimleri kutuların yanına gelir. Yazdırırken yazıcıda kağıt ölçüsünü aynı seç ve "gerçek boyut / %100" seç.</p></div>
