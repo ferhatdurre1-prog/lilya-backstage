@@ -25,6 +25,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS sr_rows(takip TEXT PRIMARY KEY, day TEXT, alici TEXT, fee REAL, cod REAL, collected INTEGER, coll_amt REAL, iade TEXT, durum TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_mov(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, kind TEXT, amount REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS paytr_tx(k TEXT PRIMARY KEY, siparis_no TEXT, tip TEXT, tutar REAL, kesinti REAL, net REAL, oran REAL, tarih TEXT, odeme_tipi TEXT, at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS sr_online(no TEXT PRIMARY KEY, amount REAL, paid INTEGER NOT NULL DEFAULT 0, paid_at TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_cost(no TEXT PRIMARY KEY, tracking TEXT, cost REAL, desi REAL, cod_amount REAL, undelivered INTEGER, durum TEXT, teslim TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sh_ret(id INTEGER PRIMARY KEY AUTOINCREMENT, no TEXT NOT NULL, tracking TEXT, desi REAL, cost REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS sh_pay(no TEXT PRIMARY KEY, gateway TEXT, cod INTEGER, card INTEGER, subtotal REAL, ship REAL, total REAL, at TEXT)`,
@@ -3618,8 +3619,8 @@ ${catalog}` });
   if (path === '/api/srcari/recon') {
     // Sipariş bazında Sürat mutabakatı (17.10.2026 10:00 sonrası Shopify): bizim beklediğimiz (tahsilat − ücret) ile Sürat raporundaki (tahsilat − ücret)
     const rs = await reportStart(env), from = iso(Math.max(Date.parse(SURAT_DIRECT_FROM), /^\d{4}-\d{2}-\d{2}$/.test(rs || '') ? dayStartTR(rs) : 0));
-    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, c.planned, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday
-      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN sr_rows s ON s.takip = c.tracking
+    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, c.planned, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday, so.no fno, so.amount famt, so.paid fpaid, so.paid_at fpaid_at
+      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN sr_rows s ON s.takip = c.tracking LEFT JOIN sr_online so ON so.no = replace(o.order_no,'#','')
       WHERE o.channel='shopify' AND o.date >= ?1 ORDER BY o.date DESC LIMIT 2000`).bind(from), env.DB.prepare('SELECT key, desi FROM products')]);
     const fee = await loadFees(env), dz = new Map(pR.results.map(x => [x.key, Number(x.desi) || null])), out = [];
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'); if (!act.length) continue;
@@ -3627,14 +3628,29 @@ ${catalog}` });
       const total = r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0) + (cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0));
       let d = 0, miss = 0; for (const l of act) { const x = dz.get(l.pkey); if (x) d += x * l.qty; else { miss++; d += l.qty; } } const desi = Math.ceil(d - 1e-9);
       const und = !!r.undelivered, base = r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, r.date)), codFee = cod && !und ? suratDirectCod(total) : 0;
-      const eColl = cod && !und ? total : 0, eFee = r2(und ? base * 1.5 : base + codFee), eNet = r2(eColl - eFee);
+      // "Sürat'a online gitti": kapıda ödemeli sipariş Sürat'a yanlışlıkla online gönderildi; Sürat tahsilat yapmaz, müşteriden ayrıca (IBAN) tahsil edilir
+      const flag = cod && !!r.fno, owe = flag ? r2(r.famt !== null && r.famt !== undefined ? r.famt : r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0))) : 0;
       const has = r.sfee !== null && r.sfee !== undefined, sColl = has ? r2(r.scod || 0) : null, sFee = has ? r2(r.sfee || 0) : null, sNet = has ? r2(sColl - sFee) : null;
+      let eColl = cod && !und ? total : 0, eFee = r2(und ? base * 1.5 : base + codFee);
+      if (flag) { if (has) { eColl = sColl; eFee = sFee; } else { eColl = 0; eFee = r2(und ? base * 1.5 : base); } }
+      const eNet = r2(eColl - eFee);
       const diff = has ? r2(sNet - eNet) : null, deliv = dlvDay(r.teslim), payDay = cod && !und && deliv ? srPayDay(deliv) : null, planned = dlvDay(r.planned), estPay = cod && !und && !deliv && planned ? srPayDay(planned) : null;
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi, miss, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, planned, estPay, durum: r.sdurum || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi, miss, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, planned, estPay, durum: r.sdurum || '', flag, owe, opaid: !!r.fpaid, opaidAt: r.fpaid_at || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
     }
     const sum = (f, k) => r2(out.filter(f).reduce((a, x) => a + (x[k] || 0), 0)), m = (x) => x.st !== 'nodata';
     return json({ ok: true, items: out, n: out.length, matched: out.filter(m).length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { eColl: sum(m, 'eColl'), eFee: sum(m, 'eFee'), eNet: sum(m, 'eNet'), sColl: sum(m, 'sColl'), sFee: sum(m, 'sFee'), sNet: sum(m, 'sNet'), eNetAll: sum(() => true, 'eNet') } });
+  }
+  if (path === '/api/srcari/online') { // kutucuk: "Sürat'a online gitti" işareti aç/kapat
+    const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş yok.');
+    if (body.on) await env.DB.prepare('INSERT INTO sr_online(no, amount, paid, at) VALUES(?1, NULL, 0, ?2) ON CONFLICT(no) DO NOTHING').bind(no, iso()).run();
+    else await env.DB.prepare('DELETE FROM sr_online WHERE no=?1').bind(no).run();
+    return json({ ok: true });
+  }
+  if (path === '/api/srcari/onlinepaid') { // müşteri IBAN'a ödedi / geri al
+    const no = String(body.no || '').replace(/\D/g, ''); const paid = body.paid ? 1 : 0;
+    await env.DB.prepare('UPDATE sr_online SET paid=?2, paid_at=?3 WHERE no=?1').bind(no, paid, paid ? trToday() : null).run();
+    return json({ ok: true });
   }
   if (path === '/api/srcari/add') {
     const kind = ['in', 'out', 'adj'].includes(body.kind) ? body.kind : 'in', a0 = String(body.amount ?? '').trim(), amount = r2(Number(a0.includes(',') ? a0.replace(/\./g, '').replace(',', '.') : a0) || 0);
