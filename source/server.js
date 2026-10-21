@@ -1157,7 +1157,7 @@ async function srTrackPending(env, limit) {
   for (const acct of ['', 'cod']) { const results = all.filter(r => (r.acct || '') === acct); if (!results.length) continue; const cr = await srCreds(env, acct); if (!cr.pass) continue;
   let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
-  let solo = 0; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 90 * 60000)); break; } } }
+  let solo = 0; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 20 * 60000)); break; } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
@@ -2096,7 +2096,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
     if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); if (left() > 15000) { try { await shPayBackfill(env, 3); } catch (e) { await setSetting(env, 'sh_pay_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } } try { const pa2 = Number(await getSetting(env, 'run_pt_at')) || 0; if (now - pa2 > 3 * 3600000 && left() > 15000) { await setSetting(env, 'run_pt_at', String(now)); await ptSync(env, 4); } } catch (e) { await setSetting(env, 'pt_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) >= 5 * 60000 * mult && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
     // Sürat: şube okuttuysa takip numarası alınıp Shopify'a işlenir (müşteriye bildirim) — 30 dakikada bir
-    if (left() > 12000 && ok(80) && isDue('run_sr_at', 30 * 60000)) { await setSetting(env, 'run_sr_at', String(now)); await step('surat', () => srTrackPending(env), 'sr_track_err'); }
+    if (left() > 12000 && ok(80) && isDue('run_sr_at', 60000)) { await setSetting(env, 'run_sr_at', String(now)); await step('surat', () => srTrackPending(env), 'sr_track_err'); }
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 8000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env, Date.now() + Math.min(15000, left() - 5000)));
     if (left() > 8000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
@@ -3577,7 +3577,7 @@ ${catalog}` });
     // takip hatası: son başarılı gönderiden eskiyse gösterilmez; Cloudflare engeli kısa Türkçe metinle
     let trackErr = tk.sr_track_err || ''; const tAt = Date.parse(trackErr.slice(0, 24)) || 0;
     if (trackErr && s.sr_ok && Date.parse(s.sr_ok) > tAt) trackErr = '';
-    if (/403|cloudflare|attention/i.test(trackErr)) trackErr = trackErr.slice(0, 27) + `Sürat'ın sitesi takip sorgusunu geçici olarak engelledi (Cloudflare). ${Math.max(1, Math.round((tAt + 90 * 60000 - Date.now()) / 60000))} dk sonra yeniden denenir; barkod oluşturmayı etkilemez.`;
+    if (/403|cloudflare|attention/i.test(trackErr)) trackErr = trackErr.slice(0, 27) + `Sürat'ın sitesi takip sorgusunu geçici olarak engelledi (Cloudflare). ${Math.max(1, Math.round((tAt + 20 * 60000 - Date.now()) / 60000))} dk sonra yeniden denenir; barkod oluşturmayı etkilemez.`;
     return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, cod: c2.acct === 'cod' ? { cari: mask(c2.cari), user: mask(c2.user) } : null, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr, ok: s.sr_ok || '' });
   }
   if (path === '/api/surat/connect2') {
