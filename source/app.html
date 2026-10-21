@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<html lang="tr"><head><meta charset="utf-8"><script>try{var t=localStorage.getItem('lb_theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Backstage"><meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0a0b10"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3"><link rel="icon" type="image/svg+xml" href="/icon.svg?v=3"><link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=3">
 <style>body{margin:0}body::before{content:"";position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top,0px);background:#f5f6f8;z-index:200}@media (prefers-color-scheme:dark){body::before{background:#0a0b0f}}img{max-width:100%}[hidden]{display:none!important}:root{padding-top:env(safe-area-inset-top,0px)}</style>
@@ -821,7 +821,7 @@ function renderDrawer(){
     ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
     ${grp('Para')}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
     ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
-    ${grp('Ayarlar')}<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
+    ${grp('Ayarlar')}<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
   </nav>`;
 }
 /* ============ Shopify adres düzeltme ============ */
@@ -4323,6 +4323,10 @@ document.addEventListener('click', async e => {
     case 'bk-off': if (!(await confirmBox('Basit Kargo bağlantısı kesilsin mi? Okunan gönderiler ve kâr hesabı korunur.', 'Bağlantıyı kes', true))) break; await run(async () => { await api('/api/bk/disconnect', {}); S.bk = null; renderSheet(false); }); break;
     case 'bk-sync': b.disabled = true; b.textContent = 'Çekiliyor…'; await run(async () => { const r = await api('/api/bk/sync', {}); toast('Basit Kargo: ' + r.msg); S.bk = null; renderSheet(false); }); break;
     case 'bk-sample': await run(async () => { const r = await api('/api/bk/sample', {}); S.bkSample = JSON.stringify(r.sample, null, 1).slice(0, 6000); renderSheet(false); }); break;
+    case 'theme-cycle': { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} t = {auto: 'light', light: 'dark', dark: 'auto'}[t] || 'auto';
+      try { if (t === 'auto') localStorage.removeItem('lb_theme'); else localStorage.setItem('lb_theme', t); } catch(e) {}
+      if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+      renderDrawer(); toast(`Görünüm: ${{auto: 'Otomatik (cihaz teması)', light: 'Açık', dark: 'Koyu'}[t]}`); break; }
     case 'sr2-edit': S.sr2Edit = id === '1'; renderSheet(false); break;
     case 'sr2-remove': if (!(await confirmBox('Kapıda ödeme carisi kaldırılsın mı? Kapıda ödemeli gönderiler varsayılan cariden gider.', 'Kaldır', true))) break; await run(async () => { await api('/api/surat/connect2', {remove: true}); S.surat = null; renderSheet(false); }); break;
     case 'sr-open': { const A = aS(); A.sr = id; if (!S.surat || S.surat.connected === undefined) suratCard(); render(); break; }
