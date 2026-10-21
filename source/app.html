@@ -912,12 +912,33 @@ async function loadAddrMore(){
   try { const d = await api('/api/shaddr/list', {filter: A.filter, q: A.q.trim(), after: A.data.after}); const seen = new Set(A.data.orders.map(o => o.gid)); A.data.orders.push(...d.orders.filter(o => !seen.has(o.gid))); A.data.after = d.after; A.at = Date.now(); addrLearnCodes(d.orders); } catch(e) { toast(errText(e), true); }
   A.loading = false; if (S.tab === 'addr') render();
 }
+// Adres düzeltme → Gönderilmiş: kargolanmış Shopify siparişleri, takip no girişi (Shopify'da da güncellenir)
+async function loadSent(more){
+  const A = aS(); if (A.sentLoading) return; if (!more && A.sent) return;
+  A.sentLoading = true; if (more) render();
+  try { const d = await api('/api/shaddr/shipped', {q: A.q.trim(), after: more && A.sent ? A.sent.after : null}); if (more && A.sent) { const seen = new Set(A.sent.orders.map(o => o.gid)); A.sent.orders.push(...d.orders.filter(o => !seen.has(o.gid))); A.sent.after = d.after; } else A.sent = d; A.sentErr = ''; } catch(e) { A.sentErr = errText(e); if (!more) A.sent = null; }
+  A.sentLoading = false; if (S.tab === 'addr') render();
+}
+function sentHtml(A){
+  if (A.sentErr) return `<div class="banner bad"><div>${esc(A.sentErr)}</div></div>`;
+  if (!A.sent) { loadSent(false); return loading(); }
+  const all = A.sent.orders, list = all.filter(o => !A.sentMiss || !o.srData), nMiss = all.filter(o => !o.srData).length;
+  let h = `<p class="small muted" style="margin:0 0 10px">17.10.2026'dan beri kargolanmış Shopify siparişleri · ${fmtN(all.length)}${A.sent.after ? '+' : ''} sipariş · <b style="color:${nMiss ? 'var(--bad)' : 'var(--good)'}">${fmtN(nMiss)} tanesinde Sürat verisi yok</b>. Takip no girince Shopify'daki takip no da güncellenir; sonraki Sürat raporu yüklemesinde sipariş bu numarayla eşleşir.</p>`;
+  if (!list.length) return h + `<div class="panel empty"><h4>${A.sentMiss ? 'Sürat verisi olmayan sipariş yok' : 'Gönderilmiş sipariş yok'}</h4><p>${A.q ? 'Aramayla eşleşen sipariş bulunamadı.' : ''}</p></div>`;
+  for (const o of list) { const no = String(o.name || '').replace(/\D/g, ''), busy = A.busy[o.gid];
+    h += `<div class="card" style="gap:6px"><div class="spread" style="gap:8px;align-items:flex-start"><div style="min-width:0"><b class="mono">${esc(o.name)}</b> <span class="small muted">${esc(cDay(String(o.createdAt).slice(0, 10)))}</span><div class="small">${esc(o.customer || '—')}${o.city ? ` · <span class="muted">${esc(o.city)}</span>` : ''}</div><div class="small muted">${esc(o.method)} · ${tl2(o.total)}</div></div><span class="pill ${o.srData ? 'p-good' : 'p-bad'}">${o.srData ? 'Sürat verisi var' : 'Sürat verisi yok'}</span></div>
+      <div class="small">Takip no: ${o.tracking ? `<b class="mono">${esc(o.tracking)}</b>` : '<span class="muted">yok</span>'}${o.shTrack && o.shTrack !== o.tracking ? ` <span class="muted">(Shopify'da: ${esc(o.shTrack)})</span>` : ''}</div>
+      <div class="row" style="gap:6px"><input class="input mono" id="st-${no}" placeholder="Sürat takip no" inputmode="numeric" style="flex:1;min-width:0" value=""><button class="btn sm primary" type="button" data-act="sent-save" data-id="${esc(o.gid)}" ${busy ? 'disabled' : ''}>${busy ? 'Kaydediliyor…' : o.tracking ? 'Değiştir' : 'Kaydet'}</button></div></div>`; }
+  if (A.sent.after) h += `<button class="btn" data-act="sent-more" ${A.sentLoading ? 'disabled' : ''} style="width:100%">${A.sentLoading ? 'Yükleniyor…' : 'Daha fazla yükle'}</button>`;
+  return h;
+}
 const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(' / '), a.zip].filter(Boolean).map(esc).join(' · ') : '<span class="muted">Adres yok</span>';
 function viewAddr(){
   const A = aS(); loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Kargolanmamış bütün Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
-  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const has = new Set(((A.data && A.data.ships) || []).map(x => x.gid)), all = (A.data && A.data.orders) || [], nDone = all.filter(o => has.has(o.gid)).length; return `<button class="chip" data-act="ad-view" data-id="pending" aria-pressed="${A.view !== 'done'}">Barkod bekleyen · ${fmtN(all.length - nDone)}</button><button class="chip" data-act="ad-view" data-id="done" aria-pressed="${A.view === 'done'}">Kayıtlı (barkodu oluşturuldu) · ${fmtN(nDone)}</button>`; })()}<button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button></div>
+  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const has = new Set(((A.data && A.data.ships) || []).map(x => x.gid)), all = (A.data && A.data.orders) || [], nDone = all.filter(o => has.has(o.gid)).length; return `<button class="chip" data-act="ad-view" data-id="pending" aria-pressed="${A.view !== 'done' && A.view !== 'sent'}">Barkod bekleyen · ${fmtN(all.length - nDone)}</button><button class="chip" data-act="ad-view" data-id="done" aria-pressed="${A.view === 'done'}">Kayıtlı (barkodu oluşturuldu) · ${fmtN(nDone)}</button><button class="chip" data-act="ad-view" data-id="sent" aria-pressed="${A.view === 'sent'}">Gönderilmiş</button>`; })()}${A.view === 'sent' ? `<button class="chip" data-act="sent-miss" aria-pressed="${!!A.sentMiss}">Sadece Sürat verisi olmayanlar</button>` : `<button class="chip" data-act="ad-only" aria-pressed="${A.only}">Sadece sorunlular</button>`}</div>
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
+  if (A.view === 'sent') return h + sentHtml(A);
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
   h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px"><div class="small"><b>Sürat Kargo</b> · ${(() => { const pend = (A.data.ships || []).filter(x => x.mode !== 'api' && !x.exported_at).length; return pend ? `<b style="color:var(--orange)">${fmtN(pend)} gönderi Sürat'a yüklenmeyi bekliyor</b>` : 'Yüklenmeyi bekleyen gönderi yok'; })()}<div class="muted">Barkod bas → Sürat Excel indir → Sürat eKargo'da Gönderi Girişi Excel'e yükle. Takip no için: Sürat eKargo → Gönderi Raporu → Getir → Excel'e aktar → buraya "Sürat raporunu yükle".</div></div><div class="row" style="gap:6px;flex-wrap:wrap">${(() => { if (A.bulk) return `<button class="btn sm" disabled>Oluşturuluyor… ${A.bulk}</button>`;
@@ -4315,8 +4336,17 @@ document.addEventListener('click', async e => {
     case 'ad-only': aS().only = !aS().only; render(); break;
     case 'ad-view': aS().view = id; aS().sr = null; aS().sel = null; render(); window.scrollTo(0, 0); break;
     case 'ad-more': loadAddrMore(); break;
-    case 'ad-clear': aS().q = ''; aS().data = null; render(); break;
-    case 'ad-sync': aS().at = 0; aS().data = null; render(); break;
+    case 'ad-clear': aS().q = ''; aS().data = null; aS().sent = null; render(); break;
+    case 'ad-sync': aS().at = 0; aS().data = null; aS().sent = null; render(); break;
+    case 'sent-miss': aS().sentMiss = !aS().sentMiss; render(); break;
+    case 'sent-more': loadSent(true); break;
+    case 'sent-save': { const A = aS(), o = A.sent && A.sent.orders.find(x => x.gid === id); if (!o) break; const no = String(o.name || '').replace(/\D/g, ''), inp = $('#st-' + no), v = inp ? inp.value.trim() : '';
+      if (!v) { toast('Takip numarasını yaz.', true); break; }
+      A.busy[o.gid] = true; render();
+      try { const r = await api('/api/shaddr/settrack', {gid: o.gid, name: o.name, number: v}); o.tracking = r.tracking; if (r.shop === 'ok') o.shTrack = r.tracking;
+        toast(r.shop === 'ok' ? `${o.name}: takip no kaydedildi, Shopify güncellendi.` : r.shop === 'none' ? `${o.name}: takip no kaydedildi (Shopify'da gönderim kaydı bulunamadı).` : `${o.name}: takip no kaydedildi; Shopify güncellenemedi: ${r.shop}`, r.shop !== 'ok'); }
+      catch (e) { toast(errText(e), true); }
+      delete A.busy[o.gid]; render(); break; }
     case 'ad-edit': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (o) { A.edit[id] = addrForm(o.addr || {}); render(); } break; }
     case 'ad-cancel': delete aS().edit[id]; aS().field = null; render(); break;
     case 'ad-fedit': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (!o) break; const k = b.dataset.k, E = A.edit[id] || addrForm(o.addr || {});
@@ -4507,7 +4537,7 @@ document.addEventListener('submit', async e => {
   if (id === 'f-surat2') { await run(async () => { await api('/api/surat/connect2', {user: $('#sr2-user').value, pass: $('#sr2-pass').value, cari: $('#sr2-cari').value, web: $('#sr2-web').value}); S.surat = null; S.sr2Edit = false; renderSheet(false); toast('Kapıda ödeme carisi kaydedildi.'); }); return; }
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
   if (id === 'f-srdesi') { await run(async () => { await api('/api/surat/settings', {desi: $('#sr-desi2').value}); S.surat = null; renderSheet(false); toast('Varsayılan desi kaydedildi.'); }); return; }
-  if (id === 'f-adq') { const A = aS(); A.q = ($('#ad-q') || {}).value || ''; A.data = null; render(); return; }
+  if (id === 'f-adq') { const A = aS(); A.q = ($('#ad-q') || {}).value || ''; A.data = null; A.sent = null; render(); return; }
   if (id === 'f-login') {
     const btn = e.target.querySelector('button'); btn.disabled = true;
     try { if (S.logoutP) await S.logoutP; await api('/api/login', {username:$('#lg-user').value, password:$('#lg-pass').value}); S.authInfo = null; await afterLogin(); }

@@ -956,6 +956,7 @@ const SH_API = '2026-07';
 // Adres düzeltme: kargolanmamış siparişlerin teslimat adresi okunur ve orderUpdate ile düzeltilir.
 // Gerekli: write_orders yetkisi + korunan müşteri verisi (ad, adres, telefon, e-posta) izni.
 const SH_ADDR_F = 'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone';
+const SH_SENT_Q = `query($q:String,$after:String){orders(first:50,after:$after,sortKey:CREATED_AT,reverse:true,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt cancelledAt test displayFulfillmentStatus paymentGatewayNames totalPriceSet{shopMoney{amount}} shippingAddress{name city province} fulfillments(first:5){status trackingInfo{number company}}}}}`;
 const SH_ADDR_Q = `query($q:String,$after:String){orders(first:25,after:$after,sortKey:CREATED_AT,reverse:true,query:$q){pageInfo{hasNextPage endCursor}nodes{id name createdAt cancelledAt closed test displayFulfillmentStatus note email phone
   paymentGatewayNames totalPriceSet{shopMoney{amount}} totalOutstandingSet{shopMoney{amount}} lineItems(first:20){pageInfo{hasNextPage}nodes{name quantity unfulfilledQuantity}} shippingAddress{${SH_ADDR_F}}}}}`;
 /* ---------- Sürat Kargo: ön kabul (kendi barkodumuzla gönderi bildirimi) ----------
@@ -3461,6 +3462,38 @@ ${catalog}` });
       const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err, exported_at, mode FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
       return json({ ok: true, orders, log, ships, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
+  }
+  if (path === '/api/shaddr/shipped') {
+    // Adres düzeltme → "Gönderilmiş": 17.10.2026'dan beri kargolanmış Shopify siparişleri; takip no ve Sürat verisi durumu
+    const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil. Önce Bağlantılar bölümünden Shopify\'ı bağla.');
+    const term = String(body.q || '').trim().replace(/['"\\]/g, '').slice(0, 60);
+    let q = 'fulfillment_status:shipped created_at:>=2026-10-17';
+    if (term) q += ' ' + (/^#?\d+$/.test(term) ? `name:#${term.replace('#', '')}` : term);
+    try {
+      let after = body.after || null, nodes = [], more = false;
+      for (let page = 0; page < 4; page++) { const d = await shGql(env, c, SH_SENT_Q, { q, after }); nodes.push(...d.orders.nodes); more = d.orders.pageInfo.hasNextPage; after = d.orders.pageInfo.endCursor; if (!more) break; }
+      const L = nodes.filter(o => !o.test && !o.cancelledAt);
+      const nos = L.map(o => String(o.name || '').replace(/\D/g, '')), gids = L.map(o => o.id);
+      const cost = new Map((nos.length ? await selectIn(env, 'SELECT no, tracking, cost, undelivered FROM sr_cost', 'no', nos) : []).map(r => [r.no, r]));
+      const ship = new Map(); for (const r of (gids.length ? await selectIn(env, 'SELECT gid, tracking, at FROM sr_ship', 'gid', gids) : [])) { const p = ship.get(r.gid); if (!p || String(r.at) > String(p.at)) ship.set(r.gid, r); }
+      const orders = L.map(o => { const no = String(o.name || '').replace(/\D/g, ''), pr = shPayRow(o), sc = cost.get(no), sh = ship.get(o.id), a = o.shippingAddress || {};
+        const shTrack = ((o.fulfillments || []).filter(f => f.status !== 'CANCELLED').flatMap(f => f.trackingInfo || []).map(t => t.number).filter(Boolean))[0] || '';
+        return { gid: o.id, name: o.name, createdAt: o.createdAt, customer: a.name || '', city: [a.city, a.province].filter(Boolean).join(' / '), total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0,
+          method: pr.cod ? (pr.card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', tracking: (sh && sh.tracking) || shTrack || '', shTrack, srData: !!(sc && (sc.cost !== null || sc.undelivered)) }; });
+      return json({ ok: true, orders, after: more ? after : null });
+    } catch (e) { return bad(shAddrErr(e)); }
+  }
+  if (path === '/api/shaddr/settrack') {
+    // Gönderilmiş siparişe takip no gir/değiştir: Backstage'e kaydedilir (rapor eşleştirmesi için) ve Shopify'daki takip no güncellenir
+    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    const n = String(body.number || '').toLocaleUpperCase('tr').replace(/[^A-Z0-9]/g, ''); if (n.length < 8 || (n.match(/\d/g) || []).length < 6) return bad('Takip numarası en az 8 karakter olmalı (Sürat eKargo\'daki "Kargo Takip No").');
+    const now = iso(), row = await env.DB.prepare('SELECT ref FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(gid).first();
+    if (row) await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4, fulfilled_at=COALESCE(fulfilled_at, ?4) WHERE ref=?1').bind(row.ref, n, 'Gönderilmiş sekmesinden elle girildi', now).run();
+    else await env.DB.prepare(`INSERT INTO sr_ship(ref, gid, order_no, adet, desi, addr, lines, msg, at, mode, exported_at, tracking, track_msg, track_at, fulfilled_at) VALUES(?1,?2,?3,0,0,'{}','[]',?4,?5,'manual',?5,?6,?4,?5,?5) ON CONFLICT(ref) DO UPDATE SET tracking=excluded.tracking, track_msg=excluded.track_msg, track_at=excluded.track_at, fulfilled_at=COALESCE(sr_ship.fulfilled_at, excluded.fulfilled_at)`)
+      .bind('EL' + gid.replace(/\D/g, ''), gid, String(body.name || '').slice(0, 40), 'Gönderilmiş sekmesinden elle girildi', now, n).run();
+    let shop = 'ok'; const c = await shCreds(env);
+    if (shConfigured(c)) { try { const r = await shFixTracking(env, c, gid, n); if (r && r.none) shop = 'none'; } catch (e) { shop = String(e.message || e).slice(0, 200); } } else shop = 'Shopify bağlı değil';
+    return json({ ok: true, tracking: n, shop });
   }
   // ---------- Sürat Kargo ----------
   if (path === '/api/tycari/sync') { try { return json({ ok: true, r: await tySettleSync(env, 3) }); } catch (e) { await setSetting(env, 'ty_set_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e), 502); } }
