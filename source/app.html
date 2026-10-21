@@ -674,7 +674,7 @@ function toast(msg, bad=false){
 // Ortada ilerleme kutusu: dönen simge + "2 / 5" sayaç (barkod oluşturma gibi uzun işlemler)
 function progShow(title, k, n, sub){ let r = document.getElementById('prog-root'); if (!r) { r = document.createElement('div'); r.id = 'prog-root'; document.body.appendChild(r); }
   r.innerHTML = `<div class="prog" role="status" aria-live="polite"><div class="pbox"><div class="spin" aria-hidden="true"></div><div class="pt">${esc(title)}</div><div class="pn">${fmtN(k)} / ${fmtN(n)}</div><div class="pbar"><i style="width:${n ? Math.round(k / n * 100) : 0}%"></i></div>${sub ? `<div class="ps">${esc(sub)}</div>` : ''}</div></div>`; }
-// Aynı anda en çok n iş (Sürat'a aynı anda 2 istek)
+// Aynı anda en çok n iş (Sürat barkodları tek tek: n = 1)
 async function pool(items, n, fn){ let i = 0; const run1 = async () => { while (i < items.length) { const it = items[i++]; await fn(it); } }; await Promise.all(Array.from({length: Math.min(n, items.length)}, run1)); }
 function progHide(){ const r = document.getElementById('prog-root'); if (r) r.innerHTML = ''; }
 function confirmBox(text, ok='Onayla', danger=false){
@@ -1019,7 +1019,7 @@ async function srPrintSel(id, view){ const A = aS(), dl = srDoneList(A, view).fi
       if (man.length && !(await confirmBox(`Seçtiklerinden ${fmtN(man.length)} tanesinin Sürat barkodu yok (elle kayıtlıya alınmış). Önce onlara barkod oluşturulup hepsi birlikte yazdırılsın mı? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi.`, 'Oluştur ve yazdır'))) return;
       const errs = []; let k = 0;
       const busyM = new Set(), updM = () => { A.bulk = `${k}/${man.length}`; progShow('Barkod oluşturuluyor', k, man.length, [...busyM].join(' · ')); };
-      try { updM(); render(); await pool(man, 2, async x => { busyM.add(x.order_no); updM();
+      try { updM(); render(); await pool(man, 1, async x => { busyM.add(x.order_no); updM();
         try { const r = await api('/api/surat/ship', {gid: x.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); srAddShip(A, r.ship); ready.push(r.ship); } catch (err) { errs.push(`${x.order_no}: ${errText(err)}`); }
         busyM.delete(x.order_no); k++; updM(); }); } finally { progHide(); }
       A.bulk = null; render();
@@ -4469,7 +4469,7 @@ document.addEventListener('click', async e => {
       if (!(await confirmBox(`${fmtN(list.length)} siparişe Sürat barkodu oluşturulup "Sürat kayıtlı"ya alınsın mı? Her biri 1 koli, ${esc(String((S.surat && S.surat.desi) || 2).replace('.', ','))} desi olur.`, 'Kayıtlıya al'))) break;
       const made = [], errs = []; let k = 0;
       const busyN = new Set(), upd = () => { A.bulk = `${k}/${list.length}`; progShow('Barkod oluşturuluyor', k, list.length, [...busyN].join(' · ')); };
-      try { upd(); render(); await pool(list, 2, async o => { busyN.add(o.name); upd();
+      try { upd(); render(); await pool(list, 1, async o => { busyN.add(o.name); upd();
         try { const r = await api('/api/surat/ship', {gid: o.gid, adet: 1, desi: String((S.surat && S.surat.desi) || 2)}); srAddShip(A, r.ship); made.push(r.ship); }
         catch(err) { errs.push(`${o.name}: ${errText(err)}`); }
         busyN.delete(o.name); k++; upd(); }); } finally { progHide(); }
