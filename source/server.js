@@ -3905,10 +3905,10 @@ ${catalog}` });
     if (f) return bad("Bu sipariş Shopify'da kargolandı olarak işlendi; geri alınamaz.");
     // Web servisiyle Sürat'a gönderilmiş kayıtlar Sürat'ta da geri çekilir; çekilemezse yine de bekleyene alınır, uyarı döner
     const { results: rows } = await env.DB.prepare(`SELECT ref, acct, tracking, order_no FROM sr_ship WHERE gid=?1 AND mode='api'`).bind(gid).all(), warn = [], replies = [];
-    for (const x of rows) { try { const r = await srCancel(env, await srCreds(env, x.acct || ''), x.ref, x.tracking); replies.push({ ref: x.ref, ok: r.ok, msg: r.msg }); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { const m = String(e.message || e).slice(0, 200); replies.push({ ref: x.ref, ok: false, msg: m }); warn.push(`${x.ref}: ${m}`); } }
+    if (false) for (const x of rows) { try { const r = await srCancel( /* 21.10.2026: GonderiGeriCek'in ne yaptığı belirsiz ("İşlem Başarılı" dönüyor ama eKargo'da iptal görünmüyor) — Sürat'tan doğru işlem öğrenilene kadar kapalı */env, await srCreds(env, x.acct || ''), x.ref, x.tracking); replies.push({ ref: x.ref, ok: r.ok, msg: r.msg }); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { const m = String(e.message || e).slice(0, 200); replies.push({ ref: x.ref, ok: false, msg: m }); warn.push(`${x.ref}: ${m}`); } }
     if (replies.length) await setSetting(env, 'sr_cancel_last', JSON.stringify({ at: iso(), gid, replies }).slice(0, 2000)); // son iptal cevabı (teşhis için)
     await env.DB.prepare('DELETE FROM sr_ship WHERE gid=?1').bind(gid).run();
-    return json({ ok: true, cancelled: rows.length - warn.length, warn, replies });
+    return json({ ok: true, cancelled: 0, warn, replies, sent: rows.length });
   }
   // ---------- Yeni Shopify siparişi (elle) ----------
   if (path === '/api/shorder/products') {
