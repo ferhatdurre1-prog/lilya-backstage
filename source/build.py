@@ -11,6 +11,9 @@ srv=srv.replace("icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml'
 html=open('source/app.html').read()
 import hashlib
 build=hashlib.sha1((html+srv).encode()).hexdigest()[:10]
+import datetime
+bt=(datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3)))).strftime('%d.%m.%Y %H:%M')  # İstanbul saati
+html=html.replace('__BUILD_TIME__', bt)
 html=html.replace('__BUILD__', build); srv=srv.replace('__BUILD__', build)
 open('src/worker.js','w').write(srv+"\nconst ICON_PNG = '"+b64+"';\nconst ICON_192 = '"+b192+"';\nconst ICON_512 = '"+b512+"';\nconst APP_HTML = "+json.dumps(html, ensure_ascii=False)+";\n")
 print('built', len(srv))
