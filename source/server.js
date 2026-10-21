@@ -3692,7 +3692,7 @@ ${catalog}` });
     return json(out);
   }
   if (path === '/api/surat/diag') {
-    const cr = await srCreds(env), out = { creds: {}, tests: [] };
+    const cr = await srCreds(env, body.acct === 'cod' ? 'cod' : ''), out = { creds: {}, tests: [], acct: cr.acct }; if (body.acct === 'cod' && cr.acct !== 'cod') return bad('Kapıda ödeme carisi kayıtlı değil.');
     const info = (x) => ({ len: x.length, space: /^\s|\s$/.test(x), nonAscii: /[^\x20-\x7e]/.test(x) });
     out.creds = { user: { ...info(cr.user), mask: cr.user.slice(0, 2) + '•••' + cr.user.slice(-2) }, cari: { ...info(cr.cari), mask: cr.cari.slice(0, 2) + '•••' + cr.cari.slice(-2) }, pass: info(cr.pass), web: cr.web ? info(cr.web) : null };
     let sc; try { sc = await srSchema(env, true); out.schema = { ns: sc.ns, create: (sc.alts || []).map(a => a.method + '(' + a.params.map(p => p.name).join(', ') + ')'), query: sc.query ? sc.query.method + '(' + sc.query.params.map(p => p.name).join(', ') + ')' : null, ops: sc.ops }; } catch (e) { out.schema = { err: String(e.message || e) }; return json(out); }
