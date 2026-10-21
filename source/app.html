@@ -860,9 +860,9 @@ function addrIssues(a, o){
   else if (il != null && ilceFind(a.province, a.city) !== a.city.trim()) warn('İlçe yazımı düzeltilebilir → ' + ilceFind(a.province, a.city));
   else if (oddCase(a.city)) warn('İlçe hep büyük/küçük harf');
   const ad = `${a.address1} ${a.address2}`.trim();
-  if (ad.length < 12) bad('Adres çok kısa'); else { if (!/\d/.test(ad)) warn('Bina / kapı no görünmüyor'); if (!/(mah|mh|mahalle|köy|koy|sit|site|bulvar|blv|cad|cd|sok|sk|sokak)/i.test(trFold(ad).length ? ad.toLocaleLowerCase('tr') : ad)) warn('Mahalle / cadde / sokak görünmüyor'); }
+  if (ad.length < 12) bad('Adres çok kısa'); else { if (!/(mah|mh|mahalle|köy|koy|sit|site|bulvar|blv|cad|cd|sok|sk|sokak)/i.test(trFold(ad).length ? ad.toLocaleLowerCase('tr') : ad)) warn('Mahalle / cadde / sokak görünmüyor'); }
   if (/(\+?90|0)?\s?5\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}/.test(ad)) warn('Adresin içinde telefon var');
-  if (a.zip.trim()) { if (!/^\d{5}$/.test(a.zip.trim())) warn('Posta kodu 5 hane olmalı'); else if (il != null && Number(a.zip.slice(0, 2)) !== il + 1) warn('Posta kodu ile il uyuşmuyor'); }
+  // kapı / bina no ve posta kodu sorun sayılmaz (kullanıcı isteği)
   return out;
 }
 function addrFix(a){
