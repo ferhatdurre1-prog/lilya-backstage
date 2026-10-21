@@ -3676,14 +3676,14 @@ ${catalog}` });
       // "Sürat'a online gitti": kapıda ödemeli sipariş Sürat'a yanlışlıkla online gönderildi; Sürat tahsilat yapmaz, müşteriden ayrıca (IBAN) tahsil edilir
       // "Sürat eksik girdi": Sürat kapıda tahsilatı olması gerekenden az girdi; Sürat'ın rakamı esas alınır, aradaki fark müşteriden ayrıca tahsil edilir
       const has = r.sfee !== null && r.sfee !== undefined, sColl = has ? r2(r.scod || 0) : null, sFee = has ? r2(r.sfee || 0) : null, sNet = has ? r2(sColl - sFee) : null;
-      const expColl = cod && !und ? total : 0, short = cod && !!r.fno && r.fkind === 'short' && has, flag = cod && !!r.fno && r.fkind !== 'short';
+      const expColl = cod && !und ? total : 0, short = cod && !!r.fno && r.fkind === 'short' && has, flag = cod && !!r.fno && r.fkind !== 'short' && r.fkind !== 'accept', accept = !!r.fno && r.fkind === 'accept' && has; // accept: küçük fark, Sürat'ın rakamı kabul (müşteriden tahsil yok)
       const owe = flag ? r2(r.famt !== null && r.famt !== undefined ? r.famt : r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0))) : short ? r2(Math.max(0, expColl - sColl)) : 0;
       let eColl = expColl, eFee = r2(und ? base * 1.5 : base + codFee);
       if (flag) { if (has) { eColl = sColl; eFee = sFee; } else { eColl = 0; eFee = r2(und ? base * 1.5 : base); } }
-      if (short) { eColl = sColl; eFee = sFee; }
+      if (short || accept) { eColl = sColl; eFee = sFee; }
       const eNet = r2(eColl - eFee);
       const diff = has ? r2(sNet - eNet) : null, deliv = dlvDay(r.teslim), payDay = cod && !und && deliv ? srPayDay(deliv) : null, planned = dlvDay(r.planned), estPay = cod && !und && !deliv && planned ? srPayDay(planned) : null;
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi: srDesi, miss: 0, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, planned, estPay, durum: r.sdurum || '', flag, short, expColl, owe, opaid: !!r.fpaid, opaidAt: r.fpaid_at || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', desi: srDesi, miss: 0, und, tracking: r.tracking || '', eColl, eFee, eNet, sColl, sFee, sNet, diff, collected: !!r.scoll, deliv, payDay, planned, estPay, durum: r.sdurum || '', flag, short, accept, expColl, owe, opaid: !!r.fpaid, opaidAt: r.fpaid_at || '', st: !has ? 'nodata' : Math.abs(diff) < 1 ? 'ok' : 'diff' });
     }
     const sum = (f, k) => r2(out.filter(f).reduce((a, x) => a + (x[k] || 0), 0)), m = (x) => x.st !== 'nodata';
     return json({ ok: true, items: out, n: out.length, matched: out.filter(m).length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
@@ -3691,7 +3691,7 @@ ${catalog}` });
   }
   if (path === '/api/srcari/online') { // kutucuk: "Sürat'a online gitti" işareti aç/kapat
     const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş yok.');
-    const kind = body.kind === 'short' ? 'short' : 'online';
+    const kind = body.kind === 'short' ? 'short' : body.kind === 'accept' ? 'accept' : 'online';
     if (body.on) await env.DB.prepare('INSERT INTO sr_online(no, amount, paid, at, kind) VALUES(?1, NULL, 0, ?2, ?3) ON CONFLICT(no) DO UPDATE SET kind=excluded.kind, paid=0, paid_at=NULL').bind(no, iso(), kind).run();
     else await env.DB.prepare('DELETE FROM sr_online WHERE no=?1').bind(no).run();
     return json({ ok: true });
