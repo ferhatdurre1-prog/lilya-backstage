@@ -155,7 +155,7 @@ async function init0(env) {
   // Sürat Kargo gönderileri: kendi barkodumuz (OzelKargoTakipNo) ve Sürat'a bildirilen adres
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ship(ref TEXT PRIMARY KEY, gid TEXT, order_no TEXT, adet INTEGER, desi REAL, addr TEXT, lines TEXT, msg TEXT, at TEXT)').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS sr_ship_gid ON sr_ship(gid)').run();
-  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_costreset1'`).first())) {
@@ -1146,17 +1146,22 @@ async function srTrackOne(env, row, cr, c) {
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
 }
 async function srTrackPending(env, limit) {
-  const cr = await srCreds(env); if (!cr.cari || !cr.pass) return null;
+  const cr0 = await srCreds(env); if (!cr0.cari || !cr0.pass) return null;
   if (!limit && Date.now() < (Number(await getSetting(env, 'sr_block_until')) || 0)) return { checked: 0, tracked: 0, fulfilled: 0, items: [], paused: true };
   const c = await shCreds(env);
-  const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
+  const { results: all } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
+  const out = [];
+  for (const acct of ['', 'cod']) { const results = all.filter(r => (r.acct || '') === acct); if (!results.length) continue; const cr = await srCreds(env, acct); if (!cr.pass) continue;
   let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
-  let solo = 0; const out = []; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 90 * 60000)); break; } }
+  let solo = 0; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 90 * 60000)); break; } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
-async function srCreds(env) { const s = await getSettings(env, ['sr_cari', 'sr_user', 'sr_pass', 'sr_web', 'sr_desi']); const cari = env.SURAT_CARI_KODU || s.sr_cari || ''; return { cari, user: env.SURAT_KULLANICI || s.sr_user || cari, pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
+// Sürat: iki cari olabilir: varsayılan (online ödemeli) ve kapıda ödeme carisi (acct='cod'; girilmemişse varsayılan kullanılır)
+async function srCreds(env, acct) { const s = await getSettings(env, ['sr_cari', 'sr_user', 'sr_pass', 'sr_web', 'sr_desi', 'sr2_cari', 'sr2_user', 'sr2_pass', 'sr2_web']);
+  if (acct === 'cod' && s.sr2_pass && (s.sr2_user || s.sr2_cari)) { const cari = s.sr2_cari || s.sr2_user; return { acct: 'cod', cari, user: s.sr2_user || cari, pass: s.sr2_pass, web: s.sr2_web || '', desi: Number(s.sr_desi) || 2 }; }
+  const cari = env.SURAT_CARI_KODU || s.sr_cari || ''; return { acct: '', cari, user: env.SURAT_KULLANICI || s.sr_user || cari, pass: env.SURAT_SIFRE || s.sr_pass || '', web: env.SURAT_WEB_SIFRE || s.sr_web || '', desi: Number(s.sr_desi) || 2 }; }
 const SR_ORDER_Q = `query($id:ID!){order(id:$id){id name email phone cancelledAt displayFulfillmentStatus shippingAddress{${'firstName lastName company address1 address2 city province provinceCode zip country countryCodeV2 phone'}} paymentGatewayNames totalPriceSet{shopMoney{amount}} totalOutstandingSet{shopMoney{amount}}
   lineItems(first:50){nodes{name sku quantity unfulfilledQuantity variant{id} discountedUnitPriceAfterAllDiscountsSet{shopMoney{amount}} image{url}}}}}`;
 function shAddrErr(e) {
@@ -3565,7 +3570,16 @@ ${catalog}` });
     const c = await srCreds(env), s = await getSettings(env, ['sr_err', 'sr_ok']);
     const tk = await getSettings(env, ['sr_track_err', 'sr_mode']);
     const mask = (x) => x ? x.slice(0, 2) + '•••' + x.slice(-2) : '';
-    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
+    const c2 = await srCreds(env, 'cod');
+    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, cod: c2.acct === 'cod' ? { cari: mask(c2.cari), user: mask(c2.user) } : null, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr: tk.sr_track_err || '', ok: s.sr_ok || '' });
+  }
+  if (path === '/api/surat/connect2') {
+    // Kapıda ödeme carisi (ikinci Sürat hesabı); boş gönderilirse kaldırılır
+    if (body.remove) { await env.DB.batch(['sr2_cari', 'sr2_user', 'sr2_pass', 'sr2_web'].map(k => setStmt(env, k, ''))); return json({ ok: true }); }
+    const user = String(body.user || '').trim(), cari = String(body.cari || '').trim() || user, pass = String(body.pass || '').trim();
+    if (!user || !pass) return bad('Kullanıcı adı ve şifre gerekli.');
+    await env.DB.batch([setStmt(env, 'sr2_cari', cari), setStmt(env, 'sr2_user', user), setStmt(env, 'sr2_pass', pass), setStmt(env, 'sr2_web', String(body.web || '').trim())]);
+    return json({ ok: true });
   }
   if (path === '/api/surat/connect') {
     const user = String(body.user || '').trim(), cari = String(body.cari || '').trim() || user, pass = String(body.pass || '').trim(), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2));
@@ -3703,7 +3717,7 @@ ${catalog}` });
         st.push(env.DB.prepare('INSERT INTO sr_rows(takip, day, alici, fee, cod, collected, coll_amt, iade, durum, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(takip) DO UPDATE SET day=COALESCE(excluded.day, sr_rows.day), fee=excluded.fee, cod=excluded.cod, collected=excluded.collected, coll_amt=excluded.coll_amt, iade=excluded.iade, durum=excluded.durum, at=excluded.at')
           .bind(tn, day, get(/^ALICI$/).slice(0, 80), num(get(/^TUTAR$/)), num(get(/^KAPIDANTAHSILATTUTARI$/)), coll ? 1 : 0, num(get(/^TAHSILATTUTARI$/)), get(/^IADEDURUM$/).slice(0, 20), (get(/^TESLIMATDURUM$/) || get(/^BULUNDUGUYER$/)).slice(0, 60), iso())); }
       for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
-    const cr = await srCreds(env), c = await shCreds(env);
+    const cr = await srCreds(env), c = await shCreds(env); let crCod = null;
     const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND COALESCE(mode,'') <> 'manual' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
     const out = [], miss = [], fixed = []; let already = 0;
     const costSt = [];
@@ -3715,7 +3729,7 @@ ${catalog}` });
         try { if (shConfigured(c)) await shFixTracking(env, c, r.gid, tn); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(r.ref, tn, 'Sürat raporundan düzeltildi (önceki: ' + (r.tracking || '-') + ')', iso()).run(); fixed.push(r.order_no); out.push({ ref: r.ref, tracking: tn, fulfilled: true, fixed: true }); }
         catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } continue; }
       r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat raporundan';
-      try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
+      try { out.push(await srTrackOne(env, r, (r.acct === 'cod' ? (crCod = crCod || await srCreds(env, 'cod')) : cr), c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
     for (let i = 0; i < costSt.length; i += 90) await env.DB.batch(costSt.slice(i, i + 90));
     if (costSt.length) await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-17'), setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true, costs: costSt.length, undelivered: 0, rows: rows.length, pending: results.filter(r => !r.fulfilled_at).length, tracked: out.filter(x => !x.fixed).length, fulfilled: out.filter(x => x.fulfilled && !x.fixed).length, fixed: fixed.length, fixedList: fixed.slice(0, 30), already, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
@@ -3723,11 +3737,12 @@ ${catalog}` });
   if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/track') {
-    if (body.number === undefined) { const cr1 = await srCreds(env), row1 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
+    const acctRow = await env.DB.prepare('SELECT acct FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(), acct = acctRow && acctRow.acct || '';
+    if (body.number === undefined) { const cr1 = await srCreds(env, acct), row1 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
       if (row1 && !row1.tracking && row1.mode === 'api' && cr1.user) { try { const fb = await srFetchBarcode(env, cr1, row1.ref); if (fb.barcode) { row1.tracking = fb.barcode; row1.track_msg = 'Sürat barkodu'; return json({ ok: true, r: await srTrackOne(env, row1, cr1, await shCreds(env)) }); } await env.DB.prepare("UPDATE sr_ship SET msg=substr(COALESCE(msg,''),1,300) || ' ‖ Barkod sorgusu: ' || ?2 WHERE ref=?1").bind(row1.ref, fb.log.join(' / ').slice(0, 700)).run(); return json({ ok: true, r: { ref: row1.ref, tracking: '', msg: 'Barkod sorgusu: ' + fb.log.join(' / '), fulfilled: false, err: '' }, barcodeLog: fb.log }); } catch (e) { return json({ ok: true, r: { ref: row1.ref, tracking: '', msg: 'Barkod sorgusu hatası: ' + String(e.message || e), fulfilled: false, err: '' } }); } } }
-    if (body.number === undefined) { const cr0 = await srCreds(env), row0 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
+    if (body.number === undefined) { const cr0 = await srCreds(env, acct), row0 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
       if (row0 && !row0.tracking && cr0.cari) { try { const L = await srList(env, cr0, 6), m = L && srMatch(L.rows, row0), tn = m && srRowTrack(m); if (tn) { row0.tracking = tn; row0.track_msg = srRowState(m) || 'Sürat listesinden'; return json({ ok: true, r: await srTrackOne(env, row0, cr0, await shCreds(env)) }); } } catch (e) {} } }
-    const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
+    const cr = await srCreds(env, acct); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
     const row = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(); if (!row) return bad('Bu siparişin Sürat barkodu yok.');
     if (body.number !== undefined) { const n = String(body.number || '').toLocaleUpperCase('tr').replace(/[^A-Z0-9]/g, ''); if (n.length < 8 || (n.match(/\d/g) || []).length < 6) return bad('Takip numarası en az 8 karakter olmalı (Sürat eKargo\'daki "Kargo Takip No").');
       if (row.fulfilled_at) { const c0 = await shCreds(env); try { if (shConfigured(c0)) await shFixTracking(env, c0, row.gid, n); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(row.ref, n, 'Elle düzeltildi (önceki: ' + (row.tracking || '-') + ')', iso()).run(); return json({ ok: true, r: { ref: row.ref, tracking: n, fulfilled: true, fixed: true } }); } catch (e) { return bad(String(e.message || e)); } }
@@ -3739,7 +3754,7 @@ ${catalog}` });
   // Sürat Excel: yüklenmeyi bekleyen (ya da son 7 günün) gönderileri; indirildikten sonra işaretlenir
   if (path === '/api/surat/export') {
     const all = !!body.all;
-    const { results } = await env.DB.prepare(`SELECT ref, gid, order_no, adet, desi, addr, lines, at, exported_at FROM sr_ship s WHERE COALESCE(mode,'excel')='excel' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND ${all ? 'at > ?1' : 'exported_at IS NULL AND at > ?1'} ORDER BY at`).bind(iso(Date.now() - (all ? 7 : 30) * 86400000)).all();
+    const { results } = await env.DB.prepare(`SELECT ref, gid, order_no, adet, desi, addr, lines, at, exported_at, acct FROM sr_ship s WHERE COALESCE(mode,'excel')='excel' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND ${all ? 'at > ?1' : 'exported_at IS NULL AND at > ?1'} ORDER BY at`).bind(iso(Date.now() - (all ? 7 : 30) * 86400000)).all();
     return json({ ok: true, ships: results.map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) });
   }
   if (path === '/api/surat/exported') {
@@ -3827,10 +3842,11 @@ ${catalog}` });
     const cd = shCod(o); let codTip = cd.tip, cod = cd.amt;
     if (body.codTip != null) { codTip = [0, 1, 2].includes(Number(body.codTip)) ? Number(body.codTip) : cd.tip; const t = String(body.cod ?? cod).trim(); cod = codTip ? r2(Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t) || 0) : 0; }
     if (codTip && !(cod > 0)) return bad('Kapıda ödeme tutarı girilmeli.');
+    const acct = codTip ? 'cod' : '', crS = await srCreds(env, acct); if (crS.pass) Object.assign(cr, crS); // kapıda ödemeli gönderi kapıda ödeme carisinden
     const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: codTip, kapidanodemetutari: codTip ? cod : 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: codTip ? 'LH' : '', irsaliyesirano: codTip ? String(o.name || '').replace(/\D/g, '') + (ref.length > base.length ? ref.slice(base.length) : '') : '' }; // kapıda ödemede Sürat irsaliye seri/sıra no istiyor
     let res; if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); if (!res.barcode && /daha [öo]nce/i.test(res.msg)) { const fb = await srFetchBarcode(env, cr, ref); if (fb.barcode) res.barcode = fb.barcode; errs.push('barkod sorgusu: ' + fb.log.join(' / ')); } if (errs.length) res.msg = res.msg + ' ‖ ' + errs.join(' | '); break; } catch (e1) { errs.push(a.method.replace('GonderiyiKargoyaGonder', '…') + ': ' + String(e1.message || e1).slice(0, 220)); } } if (!res) throw new Error(errs.join(' | ')); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
     const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik, codTip, cod };
-    await env.DB.batch([env.DB.prepare(`DELETE FROM sr_ship WHERE gid=?1 AND mode='manual'`).bind(gid), env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel'), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
+    await env.DB.batch([env.DB.prepare(`DELETE FROM sr_ship WHERE gid=?1 AND mode='manual'`).bind(gid), env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode,acct) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel', cr.acct || ''), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
     // Sürat barkodu geldiyse takip no hemen Shopify'a işlenir (Trendyol'daki gibi)
     let trk = null; if (res.barcode) { try { trk = await srTrackOne(env, { ref, gid, order_no: o.name, tracking: res.barcode, track_msg: 'Sürat barkodu', fulfilled_at: null }, cr, c); } catch (e) { trk = { err: String(e.message || e) }; } }
     return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), mode: apiMode ? 'api' : 'excel', tracking: res.barcode || null, fulfilled_at: trk && trk.fulfilled ? iso() : null, fulfill_err: trk && trk.err || null, total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
