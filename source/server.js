@@ -2498,7 +2498,7 @@ async function computeProfit(env, from, to, ch0) {
       if (g.defVal > 0) penalty += penaltyFor(g.defVal); cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (desi yok, 1 sayıldı)'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
     else if (ch === 'shopify' && rows.some(x => x.qty > 0 || x.retQ > 0)) {
       // Shopify kuralları: 700 TL altı müşteri 100 TL kargo öder; kapıda nakit +50 TL, kapıda kart +100 TL (müşteriden). Gider: kargo firmasının ücreti
-      const no = String(ord.order_no || '').replace(/\D/g, ''), bk = bkMap.get(no), pay = shPay.get(no), post = String(ord.date || '') >= SURAT_DIRECT_FROM;
+      const no = String(ord.order_no || '').replace(/\D/g, ''), bk = bkMap.get(no), pay = shPay.get(no), post = String(ord.date || '') >= SURAT_DIRECT_FROM && !(bk && bk.fee !== null && bk.fee !== undefined); // Basit Kargo ücreti olan sipariş tarihi ne olursa olsun Basit Kargo
       const gross = rows.reduce((a, x) => a + x.full, 0);
       let cod = null, card = false; if (bk && !post) { cod = !!bk.cod; card = bk.cod_type === 'CREDIT_CARD'; } else if (pay) { cod = !!pay.cod; card = !!pay.card; }
       const shipInc = gross > 0 && gross < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codInc = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0; shInc = shipInc + codInc;
@@ -3475,11 +3475,12 @@ ${catalog}` });
       const L = nodes.filter(o => !o.test && !o.cancelledAt);
       const nos = L.map(o => String(o.name || '').replace(/\D/g, '')), gids = L.map(o => o.id);
       const cost = new Map((nos.length ? await selectIn(env, 'SELECT no, tracking, cost, undelivered FROM sr_cost', 'no', nos) : []).map(r => [r.no, r]));
+      const bkm = new Map((nos.length ? await selectIn(env, 'SELECT no, fee, handler FROM bk_ship', 'no', nos) : []).filter(r => r.fee !== null && r.fee !== undefined).map(r => [r.no, r]));
       const ship = new Map(); for (const r of (gids.length ? await selectIn(env, 'SELECT gid, tracking, at FROM sr_ship', 'gid', gids) : [])) { const p = ship.get(r.gid); if (!p || String(r.at) > String(p.at)) ship.set(r.gid, r); }
       const orders = L.map(o => { const no = String(o.name || '').replace(/\D/g, ''), pr = shPayRow(o), sc = cost.get(no), sh = ship.get(o.id), a = o.shippingAddress || {};
         const shTrack = ((o.fulfillments || []).filter(f => f.status !== 'CANCELLED').flatMap(f => f.trackingInfo || []).map(t => t.number).filter(Boolean))[0] || '';
         return { gid: o.id, name: o.name, createdAt: o.createdAt, customer: a.name || '', city: [a.city, a.province].filter(Boolean).join(' / '), total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0,
-          method: pr.cod ? (pr.card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', tracking: (sh && sh.tracking) || shTrack || '', shTrack, srData: !!(sc && (sc.cost !== null || sc.undelivered)) }; });
+          method: pr.cod ? (pr.card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', tracking: (sh && sh.tracking) || shTrack || '', shTrack, basit: bkm.has(no), srData: !!(sc && (sc.cost !== null || sc.undelivered)) }; });
       return json({ ok: true, orders, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
   }
@@ -3655,11 +3656,11 @@ ${catalog}` });
   if (path === '/api/srcari/recon') {
     // Sipariş bazında Sürat mutabakatı (17.10.2026 10:00 sonrası Shopify): bizim beklediğimiz (tahsilat − ücret) ile Sürat raporundaki (tahsilat − ücret)
     const rs = await reportStart(env), from = iso(Math.max(Date.parse(SURAT_DIRECT_FROM), /^\d{4}-\d{2}-\d{2}$/.test(rs || '') ? dayStartTR(rs) : 0));
-    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, c.planned, c.desi cdesi, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday, so.no fno, so.amount famt, so.paid fpaid, so.paid_at fpaid_at, so.kind fkind
-      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN sr_rows s ON s.takip = c.tracking LEFT JOIN sr_online so ON so.no = replace(o.order_no,'#','')
+    const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, c.planned, c.desi cdesi, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday, so.no fno, so.amount famt, so.paid fpaid, so.paid_at fpaid_at, so.kind fkind, bk.fee bkfee
+      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN sr_rows s ON s.takip = c.tracking LEFT JOIN sr_online so ON so.no = replace(o.order_no,'#','') LEFT JOIN bk_ship bk ON bk.no = replace(o.order_no,'#','')
       WHERE o.channel='shopify' AND o.date >= ?1 ORDER BY o.date DESC LIMIT 2000`).bind(from), env.DB.prepare('SELECT key, desi FROM products')]);
     const fee = await loadFees(env), dz = new Map(pR.results.map(x => [x.key, Number(x.desi) || null])), out = [];
-    for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'); if (!act.length) continue;
+    for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'); if (!act.length) continue; if (r.bkfee !== null && r.bkfee !== undefined) continue; // Basit Kargo ile gönderilmiş
       const cod = !!r.cod, card = !!r.card, sub = r2(r.subtotal !== null ? r.subtotal : act.reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0));
       const total = r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0) + (cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0));
       let d = 0, miss = 0; for (const l of act) { const x = dz.get(l.pkey); if (x) d += x * l.qty; else { miss++; d += l.qty; } } const ourDesi = Math.ceil(d - 1e-9), srDesi = Number(r.cdesi) > 0 ? Number(r.cdesi) : null, desi = srDesi !== null ? Math.ceil(srDesi - 1e-9) : ourDesi; // Sürat'ın ölçtüğü desi varsa hesap onunla
@@ -3703,14 +3704,14 @@ ${catalog}` });
     // Shopify hesap kontrolü: beklenen tutar (ürün + 700 TL altı 100 TL kargo + kapıda nakit 50 / kart 100) ile Shopify'ın tahsil ettiği ve kargonun topladığı tutar karşılaştırılır
     let from = String(body.from || ''), to = String(body.to || ''); if (!from || !to) return bad('Tarih aralığı yok.');
     const rs = await reportStart(env); if (/^\d{4}-\d{2}-\d{2}$/.test(rs || '')) { const a = iso(dayStartTR(rs)); if (from < a) from = a; }
-    const { results } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.gateway, p.cod, p.card, p.subtotal, p.ship, p.total, c.cod_amount sr_cod, c.undelivered, b.cod bk_cod, b.cod_type bk_type, b.cod_amount bk_amt
+    const { results } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.gateway, p.cod, p.card, p.subtotal, p.ship, p.total, c.cod_amount sr_cod, c.undelivered, b.cod bk_cod, b.cod_type bk_type, b.cod_amount bk_amt, b.fee bk_fee
       FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN bk_ship b ON b.no = replace(o.order_no,'#','')
       WHERE o.channel='shopify' AND o.date >= ?1 AND o.date < ?2 ORDER BY o.date DESC`).bind(from, to).all();
     const out = []; let checked = 0, noData = 0;
     for (const r of results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {}
       if (!lines.some(l => l.status !== 'cancelled')) continue; // iptal
       if (r.total === null || r.total === undefined) { noData++; continue; }
-      const post = String(r.date || '') >= SURAT_DIRECT_FROM;
+      const post = String(r.date || '') >= SURAT_DIRECT_FROM && (r.bk_fee === null || r.bk_fee === undefined);
       const cod = !post && r.bk_cod !== null && r.bk_cod !== undefined ? !!r.bk_cod : !!r.cod, card = !post && r.bk_type ? r.bk_type === 'CREDIT_CARD' : !!r.card;
       const sub = r2(r.subtotal !== null ? r.subtotal : lines.filter(l => l.status !== 'cancelled').reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0));
       const shipE = sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codE = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0, exp = r2(sub + shipE + codE);
