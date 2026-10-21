@@ -2419,7 +2419,7 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
     env.DB.prepare(`SELECT * FROM paytr_tx WHERE tip='S' AND tarih >= ?1 AND tarih <= ?2`).bind(addDay(dayFrom, -1), addDay(dayTo, 1)),
     env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
-  const ptLk = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, ptLinkNo = new Map(ptLk.filter(x => x.kind === 'match').map(x => [x.no, x.k])), ptLinkedK = new Set(ptLk.map(x => x.k));
+  const ptLk = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, ptLinkNo = new Map(ptLk.filter(x => x.kind === 'match').map(x => [x.no, x.k])), ptSelf = new Set(ptLk.filter(x => x.kind === 'self').map(x => x.no)), ptLinkedK = new Set(ptLk.map(x => x.k));
   const ptTx = ptR.results, ptUsed = new Set(), ptRate = ptTx.filter(x => x.oran > 0).reduce((a, x, i, arr) => a + x.oran / arr.length, 0);
   const ptFind = (no, total, day, txIds) => { if (ptLinkNo.has(no)) { const lm = ptTx.find(x => x.k === ptLinkNo.get(no)); if (lm) { ptUsed.add(lm.k); return lm; } } let m = ptTx.find(x => !ptUsed.has(x.k) && !ptLinkedK.has(x.k) && String(x.siparis_no || '').replace(/\D/g, '') === no);
     if (!m && txIds && txIds.length) m = ptTx.find(x => !ptUsed.has(x.k) && !ptLinkedK.has(x.k) && x.siparis_no && txIds.some(t => t && (t === x.siparis_no || t.includes(x.siparis_no))));
@@ -2523,7 +2523,7 @@ async function computeProfit(env, from, to, ch0) {
       let cod = null, card = false; if (bk && !post) { cod = !!bk.cod; card = bk.cod_type === 'CREDIT_CARD'; } else if (pay) { cod = !!pay.cod; card = !!pay.card; } if (ptLinkNo.has(no)) { cod = false; card = false; } // PayTR'den kartla ödendiği elle eşlendi
       const shipInc = gross > 0 && gross < SH_FREE_SHIP ? SH_SHIP_FEE : 0, codInc = cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0; shInc = shipInc + codInc;
       const pm = cod === null ? 'ödeme yöntemi bilinmiyor (online sayıldı)' : cod ? (card ? 'kapıda kart' : 'kapıda nakit') : 'online';
-      if (cod === false || (cod === null && pay)) { const m = ptFind(no, r2(gross + shInc), trDay(Date.parse(ord.date)), pay && pay.tx ? String(pay.tx).split(' ') : null); if (m && m.kesinti !== null) { ptFee = r2(m.kesinti); ptTxt = ` · PayTR komisyonu ${ptFee} TL`; } else if (ptRate > 0) { ptFee = r2((gross + shInc) * ptRate / 100); ptTxt = ` · PayTR komisyonu tahmini %${r2(ptRate)} (${ptFee} TL)`; } }
+      if (ptSelf.has(no)) { ptTxt = ' · ödeme PayTR dışı alındı (komisyon yok)'; } else if (cod === false || (cod === null && pay)) { const m = ptFind(no, r2(gross + shInc), trDay(Date.parse(ord.date)), pay && pay.tx ? String(pay.tx).split(' ') : null); if (m && m.kesinti !== null) { ptFee = r2(m.kesinti); ptTxt = ` · PayTR komisyonu ${ptFee} TL`; } else if (ptRate > 0) { ptFee = r2((gross + shInc) * ptRate / 100); ptTxt = ` · PayTR komisyonu tahmini %${r2(ptRate)} (${ptFee} TL)`; } }
       const incTxt = shInc ? ` · müşteriden ${[shipInc ? 'kargo ' + shipInc + ' TL' : '', codInc ? 'kapıda ödeme ' + codInc + ' TL' : ''].filter(Boolean).join(' + ')} satışa eklendi` : '';
       if (post) { // 17.10.2026 10:00 sonrası: anlaşmalı Sürat. Sürat raporu yüklendiyse gerçek ücret (KDV + posta vergisi dahil), yoksa tarife (+%2,35 posta vergisi sadece kargoya) + kapıda ödeme bedeli
         let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null; if (dz === null) { miss++; d += q; } else d += dz * q; }
@@ -3567,10 +3567,11 @@ ${catalog}` });
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs));
     const [oR, tR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.subtotal, p.total, p.tx, p.gateway, p.delivered shd, s.teslim srd, b.delivered bkd FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost s ON s.no = replace(o.order_no,'#','') LEFT JOIN bk_ship b ON b.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1 AND ((p.no IS NOT NULL AND COALESCE(p.cod,0)=0) OR replace(o.order_no,'#','') IN (SELECT no FROM pt_link WHERE kind='match')) ORDER BY o.date`).bind(from),
       env.DB.prepare(`SELECT * FROM paytr_tx WHERE tarih >= ?1 ORDER BY tarih`).bind(addDayStr(rs, -1)), env.DB.prepare('SELECT * FROM pt_payout WHERE day >= ?1 ORDER BY day DESC').bind(rs)]);
-    const sales = tR.results.filter(x => x.tip === 'S'), refunds = tR.results.filter(x => x.tip === 'I'), used = new Set(), out = [];
+    const sales = tR.results.filter(x => x.tip === 'S'), refunds = tR.results.filter(x => x.tip === 'I'), used = new Set(), out = [], selfList = [];
     // Elle eşleme / yok sayma (turuncu kutudaki düğmeler)
-    const lkR = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, linkNo = new Map(lkR.filter(x => x.kind === 'match').map(x => [x.no, x.k])), linkedK = new Set(lkR.map(x => x.k)), ignK = new Set(lkR.filter(x => x.kind === 'ignore').map(x => x.k));
+    const lkR = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, selfNo = new Set(lkR.filter(x => x.kind === 'self').map(x => x.no)), linkNo = new Map(lkR.filter(x => x.kind === 'match').map(x => [x.no, x.k])), linkedK = new Set(lkR.map(x => x.k)), ignK = new Set(lkR.filter(x => x.kind === 'ignore').map(x => x.k));
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'); if (!act.length) continue;
+      if (selfNo.has(String(r.order_no || '').replace(/\D/g, ''))) { selfList.push({ id: r.id, orderNo: r.order_no, date: r.date, exp: r2(r2(r.subtotal !== null ? r.subtotal : act.reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0)) + ((r.subtotal || 0) > 0 && (r.subtotal || 0) < SH_FREE_SHIP ? SH_SHIP_FEE : 0)) }); continue; } // PayTR dışı tahsil (ödemeyi ben aldım)
       const sub = r2(r.subtotal !== null ? r.subtotal : act.reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0)), exp = r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0)), day = trDay(Date.parse(r.date)), ids = String(r.tx || '').split(' ').filter(Boolean);
       const ono = String(r.order_no || '').replace(/\D/g, ''), man = linkNo.has(ono), free = x => !used.has(x.k) && !linkedK.has(x.k);
       let m = man ? sales.find(x => x.k === linkNo.get(ono)) || null : null;
@@ -3596,9 +3597,16 @@ ${catalog}` });
     const today = trToday(), dueM = new Map(); for (const x of out) if (x.st !== 'nodata' && !x.paid && x.due) { const g = dueM.get(x.due) || { day: x.due, net: 0, n: 0 }; g.net = r2(g.net + (x.net || 0)); g.n++; dueM.set(x.due, g); }
     const dueList = [...dueM.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => ({ ...g, late: g.day < today }));
     const pend = mm('net', x => !x.paid), paidTot = r2(pR.results.reduce((a, x) => a + (x.net || 0), 0));
-    return json({ ok: true, ignored, items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
+    return json({ ok: true, ignored, self: selfList.reverse(), items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { exp: mm('exp'), pt: mm('pt'), kes: mm('kes'), net: mm('net'), pend, paid: paidTot, refunds: r2(refunds.reduce((a, x) => a + (x.tutar || 0), 0)) },
       lag: lags.length ? { min: lags[0], max: lags[lags.length - 1], med: lags[Math.floor(lags.length / 2)], n: lags.length } : null, lagD: st3('dlag'), dueList, noDue: out.filter(x => x.st !== 'nodata' && !x.paid && !x.due).length, delivN: out.filter(x => x.deliv).length, payouts: pR.results.slice(0, 60), orphan: orphan.slice(0, 50), orphanN: orphan.length });
+  }
+  if (path === '/api/paytr/self') { // "Ödemeyi ben aldım": sipariş PayTR dışı tahsil edildi (mutabakattan çıkar, kârda PayTR komisyonu düşülmez) / geri al
+    const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş yok.');
+    if (body.on === false) await env.DB.prepare(`DELETE FROM pt_link WHERE k=?1`).bind('self:' + no).run();
+    else await env.DB.prepare(`INSERT INTO pt_link(k, no, kind, at) VALUES(?1,?2,'self',?3) ON CONFLICT(k) DO UPDATE SET kind='self', at=excluded.at`).bind('self:' + no, no, iso()).run();
+    await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-01'), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true });
   }
   if (path === '/api/paytr/link') { // PayTR işlemini elle bir Shopify siparişine bağla / yok say / geri al
     const k = String(body.k || ''), kind = body.kind === 'ignore' ? 'ignore' : body.kind === 'remove' ? 'remove' : 'match';
