@@ -1149,7 +1149,7 @@ async function srTrackPending(env, limit) {
   const cr = await srCreds(env); if (!cr.cari || !cr.pass) return null;
   if (!limit && Date.now() < (Number(await getSetting(env, 'sr_block_until')) || 0)) return { checked: 0, tracked: 0, fulfilled: 0, items: [], paused: true };
   const c = await shCreds(env);
-  const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
+  const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
   let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
   let solo = 0; const out = []; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 90 * 60000)); break; } }
@@ -2624,7 +2624,7 @@ async function syncInfo(env) {
   try { const r = await env.DB.prepare(`SELECT COUNT(*) n FROM sh_unf WHERE data IS NOT NULL AND data <> '{}'`).first(); newOrders.sh = r ? r.n || 0 : 0; } catch (e) {} // Shopify: gönderilmemiş siparişler
   // Uyarı bandı: bir günden eski bekleyen Trendyol paketleri, takip no'su gelmemiş Sürat barkodları (son 14 gün)
   try { const r = await env.DB.prepare(`SELECT COUNT(DISTINCT order_no) n FROM audit_pkg WHERE status IN ('Created','Picking') AND day >= ?1 AND day < ?2`).bind(trDay(Date.now() - 30 * 86400000), trDay(Date.now() - 86400000)).first(); newOrders.old = r ? r.n || 0 : 0; } catch (e) {}
-  try { const r = await env.DB.prepare(`SELECT COUNT(*) n FROM sr_ship WHERE (tracking IS NULL OR tracking = '') AND fulfilled_at IS NULL AND at >= ?1`).bind(iso(Date.now() - 14 * 86400000)).first(); newOrders.srWait = r ? r.n || 0 : 0; } catch (e) {}
+  try { const r = await env.DB.prepare(`SELECT COUNT(*) n FROM sr_ship WHERE (tracking IS NULL OR tracking = '') AND fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at >= ?1`).bind(iso(Date.now() - 14 * 86400000)).first(); newOrders.srWait = r ? r.n || 0 : 0; } catch (e) {}
   return { usage, rev: s.rev, settings: { reportStart: s.report_start || '', startedAt: s.started_at, autoAccept: s.auto_accept !== '0', prodInitial: s.ty_prod_initial !== '0', pushStock: s.ty_push !== '0', fees: { cargoT1: Number(s.fee_cargo_t1 ?? 46.49), cargoT2: Number(s.fee_cargo_t2 ?? 84.49), cargoT3: Number(s.fee_cargo_t3 ?? 98.35), desiMode: s.cargo_desi_mode === '1', desiTables: parseDesiTables(s.desi_tables), desiTable: parseDesiTable(s.desi_table), desiLearned: learnedTable(s.desi_learned), srSms: Number(s.sr_sms_fee ?? 3.07), srSmsUntil: s.sr_sms_until || '', shComm: Number(s.fee_sh_comm ?? 3), packOrderSh: Number(s.fee_pack_order_sh ?? 4), packUnitSh: Number(s.fee_pack_unit_sh ?? 1), packOrder: Number(s.fee_pack_order ?? 2), packUnit: Number(s.fee_pack_unit ?? 1), serviceTy: Number(s.fee_service_ty ?? 13.19), serviceFast: Number(s.fee_service_fast ?? 5.99), serviceCutoff: Number(s.service_cutoff ?? 15), baremMaxDesi: Number(s.barem_max_desi ?? 10), cargoSh: Number(s.fee_cargo_sh ?? 0), stopaj: Number(s.stopaj ?? 1) }, lastImport: s.last_import ? JSON.parse(s.last_import) : null }, sync: { trendyol: { configured: tyConfigured(env), ok: s.ty_ok || null, err: s.ty_err || '', productsAt: s.ty_prod_done || null, pushAt: s.ty_push_at || null, pushCount: Number(s.ty_push_count) || 0, pushErr: s.ty_push_err || '', pushFail: s.ty_push_fail || '', finAt: s.fin_at || null, finErr: s.fin_err || '', finStat: (() => { try { return JSON.parse(s.fin_stat || 'null'); } catch (e) { return null; } })(), cargoCheck: (() => { try { return JSON.parse(s.fin_cargo_check || 'null'); } catch (e) { return null; } })(), diag: (() => { try { return JSON.parse(s.ty_diag || 'null'); } catch (e) { return null; } })(), gaps: (() => { try { return JSON.parse(s.cron_gaps || '[]'); } catch (e) { return []; } })(), backfill: s.fin_backfill_day || null, newOrders, qnaWaiting: Number(s.qna_waiting) || 0, usage: (() => { try { return JSON.parse(s.usage_avg || 'null'); } catch (e) { return null; } })(), qnaErr: s.qna_err || '', hook: { on: !!s.hook_id, at: s.hook_at || '', err: s.hook_err || '' }, perf: (() => { try { return JSON.parse(s.perf_profit || 'null'); } catch (e) { return null; } })() } }, now: iso(), version: APP_VERSION, build: APP_BUILD };
 }
 /* ---------- piyasa bandı (döviz, borsa, emtia) ---------- */
@@ -3704,7 +3704,7 @@ ${catalog}` });
           .bind(tn, day, get(/^ALICI$/).slice(0, 80), num(get(/^TUTAR$/)), num(get(/^KAPIDANTAHSILATTUTARI$/)), coll ? 1 : 0, num(get(/^TAHSILATTUTARI$/)), get(/^IADEDURUM$/).slice(0, 20), (get(/^TESLIMATDURUM$/) || get(/^BULUNDUGUYER$/)).slice(0, 60), iso())); }
       for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
     const cr = await srCreds(env), c = await shCreds(env);
-    const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
+    const { results } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND COALESCE(mode,'') <> 'manual' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
     const out = [], miss = [], fixed = []; let already = 0;
     const costSt = [];
     for (const r of results) { const m = srMatch(rows, r), tn = m && srRowTrack(m);
@@ -3749,6 +3749,13 @@ ${catalog}` });
     return json({ ok: true, at: now });
   }
   // Kayıtlı → bekleyen: siparişin Sürat barkodu kaydı silinir (etiket kullanılmayacaksa)
+  if (path === '/api/surat/mark') {
+    // Elle "Kayıtlı"ya al: Sürat barkodu oluşturulmadan sipariş Kayıtlı sekmesine geçer (başka yolla gönderildi vb.); "Bekleyene geri al" ile geri döner
+    const L = (Array.isArray(body.orders) ? body.orders : []).filter(x => /^gid:\/\/shopify\/Order\/\d+$/.test(String(x.gid || ''))).slice(0, 300); if (!L.length) return bad('Sipariş seçilmedi.');
+    const at = iso(), st = L.map(x => env.DB.prepare(`INSERT OR IGNORE INTO sr_ship(ref, gid, order_no, adet, desi, addr, lines, msg, at, mode, exported_at) VALUES(?1,?2,?3,0,0,'{}','[]',?4,?5,'manual',?5)`).bind('EL' + String(x.gid).replace(/\D/g, ''), x.gid, String(x.name || '').slice(0, 40), 'Elle kayıtlıya alındı', at));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    return json({ ok: true, n: L.length, ships: L.map(x => ({ ref: 'EL' + String(x.gid).replace(/\D/g, ''), gid: x.gid, order_no: x.name, adet: 0, desi: 0, addr: {}, lines: [], msg: 'Elle kayıtlıya alındı', at, mode: 'manual', exported_at: at })) });
+  }
   if (path === '/api/surat/unship') {
     const gid = String(body.gid || ''); if (!gid) return bad('Sipariş bulunamadı.');
     const f = await env.DB.prepare('SELECT 1 FROM sr_ship WHERE gid=?1 AND fulfilled_at IS NOT NULL').bind(gid).first();
