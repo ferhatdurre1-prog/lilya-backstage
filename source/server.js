@@ -87,6 +87,7 @@ async function init0(env) {
   await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s)));
   await env.DB.prepare(`INSERT OR IGNORE INTO settings(k,v) VALUES('started_at',?1)`).bind(iso()).run();
   try { await env.DB.prepare('ALTER TABLE sr_online ADD COLUMN kind TEXT').run(); } catch (e) { /* sütun zaten var */ }
+  try { await env.DB.prepare('ALTER TABLE sr_rows ADD COLUMN cancelled INTEGER').run(); } catch (e) {} // hatalı / iptal edilen Sürat kaydı (cari ve listelerden çıkar)
   try { await env.DB.prepare(`UPDATE settings SET v='3.77' WHERE k='sr_sms_fee' AND v IN ('3.07','3,07')`).run(); } catch (e) {} // 21.10.2026: kapıda ödemeli SMS 3,77 TL
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ty_qty INTEGER').run(); } catch (e) { /* sütun zaten var */ }
   let priceCol = false;
@@ -3708,10 +3709,10 @@ ${catalog}` });
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
   if (path === '/api/srcari/summary') {
     // Sürat cari: alacak = kapıda tahsil edilen; borç = kargo ücretleri; hareketler = Sürat'ın aktardığı (in) / bizim ödediğimiz (out) / düzeltme
-    const t = await env.DB.prepare(`SELECT COUNT(*) n, SUM(fee) fee, SUM(CASE WHEN cod>0 THEN cod END) codAll, SUM(CASE WHEN cod>0 THEN 1 END) codN, SUM(CASE WHEN cod>0 AND collected=1 THEN COALESCE(NULLIF(coll_amt,0), cod) END) coll, SUM(CASE WHEN cod>0 AND collected=1 THEN 1 END) collN, SUM(CASE WHEN cod>0 AND collected=0 THEN cod END) pend, MIN(day) a, MAX(day) b FROM sr_rows`).first();
+    const t = await env.DB.prepare(`SELECT COUNT(*) n, SUM(fee) fee, SUM(CASE WHEN cod>0 THEN cod END) codAll, SUM(CASE WHEN cod>0 THEN 1 END) codN, SUM(CASE WHEN cod>0 AND collected=1 THEN COALESCE(NULLIF(coll_amt,0), cod) END) coll, SUM(CASE WHEN cod>0 AND collected=1 THEN 1 END) collN, SUM(CASE WHEN cod>0 AND collected=0 THEN cod END) pend, MIN(day) a, MAX(day) b FROM sr_rows WHERE COALESCE(cancelled,0)=0`).first();
     const mv = (await env.DB.prepare('SELECT * FROM sr_mov WHERE deleted=0 ORDER BY day DESC, id DESC LIMIT 200').all()).results;
     // Ödeme takvimi: teslim edilen kapıda ödemeli gönderiler, teslim haftasının ertesi haftası perşembe
-    const { results: cr } = await env.DB.prepare(`SELECT s.takip, s.cod, s.coll_amt, s.collected, c.teslim FROM sr_rows s LEFT JOIN sr_cost c ON c.tracking = s.takip WHERE s.cod > 0`).all();
+    const { results: cr } = await env.DB.prepare(`SELECT s.takip, s.cod, s.coll_amt, s.collected, c.teslim FROM sr_rows s LEFT JOIN sr_cost c ON c.tracking = s.takip WHERE s.cod > 0 AND COALESCE(s.cancelled,0)=0`).all();
     const today = trToday(), sch = new Map(); let noDl = 0, noDlAmt = 0;
     for (const x of cr) { const dl = dlvDay(x.teslim), amt = r2(x.collected && x.coll_amt ? x.coll_amt : x.cod || 0); if (!dl) { if (x.collected) { noDl++; noDlAmt = r2(noDlAmt + amt); } continue; }
       const pd = srPayDay(dl), g = sch.get(pd) || { day: pd, amount: 0, n: 0 }; g.amount = r2(g.amount + amt); g.n++; sch.set(pd, g); }
@@ -3747,11 +3748,26 @@ ${catalog}` });
     }
     // Sürat raporunda olup hiçbir Shopify siparişine bağlanmayan gönderiler (eski/hatalı kayıtlar, Trendyol'un Sürat gönderileri vb.)
     const used = new Set(out.map(x => x.tracking).filter(Boolean));
-    const { results: srAll } = await env.DB.prepare(`SELECT takip, day, alici, fee, cod, collected, durum, iade FROM sr_rows WHERE COALESCE(day, '') >= ?1 ORDER BY day DESC, alici`).bind(String(from).slice(0, 10)).all();
-    const srOrphan = srAll.filter(x => !used.has(x.takip)).map(x => ({ takip: x.takip, day: x.day, alici: x.alici || '', fee: r2(x.fee || 0), cod: r2(x.cod || 0), durum: x.durum || '', iade: x.iade || '' }));
+    const { results: srAll } = await env.DB.prepare(`SELECT takip, day, alici, fee, cod, collected, durum, iade, cancelled FROM sr_rows WHERE COALESCE(day, '') >= ?1 ORDER BY day DESC, alici`).bind(String(from).slice(0, 10)).all();
+    // Aynı alıcının siparişe bağlı başka (eski) kaydı varsa o sipariş önerilir: "Doğru kayıt bu → #…"
+    const nmK = (t) => srNorm(t || ''), byTrk = new Map(srAll.map(x => [x.takip, x])), ordByName = new Map();
+    for (const o of out) { const rr = o.tracking && byTrk.get(o.tracking); if (rr && rr.alici) { const k = nmK(rr.alici); if (!ordByName.has(k)) ordByName.set(k, { id: o.id, orderNo: o.orderNo, old: o.tracking }); } }
+    const srOrphan = srAll.filter(x => !used.has(x.takip) && !x.cancelled).map(x => ({ takip: x.takip, day: x.day, alici: x.alici || '', fee: r2(x.fee || 0), cod: r2(x.cod || 0), durum: x.durum || '', iade: x.iade || '', sug: ordByName.get(nmK(x.alici)) || null }));
     const sum = (f, k) => r2(out.filter(f).reduce((a, x) => a + (x[k] || 0), 0)), m = (x) => x.st !== 'nodata';
     return json({ ok: true, srOrphan, srTotal: srAll.length, items: out, n: out.length, matched: out.filter(m).length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { eColl: sum(m, 'eColl'), eFee: sum(m, 'eFee'), eNet: sum(m, 'eNet'), sColl: sum(m, 'sColl'), sFee: sum(m, 'sFee'), sNet: sum(m, 'sNet'), eNetAll: sum(() => true, 'eNet') } });
+  }
+  if (path === '/api/srcari/relink') { // "Doğru kayıt bu": sipariş yeni Sürat kaydına bağlanır, eski kayıt iptal sayılır, eksik/kabul işareti kalkar
+    const takip = String(body.takip || '').replace(/\D/g, ''), no = String(body.no || '').replace(/\D/g, ''); if (!takip || !no) return bad('Eksik bilgi.');
+    const nr = await env.DB.prepare('SELECT * FROM sr_rows WHERE takip=?1').bind(takip).first(); if (!nr) return bad('Sürat kaydı bulunamadı.');
+    const oc = await env.DB.prepare('SELECT tracking FROM sr_cost WHERE no=?1').bind(no).first(), old = oc && oc.tracking && oc.tracking !== takip ? oc.tracking : null;
+    const st = [env.DB.prepare(`INSERT INTO sr_cost(no, tracking, cost, cod_amount, durum, at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(no) DO UPDATE SET tracking=excluded.tracking, cost=excluded.cost, cod_amount=excluded.cod_amount, durum=excluded.durum, at=excluded.at`).bind(no, takip, nr.fee, nr.cod, nr.durum || null, iso()),
+      env.DB.prepare('UPDATE sr_rows SET cancelled=0 WHERE takip=?1').bind(takip),
+      env.DB.prepare(`DELETE FROM sr_online WHERE no=?1 AND kind IN ('short','accept')`).bind(no),
+      env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-17'), setStmt(env, 'home_cache', ''), REV(env)];
+    if (old) st.push(env.DB.prepare('UPDATE sr_rows SET cancelled=1 WHERE takip=?1').bind(old), env.DB.prepare(`UPDATE sr_ship SET tracking=?2 WHERE tracking=?1 AND replace(order_no,'#','')=?3`).bind(old, takip, no));
+    await env.DB.batch(st);
+    return json({ ok: true, old });
   }
   if (path === '/api/srcari/online') { // kutucuk: "Sürat'a online gitti" işareti aç/kapat
     const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş yok.');
