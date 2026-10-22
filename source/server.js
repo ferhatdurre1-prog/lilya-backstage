@@ -25,6 +25,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS sr_rows(takip TEXT PRIMARY KEY, day TEXT, alici TEXT, fee REAL, cod REAL, collected INTEGER, coll_amt REAL, iade TEXT, durum TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_mov(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, kind TEXT, amount REAL, note TEXT, at TEXT, deleted INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS paytr_tx(k TEXT PRIMARY KEY, siparis_no TEXT, tip TEXT, tutar REAL, kesinti REAL, net REAL, oran REAL, tarih TEXT, odeme_tipi TEXT, at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS addr_ok(gid TEXT PRIMARY KEY, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS pt_link(k TEXT PRIMARY KEY, no TEXT, kind TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sh_carrier(no TEXT PRIMARY KEY, carrier TEXT, info TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS sr_online(no TEXT PRIMARY KEY, amount REAL, paid INTEGER NOT NULL DEFAULT 0, paid_at TEXT, at TEXT)`,
@@ -3480,8 +3481,15 @@ ${catalog}` });
         addr: o.shippingAddress || null, cod: shCod(o) }));
       const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
       const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err, exported_at, mode, printed_at FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
-      return json({ ok: true, orders, log, ships, after: more ? after : null });
+      const addrOk = orders.length ? (await selectIn(env, 'SELECT gid FROM addr_ok', 'gid', orders.map(o => o.gid))).map(r => r.gid) : [];
+      return json({ ok: true, orders, log, ships, addrOk, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
+  }
+  if (path === '/api/shaddr/addrok') { // "Adres doğru, bekleyene al": sarı adres uyarısı bu sipariş için yok sayılır
+    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    if (body.on === false) await env.DB.prepare('DELETE FROM addr_ok WHERE gid=?1').bind(gid).run();
+    else await env.DB.prepare('INSERT INTO addr_ok(gid, at) VALUES(?1,?2) ON CONFLICT(gid) DO NOTHING').bind(gid, iso()).run();
+    return json({ ok: true });
   }
   if (path === '/api/shaddr/shipped') {
     // Adres düzeltme → "Gönderilmiş": 17.10.2026'dan beri kargolanmış Shopify siparişleri; takip no ve Sürat verisi durumu

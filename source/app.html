@@ -933,7 +933,7 @@ async function loadAddr(force){
 async function loadAddrMore(){
   const A = aS(); if (A.loading || !A.data || !A.data.after) return;
   A.loading = true; render();
-  try { const d = await api('/api/shaddr/list', {filter: A.filter, q: A.q.trim(), after: A.data.after}); const seen = new Set(A.data.orders.map(o => o.gid)); A.data.orders.push(...d.orders.filter(o => !seen.has(o.gid))); A.data.after = d.after; A.at = Date.now(); addrLearnCodes(d.orders); } catch(e) { toast(errText(e), true); }
+  try { const d = await api('/api/shaddr/list', {filter: A.filter, q: A.q.trim(), after: A.data.after}); const seen = new Set(A.data.orders.map(o => o.gid)); A.data.orders.push(...d.orders.filter(o => !seen.has(o.gid))); A.data.after = d.after; A.data.addrOk = [...(A.data.addrOk || []), ...(d.addrOk || [])]; A.at = Date.now(); addrLearnCodes(d.orders); } catch(e) { toast(errText(e), true); }
   A.loading = false; if (S.tab === 'addr') render();
 }
 // Adres düzeltme → Gönderilmiş: kargolanmış Shopify siparişleri, takip no girişi (Shopify'da da güncellenir)
@@ -982,7 +982,8 @@ function viewAddr(){
     const selOk = done || (A.view === 'pending' && !e); // Kayıtlı: toplu etiket · Bekleyen: toplu barkod (kırmızı sorunlu / kaydedilmemiş değişikliği olan seçilemez)
     h += `<div class="card" style="gap:8px"><div style="min-width:0">${selOk ? `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px"><input type="checkbox" data-srsel="${g}" ${A.sel && A.sel.has(o.gid) ? 'checked' : ''}></label>` : `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px;opacity:.4" title="Seçmek için önce kırmızı sorunları düzelt / değişiklikleri Shopify'a kaydet"><input type="checkbox" disabled></label>`}<b>${esc(o.name)}</b> <span class="muted small">${esc(fmtDate(o.createdAt))}</span> ${o.fulfill === 'PARTIALLY_FULFILLED' ? '<span class="pill p-warn">Kısmen kargolandı</span>' : '<span class="pill p-brass">Kargolanmadı</span>'}
       <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.items.join(', '))}</div></div>`;
-    if (issues.length) h += `<div class="row" style="gap:5px;flex-wrap:wrap">${issues.map(([l, m]) => `<span class="pill ${l === 'bad' ? 'p-bad' : 'p-warn'}">${esc(m)}</span>`).join('')}</div>`;
+    if (issues.length) { const onlyWarn = !issues.some(i => i[0] === 'bad'), okd = ((A.data && A.data.addrOk) || []).includes(o.gid);
+      h += `<div class="row" style="gap:5px;flex-wrap:wrap;align-items:center">${issues.map(([l, m]) => `<span class="pill ${l === 'bad' ? 'p-bad' : 'p-warn'}">${esc(m)}</span>`).join('')}${onlyWarn && !e ? (okd ? `<span class="small muted">Uyarı onaylandı · <span role="button" data-act="ad-addrok" data-id="${g}" data-on="0" style="text-decoration:underline;cursor:pointer">geri al</span></span>` : `<button class="btn sm primary" type="button" data-act="ad-addrok" data-id="${g}" data-on="1">✓ Adres doğru, bekleyene al</button>`) : ''}</div>`; }
     else h += `<div class="row" style="gap:5px"><span class="pill p-good">Adres düzgün görünüyor</span></div>`;
     if (o.note) h += `<div class="banner" style="margin:0;background:var(--accent-soft)"><div><b>Müşteri notu:</b> ${esc(o.note)}</div></div>`;
     h += `<div class="afl">${ADDR_FIELDS.filter(([k]) => k !== 'company' || cur.company || orig.company || (F && F.k === k)).map(([k, label]) => {
@@ -1035,7 +1036,7 @@ function srDoneList(A, view){ const ships = (A.data && A.data.ships) || [], last
   return ((A.data && A.data.orders) || []).filter(o => last.has(o.gid)).map(o => last.get(o.gid)).filter(x => !x.tracking && (v === 'printed' ? !!x.printed_at : !x.printed_at)); }
 // Adres düzeltme sekmesi: sorunlu (barkodsuz + adres uyarısı) · bekleyen (barkodsuz, sorunsuz) · kayıtlı (barkodlu, yazdırılmadı) · yazdırıldı
 function adTab(A, o){ const last = ((A.data && A.data.ships) || []).filter(x => x.gid === o.gid).pop();
-  if (!last) return addrIssues(addrForm(o.addr || {}), o).length ? 'bad' : 'pending';
+  if (!last) { const is = addrIssues(addrForm(o.addr || {}), o); if (!is.length) return 'pending'; const ok = ((A.data && A.data.addrOk) || []).includes(o.gid) && !is.some(i => i[0] === 'bad'); return ok ? 'pending' : 'bad'; } // sarı uyarı elle onaylandıysa bekleyende
   if (last.tracking) return null; return last.printed_at ? 'printed' : 'done'; }
 // gerçek barkod oluşunca aynı siparişin "elle kayıtlı" satırı listeden düşer
 function srAddShip(A, sh){ A.data.ships = (A.data.ships || []).filter(x => !(x.gid === sh.gid && x.mode === 'manual')); A.data.ships.push(sh); }
@@ -4438,6 +4439,7 @@ document.addEventListener('click', async e => {
     case 'ad-only': aS().only = !aS().only; render(); break;
     case 'ad-view': aS().view = id; aS().sr = null; aS().sel = null; render(); window.scrollTo(0, 0); break;
     case 'ad-more': loadAddrMore(); break;
+    case 'ad-addrok': { const A = aS(), on = b.dataset.on === '1'; try { await api('/api/shaddr/addrok', {gid: id, on}); A.data.addrOk = (A.data.addrOk || []).filter(x => x !== id); if (on) A.data.addrOk.push(id); toast(on ? 'Sipariş Sürat bekleyen\'e geçti.' : 'Onay geri alındı.'); render(); } catch (err) { toast(errText(err), true); } break; }
     case 'ad-clear': aS().q = ''; aS().data = null; aS().sent = null; render(); break;
     case 'ad-sync': aS().at = 0; aS().data = null; aS().sent = null; render(); break;
     case 'sent-miss': aS().sentMiss = !aS().sentMiss; render(); break;
