@@ -438,6 +438,8 @@ function srPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z')
   while (trOff(t)) t -= D; return new Date(t).toISOString().slice(0, 10); }
 function trOff(ms) { const x = new Date(ms), k = x.toISOString().slice(0, 10); return x.getUTCDay() === 0 || x.getUTCDay() === 6 || TR_HOLI.has(k) || TR_HOLI.has(k.slice(5)); }
 // PayTR: teslimden 7 gün geçtikten sonraki ilk iş günü (22.10 teslim → 30.10; 23.10 teslim → 31.10 cumartesi → 2.11)
+// PayTR (22.10.2026, PayTR'den alınan bilgi): sipariş tarihinden 10 takvim günü valör; para 11. gün yatar, o gün iş günü değilse sonraki ilk iş günü
+function ptDueFromOrder(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 11 * 86400000; while (trOff(t)) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
 function ptPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; t += 8 * 86400000; while (trOff(t)) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
 // Trendyol: vade teslimden 28 gün; ödeme vadeden sonraki ilk pazartesi ya da perşembe. O gün resmi tatilse sonraki ilk iş günü.
 // (Erken ödeme alınan siparişler salı/cuma yatar; onların günü Trendyol ekstresinden gelir.)
@@ -3589,7 +3591,7 @@ ${catalog}` });
       if (m) used.add(m.k);
       const lag = m && m.paid_day ? Math.round((Date.parse(m.paid_day) - Date.parse(m.tarih)) / 86400000) : null;
       const deliv = dlvDay(r.srd) || r.bkd || r.shd || null, dlag = m && m.paid_day && deliv ? Math.round((Date.parse(m.paid_day) - Date.parse(deliv)) / 86400000) : null; // PayTR ödemeyi teslimata göre yapar
-      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, deliv, dlag, due: deliv ? ptPayDay(deliv) : null, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff', manual: man, k: m ? m.k : (man ? linkNo.get(ono) : null) }); }
+      out.push({ id: r.id, orderNo: r.order_no, date: r.date, exp, pt: m ? r2(m.tutar) : null, kes: m ? r2(m.kesinti || 0) : null, oran: m ? m.oran : null, net: m ? r2(m.net || 0) : null, paid: m ? m.paid_day || null : null, lag, deliv, dlag, due: ptDueFromOrder(day), pdiff: m && m.paid_day ? Math.round((Date.parse(m.paid_day) - Date.parse(ptDueFromOrder(day))) / 86400000) : null, diff: m ? r2(m.tutar - exp) : null, st: !m ? 'nodata' : Math.abs(m.tutar - exp) < 1 ? 'ok' : 'diff', manual: man, k: m ? m.k : (man ? linkNo.get(ono) : null) }); }
     const ignored = sales.filter(x => ignK.has(x.k)).map(x => ({ k: x.k, siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih }));
     const orphan = sales.filter(x => !used.has(x.k) && !linkedK.has(x.k)).map(x => ({ k: x.k, siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day, odeme: x.odeme_tipi || '' }));
     // Eşleşmeyen her PayTR işlemi için aday Shopify siparişleri (±1 gün, tutar ±%15): neden eşleşmediği yazılır
@@ -3604,8 +3606,9 @@ ${catalog}` });
     const lags = out.filter(x => x.lag !== null).map(x => x.lag).sort((a, b) => a - b), mm = (k, f = () => true) => r2(out.filter(x => x.st !== 'nodata' && f(x)).reduce((a, x) => a + (x[k] || 0), 0));
     const today = trToday(), dueM = new Map(); for (const x of out) if (x.st !== 'nodata' && !x.paid && x.due) { const g = dueM.get(x.due) || { day: x.due, net: 0, n: 0 }; g.net = r2(g.net + (x.net || 0)); g.n++; dueM.set(x.due, g); }
     const dueList = [...dueM.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => ({ ...g, late: g.day < today }));
+    const pc = out.filter(x => x.pdiff !== null && x.pdiff !== undefined), payChk = { n: pc.length, ontime: pc.filter(x => x.pdiff === 0).length, late: pc.filter(x => x.pdiff > 0).length, early: pc.filter(x => x.pdiff < 0).length };
     const pend = mm('net', x => !x.paid), paidTot = r2(pR.results.reduce((a, x) => a + (x.net || 0), 0));
-    return json({ ok: true, ignored, self: selfList.reverse(), items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
+    return json({ ok: true, payChk, ignored, self: selfList.reverse(), items: out.reverse(), n: out.length, matched: out.filter(x => x.st !== 'nodata').length, ok_n: out.filter(x => x.st === 'ok').length, diff_n: out.filter(x => x.st === 'diff').length,
       tot: { exp: mm('exp'), pt: mm('pt'), kes: mm('kes'), net: mm('net'), pend, paid: paidTot, refunds: r2(refunds.reduce((a, x) => a + (x.tutar || 0), 0)) },
       lag: lags.length ? { min: lags[0], max: lags[lags.length - 1], med: lags[Math.floor(lags.length / 2)], n: lags.length } : null, lagD: st3('dlag'), dueList, noDue: out.filter(x => x.st !== 'nodata' && !x.paid && !x.due).length, delivN: out.filter(x => x.deliv).length, payouts: pR.results.slice(0, 60), orphan: orphan.slice(0, 50), orphanN: orphan.length });
   }
