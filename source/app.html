@@ -681,6 +681,8 @@ function progShow(title, k, n, sub){ let r = document.getElementById('prog-root'
 async function pool(items, n, fn){ let i = 0; const run1 = async () => { while (i < items.length) { const it = items[i++]; await fn(it); } }; await Promise.all(Array.from({length: Math.min(n, items.length)}, run1)); }
 function progHide(){ const r = document.getElementById('prog-root'); if (r) r.innerHTML = ''; }
 async function ptLink(k, kind, no){ try { await api('/api/paytr/link', {k, kind, no}); toast(kind === 'match' ? `PayTR ödemesi #${no} ile eşlendi.` : kind === 'ignore' ? 'PayTR işlemi yok sayıldı.' : 'Geri alındı.'); const C = cS(); C.pt = null; render(); } catch (e) { toast(errText(e), true); } }
+// Ana ekran kâr/ciro tablosu: göz simgesiyle gizle / göster (cihaz başına hatırlanır; varsayılan gizli)
+function hkHidden(v){ try { if (v !== undefined) { localStorage.setItem('lb_hk_hide', v ? '1' : '0'); return v; } return localStorage.getItem('lb_hk_hide') !== '0'; } catch(e) { return v !== undefined ? v : true; } }
 function confirmBox(text, ok='Onayla', danger=false){
   return new Promise(res => {
     const r = $('#dialog-root');
@@ -1669,7 +1671,8 @@ function viewHome(){
     const prof = (x) => profitCls(x) || '', t0 = (v) => '₺' + Math.round(Number(v) || 0).toLocaleString('tr-TR'), mg = (v) => v === null || v === undefined ? '—' : '%' + (Math.round(v * 10) / 10).toLocaleString('tr-TR');
     const cmp = (a, b) => vs(a, b).replace('> ', '>').replace(' %', '%');
     const tk = (v) => { const n = Number(v) || 0, a = Math.abs(n); return a >= 1e6 ? '₺' + (n / 1e6).toLocaleString('tr-TR', {maximumFractionDigits: 2}) + ' mn' : a >= 1e5 ? '₺' + Math.round(n / 1000).toLocaleString('tr-TR') + ' bin' : t0(n); }; // dar kutuda ciro kısaltması
-    const box = (cls, v, s1, vcol, act, aid, extra) => `<div class="hk ${cls}" data-act="${act}" data-id="${aid || ''}"><div class="v" style="${vcol}">${v}${extra ? `<span class="x">${extra}</span>` : ''}</div><div class="s">${s1}</div></div>`;
+    const HID = hkHidden(), hm = (f) => (cls, v, s1, vcol, act, aid, extra) => HID ? f(cls, '₺•••••', '₺••• · %••', 'color:var(--ink-3)', act, aid, '') : f(cls, v, s1, vcol, act, aid, extra); // göz kapalıyken tutarlar gizli
+    const box0 = (cls, v, s1, vcol, act, aid, extra) => `<div class="hk ${cls}" data-act="${act}" data-id="${aid || ''}"><div class="v" style="${vcol}">${v}${extra ? `<span class="x">${extra}</span>` : ''}</div><div class="s">${s1}</div></div>`, box = hm(box0);
     const all = { today: { revenue: T.rev, profit: T.prof, margin: T.rev ? T.prof / T.rev * 100 : null, n: H.todayN ?? T.n }, ys: { profit: YS ? YS.prof : 0, revenue: YS ? YS.rev : 0, n: H.ysN || 0 }, month: M, d30: H.last30 || {}, pm: H.pm || null, p30: H.p30 || null };
     // Ok: kârın yanında (önceki döneme göre %), ciro ve sipariş sayısının yanında küçük ▲/▼
     const ar = (a, b) => { if (!b || !isFinite(a) || !isFinite(b)) return ''; const up = a >= b; return `<span class="${up ? 'up' : 'dn'}">${up ? '▲' : '▼'}</span>`; };
@@ -1679,9 +1682,9 @@ function viewHome(){
       return [box(cls, t0(t.profit), `${tk(t.revenue)}${ar(t.revenue, y.revenue)} · ${mg(t.margin)}`, prof(t.profit), act, id('today'), ar(t.profit, y.profit)),
         box(cls, t0(m.profit), `${tk(m.revenue)}${ar(m.revenue, pm.revenue)} · ${mg(m.margin)}`, prof(m.profit), act, id('month'), ar(m.profit, pm.profit)),
         box(cls, t0(d.profit), `${tk(d.revenue)}${ar(d.revenue, p3.revenue)} · ${mg(d.margin)}`, prof(d.profit), act, id('d30'), ar(d.profit, p3.profit)),
-        box(cls, fmtN(pend), `bugün ${fmtN(t.n || 0)} sip. ${ar(t.n || 0, y.n || 0)}`, 'color:var(--orange)', 'orders-new', '')]; };
+        box0(cls, fmtN(pend), `bugün ${fmtN(t.n || 0)} sip. ${ar(t.n || 0, y.n || 0)}`, 'color:var(--orange)', 'orders-new', '')]; };
     const A = cell('trendyol', 'hk-ty'), B = cell('shopify', 'hk-sh'), Z = cell('all', 'hk-all'), rows = ['Bugün', 'Bu ay', 'Son 30 gün', 'Bekleyen'];
-    h += `<div class="hk-grid"><span></span><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span><span class="hk-ch hk-all">Toplam</span>
+    h += `<div class="hk-grid"><button type="button" class="hk-eye" data-act="hk-eye" aria-label="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" title="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" style="border:0;background:none;cursor:pointer;color:var(--ink-2);display:flex;align-items:center;justify-content:center;padding:6px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>${HID ? '' : '<path d="M3 3l18 18"/>'}</svg></button><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span><span class="hk-ch hk-all">Toplam</span>
       ${rows.map((r, i) => `<div class="hk-row">${r}</div>${A[i]}${B[i]}${Z[i]}`).join('')}</div>` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
@@ -4446,6 +4449,7 @@ document.addEventListener('click', async e => {
     case 'ret-accept': await returnDecision(id, true); break;
     case 'ret-reject': await returnDecision(id, false); break;
     case 'ret-shape': openSheet('ret-shape'); break;
+    case 'hk-eye': hkHidden(!hkHidden()); render(); break;
     case 'labels': openSheet('labels', {sel: new Set()}); break;
     case 'pt-link': await ptLink(id, 'match', b.dataset.no); break;
     case 'pt-linkin': { const v = String((document.getElementById(b.dataset.in) || {}).value || '').replace(/\D/g, ''); if (!v) { toast('Sipariş numarasını yaz.', true); break; } await ptLink(id, 'match', v); break; }
