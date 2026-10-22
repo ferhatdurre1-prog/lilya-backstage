@@ -2103,6 +2103,52 @@ async function soSalesPdf(items, disc, note){
   if (items.some(x => !(x.cost > 0))) { y += mm(8); font(c, 3, false); c.fillText('— : fiyatı tanımlı olmayan ürün (toplama dahil değil)', m, y); }
   return doc.output();
 }
+// Alış listesi PDF'i (A4): fiyatlı (tedarikçi / muhasebe kontrolü) ya da fiyatsız (depo mal kabul); her satırda kontrol kutusu
+async function purchasePdf(L, withPrice){
+  const items = L.items.map(x => ({code: x.pcode || '', name: x.pname || x.name || '', doc: x.pname && x.name !== x.pname ? x.name : '', image: x.image || '', n: Number(x.qty) || 0, unit: Number(x.unit) || 0}));
+  const urls = [...new Set(items.map(x => x.image).filter(u => u && /^https:\/\//.test(u) && !LBL_IMGS.has(u)))];
+  await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
+  const doc = new MiniPdf(210, 297), mm = (v) => v * 8, PW = mm(210), PH = mm(297), m = mm(14), cw = PW - 2 * m;
+  const font = (c, size, bold) => { c.font = `${bold ? '700 ' : ''}${mm(size)}px Helvetica`; };
+  const IMG = mm(14);
+  const cols = [['', mm(8), 'l'], ['#', mm(7), 'l'], ['', IMG + mm(3), 'l'], ['KOD', mm(22), 'l'], ['ÜRÜN', 0, 'l'], ['ADET', mm(15), 'r']];
+  if (withPrice) cols.push(['BİRİM FİYAT', mm(25), 'r'], ['TUTAR', mm(27), 'r']);
+  cols[4][1] = cw - cols.reduce((a, x) => a + x[1], 0);
+  const xs = []; { let x = m; for (const cc of cols) { xs.push(x); x += cc[1]; } }
+  const ddate = L.doc_date ? new Date(L.doc_date + 'T12:00:00').toLocaleDateString('tr-TR') : new Date(L.t).toLocaleDateString('tr-TR');
+  const line = (c, y, w) => { c.lineWidth = mm(w); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); };
+  const cell = (c, i, t, y) => { const [_, w, al] = cols[i]; const pad = mm(1.5); if (al === 'r') c.fillText(t, xs[i] + w - pad - c.measureText(t).width, y); else c.fillText(t, xs[i] + pad, y); };
+  let c, y, page = 0; const title = withPrice ? 'ALIŞ LİSTESİ' : 'MAL KABUL LİSTESİ';
+  const head = () => { c = doc.addPage(); page++; y = m;
+    if (page === 1) { if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, y, mm(46), mm(46) * 352 / 900);
+      font(c, 7, true); c.fillText(title, PW - m - c.measureText(title).width, y + mm(1));
+      font(c, 3.6, true); const s1 = `${L.supplier} · liste #${L.id}`; c.fillText(s1, PW - m - c.measureText(s1).width, y + mm(10));
+      font(c, 3.4, false); const s2 = `${ddate}${L.doc_no ? ' · belge ' + L.doc_no : ''}`; c.fillText(s2, PW - m - c.measureText(s2).width, y + mm(15));
+      y += mm(26); }
+    else { font(c, 3.4, false); c.fillText(`${title} · ${L.supplier} · liste #${L.id} · sayfa ${page}`, m, y); y += mm(7); }
+    line(c, y, 0.4); y += mm(2); font(c, 3, true); cols.forEach((cc, i) => cell(c, i, cc[0], y)); y += mm(5); line(c, y, 0.25); y += mm(1.5); };
+  head();
+  let tq = 0, tt = 0;
+  items.forEach((x, k) => { tq += x.n; tt += x.n * x.unit;
+    font(c, 3.4, false); const nl = wrapText(c, x.name, cols[4][1] - mm(3)).slice(0, 3), nn = nl.length; if (x.doc) { font(c, 2.8, false); nl.push(...wrapText(c, 'Belgede: ' + x.doc, cols[4][1] - mm(3)).slice(0, 1)); }
+    const rh = Math.max(nl.length * mm(4.4) + mm(2.4), IMG + mm(2.4));
+    if (y + rh > PH - m - mm(24)) head();
+    const ty = y + (rh - mm(1.2) - nl.length * mm(4.4)) / 2;
+    c.lineWidth = mm(0.3); c.strokeRect(xs[0] + mm(1.5), y + (rh - mm(5.5)) / 2 - mm(0.6), mm(5), mm(5));
+    const img = x.image && LBL_IMGS.get(x.image); if (img && c.drawJpeg) { try { c.drawJpeg(img, xs[2] + mm(1), y + mm(0.6), IMG, IMG); } catch(e) {} }
+    font(c, 3.4, false); cell(c, 1, String(k + 1), ty); font(c, 3.4, true); cell(c, 3, x.code || '—', ty);
+    nl.forEach((t, j) => { font(c, j >= nn ? 2.8 : 3.4, false); c.fillText(t, xs[4] + mm(1.5), ty + j * mm(4.4)); });
+    font(c, 3.8, true); cell(c, 5, fmtN(x.n), ty);
+    if (withPrice) { font(c, 3.4, false); cell(c, 6, tl2(x.unit), ty); font(c, 3.4, true); cell(c, 7, tl2(x.n * x.unit), ty); }
+    y += rh - mm(1.2); c.lineWidth = mm(0.1); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(1.6);
+  });
+  if (y + mm(24) > PH - m) head();
+  y += mm(1); line(c, y, 0.4); y += mm(3);
+  font(c, 3.8, true); c.fillText(`${fmtN(items.length)} satır · toplam ${fmtN(tq)} adet`, m, y);
+  if (withPrice) { font(c, 5, true); const t = 'GENEL TOPLAM: ' + tl2(tt); c.fillText(t, PW - m - c.measureText(t).width, y - mm(0.6)); }
+  y += mm(12); font(c, 3.4, false); c.fillText('Kontrol eden: ................................................          İmza: ..............................          Tarih: ...... / ...... / ..........', m, y);
+  await deliverPdf(doc.output(), `${withPrice ? 'alis' : 'mal-kabul'}-listesi-${L.id}-${String(L.supplier || '').replace(/[^\wçğıöşüÇĞİÖŞÜ]+/g, '-').slice(0, 30)}.pdf`, 1);
+}
 // Barkodla giriş: satır başına adet + birim alış fiyatı; toplam tedarikçiye borç
 const siUnit = (x) => Math.max(0, Number(String(x.unit ?? '').replace(/\s/g, '').replace(',', '.')) || 0);
 function siSum(){ const sh = S.sheet; if (!sh || sh.mode !== 'in') return; const units = sh.items.reduce((a, x) => a + x.n, 0), tot = sh.items.reduce((a, x) => a + x.n * siUnit(x), 0), miss = sh.items.filter(x => !(siUnit(x) > 0)).length;
@@ -2275,7 +2321,7 @@ function sheetPurchases(){
     return `<div class="card" style="gap:8px">
       <button class="spread" type="button" data-act="purl-toggle" data-id="${L.id}" style="background:none;border:0;padding:0;color:inherit;text-align:left;cursor:pointer;width:100%"><div><b>${esc(L.supplier)}</b> <span class="muted small">· liste #${L.id}</span><div class="muted small">${L.doc_date ? esc(new Date(L.doc_date + 'T12:00:00').toLocaleDateString('tr-TR')) : esc(fd(L.t))}${L.doc_no ? ' · belge ' + esc(L.doc_no) : ''} · ${fmtN(L.items.length)} satır, ${fmtN(L.units)} adet · <b>${tl2(L.total)}</b>${un ? ` · <span style="color:var(--bad)">${fmtN(un)} satır eşleşmemiş</span>` : ''}</div><div style="margin-top:4px">${pills}</div></div><span class="muted">${op ? '⌃' : '›'}</span></button>
       ${op ? `<div class="list" style="box-shadow:none">${L.items.map(x => `<div class="item">${thumb({name: x.pname || x.name, image: x.image})}<div class="main"><div class="ttl">${esc(x.pname || x.name)}</div><div class="meta">${x.pkey ? `<span class="mono">${esc(x.pcode || '')}</span>` : '<span class="pill p-bad">Eşleşmedi</span>'}<span>· ${fmtN(x.qty)} × ${tl2(x.unit)}</span></div>${x.pname && x.name !== x.pname ? `<div class="meta"><span class="muted">Belgede: ${esc(x.name)}</span></div>` : ''}${x.newCost !== undefined ? `<div class="meta"><span>maliyet ${x.prevCost != null ? tl2(x.prevCost) : '—'} → ${tl2(x.newCost)}</span></div>` : x.costKept ? `<div class="meta"><span class="muted">maliyet değişmedi · daha yeni tarihli / yüksek fiyatlı fiş var</span></div>` : ''}</div><div class="end"><b class="num">${tl2(x.qty * x.unit)}</b></div></div>`).join('')}</div>` : ''}
-      <div class="row">${st === 'draft' ? `<button class="btn sm primary" type="button" data-act="purl-cost" data-id="${L.id}">Sadece maliyeti güncelle</button><button class="btn sm" type="button" data-act="purl-stock" data-id="${L.id}">Stoğa ekle</button><button class="btn sm" type="button" data-act="purl-edit" data-id="${L.id}">Düzenle</button>` : `${st === 'costed' ? `<button class="btn sm primary" type="button" data-act="purl-stock" data-id="${L.id}">Stoğa da ekle</button>` : ''}<button class="btn sm" type="button" data-act="purl-unstock" data-id="${L.id}">${st === 'costed' ? 'Maliyeti geri al' : 'Stoktan geri al'}</button>`}${L.cari_at ? `<button class="btn sm" type="button" data-act="purl-uncari" data-id="${L.id}">Cariden çıkar</button>` : `<button class="btn sm" type="button" data-act="purl-cari" data-id="${L.id}">Cariye işle</button>`}${st === 'draft' && !L.cari_at ? `<button class="btn sm ghost" type="button" data-act="purl-del" data-id="${L.id}" style="color:var(--bad)">Sil</button>` : ''}</div>
+      <div class="row">${st === 'draft' ? `<button class="btn sm primary" type="button" data-act="purl-cost" data-id="${L.id}">Sadece maliyeti güncelle</button><button class="btn sm" type="button" data-act="purl-stock" data-id="${L.id}">Stoğa ekle</button><button class="btn sm" type="button" data-act="purl-edit" data-id="${L.id}">Düzenle</button>` : `${st === 'costed' ? `<button class="btn sm primary" type="button" data-act="purl-stock" data-id="${L.id}">Stoğa da ekle</button>` : ''}<button class="btn sm" type="button" data-act="purl-unstock" data-id="${L.id}">${st === 'costed' ? 'Maliyeti geri al' : 'Stoktan geri al'}</button>`}${L.cari_at ? `<button class="btn sm" type="button" data-act="purl-uncari" data-id="${L.id}">Cariden çıkar</button>` : `<button class="btn sm" type="button" data-act="purl-cari" data-id="${L.id}">Cariye işle</button>`}${st === 'draft' && !L.cari_at ? `<button class="btn sm ghost" type="button" data-act="purl-del" data-id="${L.id}" style="color:var(--bad)">Sil</button>` : ''}<button class="btn sm" type="button" data-act="purl-pdf" data-id="${L.id}" data-p="1">🖨 Fiyatlı yazdır</button><button class="btn sm" type="button" data-act="purl-pdf" data-id="${L.id}" data-p="0">🖨 Fiyatsız yazdır</button></div>
     </div>`; }).join('')};
 }
 function setCard(p){
@@ -4340,6 +4386,7 @@ document.addEventListener('click', async e => {
     case 'purl-del': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break;
       if (!(await confirmBox(`Alış listesi #${L.id} silinsin mi?`, 'Sil', true))) break;
       await run(async () => { await api('/api/purchase/delete', {id: L.id}); toast('Silindi.'); S.sheet.data = null; renderSheet(false); }); break; }
+    case 'purl-pdf': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break; toast('PDF hazırlanıyor…'); try { await purchasePdf(L, b.dataset.p === '1'); } catch (err) { toast(errText(err), true); } break; }
     case 'purl-toggle': { const sh = S.sheet; sh.open = sh.open === id ? null : id; renderSheet(false); break; }
     case 'outl-open': openSheet('outlists', {}); break;
     case 'outl-toggle': { const sh = S.sheet; if (!sh) break; sh.open = sh.open === id ? null : id; renderSheet(false); break; }
