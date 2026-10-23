@@ -1304,6 +1304,7 @@ function cariDetail(x){
   h += `<div class="spread" style="gap:8px;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;padding:8px 10px"><div><span class="small muted">Çalışma şekli:</span> <b>${esc(termsText(Dt.terms))}</b></div><button class="btn sm" data-act="cari-terms">${C.terms ? 'Kapat' : 'Değiştir'}</button></div>`;
   if (C.terms) h += cariTermsForm(Dt.supplier, C.tk || Dt.terms);
   h += `<div class="row" style="justify-content:flex-end"><button class="btn sm ghost" data-act="cari-del" data-id="${esc(x.supplier)}" style="color:var(--bad)">🗑 Cariyi sil</button></div>`;
+  h += `<div class="card" style="gap:8px;padding:10px"><b class="small">📄 Mutabakat al · ${esc(x.supplier)}</b><div class="row" style="gap:8px;flex-wrap:wrap;align-items:end"><label class="f" style="margin:0"><span class="small">Mutabakat tarihi</span><input class="input" id="cmt-date" type="date" value="${todayTR()}"></label><label class="small" style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="cmt-dok" checked> Hareket dökümü eklensin</label><button class="btn sm primary" type="button" data-act="cari-mtb">📄 Mutabakat PDF</button><button class="btn sm" type="button" data-act="cari-mtbmsg">📋 Mesajı kopyala</button></div><p class="small muted" style="margin:0">PDF'i WhatsApp'tan gönder; firma 'Mutabığız' yazarak ya da kendi bakiyesini yazarak cevap verir.</p></div>`;
   h += cariPayForm(x.supplier, [], x.cur);
   h += `<form id="f-carimov" data-sup="${esc(x.supplier)}" class="card" style="gap:8px;padding:10px"><b class="small">Elle hareket ekle · ${esc(x.supplier)}</b>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px">
@@ -2151,6 +2152,42 @@ async function purchasePdf(L, withPrice){
   if (withPrice) { font(c, 5, true); const t = 'GENEL TOPLAM: ' + tl2(tt); c.fillText(t, PW - m - c.measureText(t).width, y - mm(0.6)); }
   y += mm(12); font(c, 3.4, false); c.fillText('Kontrol eden: ................................................          İmza: ..............................          Tarih: ...... / ...... / ..........', m, y);
   await deliverPdf(doc.output(), `${withPrice ? 'alis' : 'mal-kabul'}-listesi-${L.id}-${String(L.supplier || '').replace(/[^\wçğıöşüÇĞİÖŞÜ]+/g, '-').slice(0, 30)}.pdf`, 1);
+}
+// Cari mutabakat yazısı: seçilen tarihe kadarki alış/ödemelerden bakiye; WhatsApp ile gönderilir, cevap mesajla alınır (imza yok)
+function cariMtbCalc(Dt, asof){ const rows = (Dt.rows || []).filter(r => String(r.date || '').slice(0, 10) <= asof).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.t || '').localeCompare(String(b.t || '')));
+  let buy = 0, pay = 0, bal = 0; const R = rows.map(r => { const a = Number(r.amount) || 0; if (r.kind === 'buy') buy += a; else pay += a; bal = Math.round((bal + (r.kind === 'buy' ? a : -a)) * 100) / 100; return {...r, bal}; });
+  return {rows: R, buy: Math.round(buy * 100) / 100, pay: Math.round(pay * 100) / 100, bal}; }
+function cariMtbText(Dt, asof, k){ const cur = Dt.cur || 'TL', d = new Date(asof + 'T12:00:00').toLocaleDateString('tr-TR'), a = curAmt(Math.abs(k.bal), cur);
+  return Math.abs(k.bal) < 0.005 ? `${d} tarihi itibarıyla kayıtlarımıza göre cari hesabınızda bakiye bulunmamaktadır.` : `${d} tarihi itibarıyla kayıtlarımıza göre cari hesabınızda ${a} firmanız ${k.bal > 0 ? 'lehine' : 'aleyhine'} bakiye bulunmaktadır.`; }
+async function cariMtbPdf(Dt, asof, dok){
+  const k = cariMtbCalc(Dt, asof), cur = Dt.cur || 'TL', A = (v) => curAmt(v, cur), dstr = new Date(asof + 'T12:00:00').toLocaleDateString('tr-TR');
+  const doc = new MiniPdf(210, 297), mm = (v) => v * 8, PW = mm(210), PH = mm(297), m = mm(18), cw = PW - 2 * m;
+  const font = (c, s, b) => { c.font = `${b ? '700 ' : ''}${mm(s)}px Helvetica`; };
+  let c = doc.addPage(), y = m;
+  if (LABEL_LOGO.complete && LABEL_LOGO.naturalWidth) c.drawImage(LABEL_LOGO, m, y, mm(50), mm(50) * 352 / 900);
+  font(c, 3.6, false); const td = new Date().toLocaleDateString('tr-TR'); c.fillText(td, PW - m - c.measureText(td).width, y + mm(2));
+  y += mm(30); font(c, 6, true); const tt = 'CARİ HESAP MUTABAKATI'; c.fillText(tt, (PW - c.measureText(tt).width) / 2, y); y += mm(16);
+  font(c, 4.2, true); c.fillText(`Sayın ${Dt.supplier},`, m, y); y += mm(9);
+  font(c, 4, false); for (const t of wrapText(c, cariMtbText(Dt, asof, k), cw)) { c.fillText(t, m, y); y += mm(6); }
+  y += mm(2); for (const t of wrapText(c, 'Kayıtlarınızla karşılaştırarak mutabık olup olmadığınızı bildirmenizi rica ederiz.', cw)) { c.fillText(t, m, y); y += mm(6); }
+  y += mm(6); const tw = mm(110), tx = (PW - tw) / 2, row = (l, v, b) => { font(c, 4, b); c.fillText(l, tx + mm(3), y + mm(2)); c.fillText(v, tx + tw - mm(3) - c.measureText(v).width, y + mm(2)); c.lineWidth = mm(0.15); c.strokeRect(tx, y, tw, mm(9)); y += mm(9); };
+  row(`Toplam alış (${dstr} itibarıyla)`, A(k.buy)); row('Toplam ödeme', A(k.pay)); row(k.bal >= 0 ? 'Bakiye (firmanız lehine)' : 'Bakiye (firmanız aleyhine)', A(Math.abs(k.bal)), true);
+  y += mm(14); c.lineWidth = mm(0.3); c.strokeRect(m, y, cw, mm(30)); y += mm(6);
+  font(c, 4, true); c.fillText('Cevap', m + mm(5), y); y += mm(7); font(c, 3.8, false);
+  for (const t of wrapText(c, "Mutabık iseniz bu mesaja 'Mutabığız' yazarak, değilseniz kayıtlarınızdaki bakiyeyi yazarak cevap vermenizi rica ederiz.", cw - mm(10))) { c.fillText(t, m + mm(5), y); y += mm(5.5); }
+  y += mm(16); font(c, 4, false); c.fillText('Saygılarımızla,', m, y); y += mm(6); font(c, 4, true); c.fillText('Lilya Home', m, y);
+  if (dok && k.rows.length) { // 2. sayfa: hareket dökümü
+    const cols = [['TARİH', mm(24), 'l'], ['AÇIKLAMA', 0, 'l'], ['ALIŞ', mm(28), 'r'], ['ÖDEME', mm(28), 'r'], ['BAKİYE', mm(30), 'r']]; cols[1][1] = cw - cols.reduce((a, x) => a + x[1], 0);
+    const xs = []; { let x = m; for (const cc of cols) { xs.push(x); x += cc[1]; } }
+    const cell = (i, t, yy) => { const [_, w, al] = cols[i], p = mm(1.5); if (al === 'r') c.fillText(t, xs[i] + w - p - c.measureText(t).width, yy); else c.fillText(t, xs[i] + p, yy); };
+    const head = (first) => { c = doc.addPage(); y = m; font(c, 4.6, true); c.fillText(`Hareket dökümü · ${Dt.supplier} · ${dstr} itibarıyla${first ? '' : ' (devam)'}`, m, y); y += mm(8); c.lineWidth = mm(0.35); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(2); font(c, 3, true); cols.forEach((cc, i) => cell(i, cc[0], y)); y += mm(5); c.lineWidth = mm(0.2); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(1.5); };
+    head(true);
+    for (const r of k.rows) { font(c, 3.2, false); const nl = wrapText(c, r.text || '', cols[1][1] - mm(3)).slice(0, 2), rh = nl.length * mm(4.2) + mm(2.2); if (y + rh > PH - m - mm(14)) head(false);
+      cell(0, new Date(String(r.date).slice(0, 10) + 'T12:00:00').toLocaleDateString('tr-TR'), y); nl.forEach((t, j) => c.fillText(t, xs[1] + mm(1.5), y + j * mm(4.2)));
+      cell(2, r.kind === 'buy' ? A(r.amount) : '', y); cell(3, r.kind === 'buy' ? '' : A(r.amount), y); font(c, 3.2, true); cell(4, A(r.bal), y);
+      y += rh; c.lineWidth = mm(0.08); c.beginPath(); c.moveTo(m, y - mm(1)); c.lineTo(PW - m, y - mm(1)); c.stroke(); }
+    y += mm(2); c.lineWidth = mm(0.35); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); y += mm(3); font(c, 3.4, true); cell(1, 'TOPLAM', y); cell(2, A(k.buy), y); cell(3, A(k.pay), y); cell(4, A(k.bal), y); }
+  await deliverPdf(doc.output(), `mutabakat-${String(Dt.supplier || '').replace(/[^\wçğıöşüÇĞİÖŞÜ]+/g, '-').slice(0, 30)}-${asof}.pdf`, 1);
 }
 // Barkodla giriş: satır başına adet + birim alış fiyatı; toplam tedarikçiye borç
 const siUnit = (x) => Math.max(0, Number(String(x.unit ?? '').replace(/\s/g, '').replace(',', '.')) || 0);
@@ -4289,6 +4326,10 @@ document.addEventListener('click', async e => {
     case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'cari-paynew': { const C = cS(); C.open = C.open === '__new' ? '' : '__new'; C.det = null; render(); break; }
+    case 'cari-mtb': case 'cari-mtbmsg': { const Dt = cS().det; if (!Dt) break; const asof = (($('#cmt-date') || {}).value || todayTR()).slice(0, 10);
+      if (act === 'cari-mtb') { toast('PDF hazırlanıyor…'); try { await cariMtbPdf(Dt, asof, !!($('#cmt-dok') || {}).checked); } catch (err) { toast(errText(err), true); } break; }
+      const k = cariMtbCalc(Dt, asof), msg = `Merhaba, ${cariMtbText(Dt, asof, k)} Mutabakat yazısı ektedir. Mutabık iseniz 'Mutabığız' yazmanız yeterli, değilseniz kayıtlarınızdaki bakiyeyi yazar mısınız? Teşekkürler, Lilya Home`;
+      try { await navigator.clipboard.writeText(msg); toast('Mesaj kopyalandı, WhatsApp\'ta yapıştırabilirsin.'); } catch (err) { toast(msg); } break; }
     case 'cari-open': { const C = cS(); C.terms = false; C.tk = null; C.pre = null; if (C.open === id) { C.open = ''; C.det = null; } else { C.open = id; if (id !== '__new') loadCariDet(id); } render(); break; }
     case 'cari-pay': { const C = cS(); C.terms = false; C.tk = null; C.pre = {sup: id, amt: b.dataset.amt}; if (C.open !== id) { C.open = id; loadCariDet(id); } render(); setTimeout(() => { const el = $('#cp-amt'); if (el) { el.scrollIntoView({block: 'center'}); el.focus(); } }, 400); break; }
     case 'cari-terms': { const C = cS(); C.terms = !C.terms; C.tk = null; render(); break; }
