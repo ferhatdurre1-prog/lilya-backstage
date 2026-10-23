@@ -482,6 +482,11 @@ body[data-tab="home"] .act-grid .act .l{font-size:clamp(12px,1.55vh,16px)}body[d
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
+/* Tüm tarih / saat gösterimleri telefonun saat diliminden bağımsız İstanbul saatiyle */
+(function(){ for (const m of ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString']) { const o = Date.prototype[m]; Date.prototype[m] = function(l, opt){ const x = Object.assign({}, opt || {}); if (!x.timeZone) x.timeZone = 'Europe/Istanbul'; try { return o.call(this, l, x); } catch (e) { return o.call(this, l, opt); } }; } })();
+/* datetime-local kutuları için İstanbul saati */
+const trInput = (ms) => new Date((ms === undefined ? Date.now() : ms) + 3 * 3600000).toISOString().slice(0, 16);
+const trParse = (v) => new Date(String(v).length <= 16 ? v + ':00+03:00' : v + '+03:00');
 "use strict";
 /* ============ Sabitler ============ */
 const CHANNELS = {
@@ -971,7 +976,7 @@ function transitHtml(A){
   let h = `<p class="small muted" style="margin:0 0 10px">${del ? 'Son 30 günde teslim edilen Sürat gönderileri.' : 'Takip numarası gelmiş, henüz teslim edilmemiş Sürat gönderileri. 5 günden uzun yolda olan ya da teslim edilemeyen / iade olanlar kırmızı ve en üstte.'} Durumlar Sürat raporu yüklendikçe güncellenir. <span role="button" data-act="tr-reload" style="text-decoration:underline;cursor:pointer">Yenile</span></p>`;
   if (!L.length) return h + `<div class="panel empty"><h4>${del ? 'Teslim edilen gönderi yok' : 'Yolda gönderi yok'}</h4><p>${q ? 'Aramayla eşleşen gönderi bulunamadı.' : ''}</p></div>`;
   h += `<div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th>Alıcı</th><th>Takip no</th><th>${del ? 'Teslim' : 'Durum'}</th>${del ? '<th class="r">Kapıda tahsilat</th>' : '<th class="r">Gün</th>'}</tr></thead><tbody>${L.map(x => { const red = !del && bad(x);
-    return `<tr style="${red ? 'background:var(--bad-soft)' : ''}"><td class="mono" style="white-space:nowrap">${esc(x.orderNo || '')}<div class="small muted">${esc(cDay(String(x.at).slice(0, 10)))}</div></td><td>${esc(x.name)}<div class="small muted">${esc([x.ilce, x.il].filter(Boolean).join(' / '))}</div></td><td class="mono small"><a href="https://suratkargo.com.tr/KargoTakip/?kargotakipno=${encodeURIComponent(x.tracking)}" target="_blank" rel="noopener">${esc(x.tracking)}</a></td>
+    return `<tr style="${red ? 'background:var(--bad-soft)' : ''}"><td class="mono" style="white-space:nowrap">${esc(x.orderNo || '')}<div class="small muted">${esc(x.at ? cDay(localDay(new Date(x.at))) : '')}</div></td><td>${esc(x.name)}<div class="small muted">${esc([x.ilce, x.il].filter(Boolean).join(' / '))}</div></td><td class="mono small"><a href="https://suratkargo.com.tr/KargoTakip/?kargotakipno=${encodeURIComponent(x.tracking)}" target="_blank" rel="noopener">${esc(x.tracking)}</a></td>
       <td class="small">${del ? `<b>${esc(cDay(x.deliv))}</b>` : `${x.und ? '<span class="pill p-bad">Teslim edilemedi / iade</span> ' : ''}${esc(x.durum || 'Durum bilgisi yok (rapor yükle)')}`}</td>${del ? `<td class="r">${x.cod ? tl2(x.cod) + (x.collected ? '<div class="small" style="color:var(--good)">tahsil edildi</div>' : '') : '—'}</td>` : `<td class="r"><b style="${x.days > 5 ? 'color:var(--bad)' : ''}">${fmtN(x.days)}</b></td>`}</tr>`; }).join('')}</tbody></table></div>`;
   return h;
 }
@@ -2548,7 +2553,7 @@ function sheetNewOrder(){
   return {title:'Manuel sipariş', body:`<form id="f-order" class="card grid2">
     <label class="f">Kanal<select class="input" id="no-ch">${Object.keys(CHANNELS).map(c => `<option value="${c}">${esc(CHANNELS[c].name)}</option>`).join('')}</select></label>
     <label class="f">Sipariş no<input class="input mono" id="no-no" required autocomplete="off"></label>
-    <label class="f" style="grid-column:1/-1">Sipariş tarihi<input class="input" id="no-date" type="datetime-local" value="${new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16)}"></label>
+    <label class="f" style="grid-column:1/-1">Sipariş tarihi<input class="input" id="no-date" type="datetime-local" value="${trInput()}"></label>
     <div style="grid-column:1/-1;display:grid;gap:8px" id="no-lines">${lines.map((l,i) => `<div class="grid2" style="grid-template-columns:1fr 70px 100px"><label class="f">Stok kodu<input class="input mono" name="no-sku" list="sku-list" value="${esc(l.sku)}" autocomplete="off"></label><label class="f">Adet<input class="input num" name="no-qty" inputmode="numeric" value="${esc(l.qty)}"></label><label class="f">Birim fiyat<input class="input num" name="no-price" inputmode="decimal" placeholder="TL"></label></div>`).join('')}</div>
     <div style="grid-column:1/-1" class="row"><button class="btn sm" type="button" data-act="order-addline">Kalem ekle</button></div>
     <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Siparişi kaydet ve stoktan düş</button></div>
@@ -2558,7 +2563,7 @@ function skuDatalist(){ return `<datalist id="sku-list">${productsArr().slice(0,
 async function submitNewOrder(){
   const channel = $('#no-ch').value, orderNo = $('#no-no').value.trim();
   if (!orderNo) return toast('Sipariş numarasını yaz.', true);
-  const dv = $('#no-date').value; const date = dv ? new Date(dv).toISOString() : nowISO();
+  const dv = $('#no-date').value; const date = dv ? trParse(dv).toISOString() : nowISO();
   const skus = [...document.getElementsByName('no-sku')].map(i => i.value.trim()), qtys = [...document.getElementsByName('no-qty')].map(i => intOr(i.value, NaN));
   const prices = [...document.getElementsByName('no-price')].map(i => { const n = num(i.value); return i.value.trim() && isFinite(n) ? n : null; });
   const lines = [];
@@ -2590,8 +2595,8 @@ function retDeadline(r){
   if (r.status !== 'requested' || r.extStatus !== 'WaitingInAction') return null;
   if (r.autoAt) return Date.parse(r.autoAt) - Date.now();   // Trendyol'un verdiği otomatik onay zamanı
   if (!r.extAt) return null;
-  const d = new Date(r.extAt); let n = 0; while (n < 2) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) n++; }
-  return d.getTime() - Date.now();
+  const d = new Date(Date.parse(r.extAt) + 3 * 3600000); let n = 0; while (n < 2) { d.setUTCDate(d.getUTCDate() + 1); if (d.getUTCDay() !== 0) n++; }
+  return d.getTime() - 3 * 3600000 - Date.now();
 }
 function dlText(ms){ if (ms <= 0) return 'Süre doldu'; const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; const p2 = n => String(n).padStart(2, '0'); return (d ? d + ' gün ' : '') + `${p2(h)}:${p2(m)}:${p2(x)}`; }
 function deadlinePill(r){
@@ -3301,17 +3306,18 @@ async function runCosts(){
 /* ============ Kâr analizi ============ */
 const PERIODS = [['today','Bugün'],['yesterday','Dün'],['month','Bu ay'],['d30','Son 30 gün'],['custom','Tarih seç']];
 function periodRange(id, cf, ct){
-  const d0 = new Date(); d0.setHours(0,0,0,0);
-  const add = (d, n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
-  if (id === 'today') return [d0, add(d0,1)];
-  if (id === 'yesterday') return [add(d0,-1), d0];
-  if (id === 'week') { const wd = (d0.getDay()+6)%7; return [add(d0,-wd), add(d0,1)]; }
-  if (id === 'month') return [new Date(d0.getFullYear(), d0.getMonth(), 1), add(d0,1)];
-  if (id === 'lastmonth') return [new Date(d0.getFullYear(), d0.getMonth()-1, 1), new Date(d0.getFullYear(), d0.getMonth(), 1)];
-  if (id === 'd7') return [add(d0,-6), add(d0,1)];
-  if (id === 'd30') return [add(d0,-29), add(d0,1)];
-  const f = cf ? new Date(cf+'T00:00') : add(d0,-6), t = ct ? add(new Date(ct+'T00:00'),1) : add(d0,1);
-  return [f, t];
+  /* Gün sınırları her zaman İstanbul saatiyle 00:00 (telefon başka ülkede olsa da) */
+  const ad = (s, n) => { const x = new Date(s + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const at = (s) => new Date(Date.parse(s + 'T00:00:00+03:00'));
+  const td = todayTR(), wd = (new Date(td + 'T12:00:00Z').getUTCDay() + 6) % 7, m1 = td.slice(0, 8) + '01';
+  if (id === 'today') return [at(td), at(ad(td, 1))];
+  if (id === 'yesterday') return [at(ad(td, -1)), at(td)];
+  if (id === 'week') return [at(ad(td, -wd)), at(ad(td, 1))];
+  if (id === 'month') return [at(m1), at(ad(td, 1))];
+  if (id === 'lastmonth') { const x = new Date(m1 + 'T12:00:00Z'); x.setUTCMonth(x.getUTCMonth() - 1); return [at(x.toISOString().slice(0, 10)), at(m1)]; }
+  if (id === 'd7') return [at(ad(td, -6)), at(ad(td, 1))];
+  if (id === 'd30') return [at(ad(td, -29)), at(ad(td, 1))];
+  return [at(cf || ad(td, -6)), at(ad(ct || td, 1))];
 }
 function profS(){ if (!S.prof) { let p = 'month'; try { p = localStorage.getItem('lb-period') || 'month'; } catch(e){} if (!PERIODS.some(x => x[0] === p)) p = 'month'; S.prof = {period:p, sub:'products', sort:'profit', data:null, key:'', loading:false, cf:'', ct:''}; } return S.prof; }
 async function loadProfit(force){
@@ -4011,7 +4017,7 @@ function shopifyCard(){
       <li><b>Settings</b> sekmesinden <b>Client ID</b> ve <b>Client secret</b>'ı kopyala, aşağıya yapıştır.</li></ol></details>
     <form id="f-shop" class="grid2">
       <label class="f">Mağaza adresi<input class="input mono" id="sh-shop" placeholder="lilyahome.myshopify.com" value="${esc(d.shop || '')}" required autocomplete="off"></label>
-      <label class="f">Stoktan düşme başlangıcı<input class="input" type="datetime-local" id="sh-start" value="${new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16)}"></label>
+      <label class="f">Stoktan düşme başlangıcı<input class="input" type="datetime-local" id="sh-start" value="${trInput()}"></label>
       <label class="f">Client ID<input class="input mono" id="sh-cid" required autocomplete="off"></label>
       <label class="f">Client secret<input class="input mono" id="sh-secret" type="password" required autocomplete="off"></label>
       <div class="row"><button class="btn primary" type="submit">Bağlan</button></div>
@@ -4056,7 +4062,7 @@ function sheetImport(){
   </div>
   <div class="card"><h3>Stok takibi başlangıcı</h3>
     <p class="muted small" style="margin:0">Bu tarihten önceki siparişler kaydedilir ama stoktan düşülmez, çünkü o tarihteki depo sayımın onları zaten içeriyor.</p>
-    <form id="f-start" class="row"><input class="input" type="datetime-local" id="st-date" style="max-width:240px" value="${st ? new Date(Date.parse(st)-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16) : ''}"><button class="btn" type="submit">Kaydet</button></form>
+    <form id="f-start" class="row"><input class="input" type="datetime-local" id="st-date" style="max-width:240px" value="${st ? trInput(Date.parse(st)).slice(0,16) : ''}"><button class="btn" type="submit">Kaydet</button></form>
   </div>
   <div class="card"><h3>Yedek</h3>
     <p class="muted small" style="margin:0">Ürünler, siparişler, iadeler ve bütün hareketler tek dosyada. Bu dosyayı yukarıdan yükleyerek geri dönebilirsin.</p>
@@ -4809,8 +4815,8 @@ document.addEventListener('submit', async e => {
   else if (id === 'f-ad') { const day = $('#ad-day').value, amount = num($('#ad-amt').value); if (!day) return toast('Gün seç.', true); if (!isFinite(amount) || amount < 0) return toast('Harcamayı sayı olarak yaz. Örn. 350,50', true); await saveAds([{day, amount}], 'manuel', amount ? `${day} için ${fmtTL(amount)} reklam gideri kaydedildi.` : `${day} reklam kaydı silindi.`); }
   else if (id === 'f-rstart') { await run(async () => { await api('/api/settings', {reportStart: $('#rs-date').value || ''}); await refresh(true); const P = profS(); P.cache = {}; P.key = ''; S.home = null; toast('Raporların başlangıç tarihi kaydedildi; hesaplar yenileniyor.'); render(); }); }
   else if (id === 'f-fees') { const v = k => num($(k).value); const body = {feeCargoT1:v('#fe-ct1'), feeCargoT2:v('#fe-ct2'), feeCargoT3:v('#fe-ct3'), feeServiceTy:v('#fe-sty'), feeServiceFast:v('#fe-sfast'), serviceCutoff:v('#fe-scut'), baremMaxDesi:v('#fe-bmd'), feeCargoSh:v('#fe-csh'), feePackOrder:v('#fe-pko'), feePackUnit:v('#fe-pku'), feePackOrderSh:v('#fe-pkos'), feePackUnitSh:v('#fe-pkus'), shComm:v('#fe-shc'), srSms:v('#fe-srsms'), srSmsUntil: ($('#fe-srsmsu') || {}).value || '', stopaj:v('#fe-stp')}; if (!(body.serviceCutoff >= 0 && body.serviceCutoff <= 24)) return toast('Son sipariş saati 0–24 arasında olmalı.', true); if (Object.values(body).some(x => !isFinite(x) || x < 0)) return toast('Değerleri sayı olarak yaz. Örn. 46,48', true); body.desiMode = $('#fe-desimode').checked; try { body.desiTables = {tex: parseDesi($('#fe-desi-tex').value), ptt: parseDesi($('#fe-desi-ptt').value)}; } catch(err) { return toast(err.message, true); } if (!body.desiTables.tex.length || !body.desiTables.ptt.length) return toast('İki desi tablosu da dolu olmalı.', true); await saveSetting(body, 'Kesinti varsayımları kaydedildi.'); const P = profS(); P.key = ''; P.pricing = null; render(); }
-  else if (id === 'f-shop') { const st = $('#sh-start').value; await run(async () => { const r = await api('/api/shopify/connect', {shop: $('#sh-shop').value, cid: $('#sh-cid').value, secret: $('#sh-secret').value, start: st ? new Date(st).toISOString() : ''}); S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify bağlandı: ${r.name || ''}${r.first ? ' · ' + r.first.orders + ' sipariş okundu' : ''}`); }); }
-  else if (id === 'f-start') { const v = $('#st-date').value; if (!v) return toast('Bir tarih seç.', true); await saveSetting({startedAt:new Date(v).toISOString()}, 'Başlangıç tarihi kaydedildi.'); if (S.imp && S.imp.preview) computePreview(); }
+  else if (id === 'f-shop') { const st = $('#sh-start').value; await run(async () => { const r = await api('/api/shopify/connect', {shop: $('#sh-shop').value, cid: $('#sh-cid').value, secret: $('#sh-secret').value, start: st ? trParse(st).toISOString() : ''}); S.shop = null; await refresh(true); renderSheet(false); toast(`Shopify bağlandı: ${r.name || ''}${r.first ? ' · ' + r.first.orders + ' sipariş okundu' : ''}`); }); }
+  else if (id === 'f-start') { const v = $('#st-date').value; if (!v) return toast('Bir tarih seç.', true); await saveSetting({startedAt:trParse(v).toISOString()}, 'Başlangıç tarihi kaydedildi.'); if (S.imp && S.imp.preview) computePreview(); }
 });
 let qTimer;
 document.addEventListener('input', e => {
