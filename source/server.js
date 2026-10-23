@@ -3488,6 +3488,15 @@ ${catalog}` });
       return json({ ok: true, orders, log, ships, addrOk, after: more ? after : null });
     } catch (e) { return bad(shAddrErr(e)); }
   }
+  if (path === '/api/shaddr/transit') { // Sürat yolda / teslim edildi: takip no'su olan Sürat gönderileri (son 30 gün); durum Sürat raporundan
+    const { results } = await env.DB.prepare(`SELECT s.gid, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, c.durum cdurum, c.teslim, c.undelivered, c.cod_amount, r.durum rdurum, r.cod rcod, r.collected, r.iade
+      FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
+      WHERE COALESCE(s.tracking,'') <> '' AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at DESC LIMIT 500`).bind(iso(Date.now() - 30 * 86400000)).all();
+    const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim), since = Date.parse(x.fulfilled_at || x.at) || now;
+      const und = !!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || '')), durum = String(x.rdurum || x.cdurum || '').trim();
+      return { gid: x.gid, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, durum, deliv: dl, und, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
+    return json({ ok: true, transit: items.filter(x => !x.deliv), delivered: items.filter(x => x.deliv) });
+  }
   if (path === '/api/shaddr/addrok') { // "Adres doğru, bekleyene al": sarı adres uyarısı bu sipariş için yok sayılır
     const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
     if (body.on === false) await env.DB.prepare('DELETE FROM addr_ok WHERE gid=?1').bind(gid).run();

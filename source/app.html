@@ -959,12 +959,30 @@ function sentHtml(A){
   if (A.sent.after) h += `<button class="btn" data-act="sent-more" ${A.sentLoading ? 'disabled' : ''} style="width:100%">${A.sentLoading ? 'Yükleniyor…' : 'Daha fazla yükle'}</button>`;
   return h;
 }
+// Adres düzeltme → Sürat yolda / Sürat teslim edildi (durumlar Sürat raporundan)
+async function loadTransit(){ const A = aS(); if (A.trLoading) return; A.trLoading = true;
+  try { A.tr = await api('/api/shaddr/transit', {}); A.trErr = ''; } catch (e) { A.trErr = errText(e); A.tr = A.tr || null; } A.trLoading = false; if (S.tab === 'addr') render(); }
+function transitHtml(A){
+  if (A.trErr && !A.tr) return `<div class="banner bad"><div>${esc(A.trErr)}</div></div>`;
+  if (!A.tr) return loading();
+  const del = A.view === 'delivered', q = A.q.trim().toLocaleLowerCase('tr'), bad = x => x.und || x.days > 5;
+  let L = (A.tr[del ? 'delivered' : 'transit'] || []).filter(x => !q || String(x.orderNo).toLocaleLowerCase('tr').includes(q) || String(x.name).toLocaleLowerCase('tr').includes(q) || String(x.tracking).includes(q));
+  if (!del) L = L.slice().sort((a, b) => (bad(b) - bad(a)) || (b.days - a.days)); else L = L.slice().sort((a, b) => String(b.deliv).localeCompare(String(a.deliv)));
+  let h = `<p class="small muted" style="margin:0 0 10px">${del ? 'Son 30 günde teslim edilen Sürat gönderileri.' : 'Takip numarası gelmiş, henüz teslim edilmemiş Sürat gönderileri. 5 günden uzun yolda olan ya da teslim edilemeyen / iade olanlar kırmızı ve en üstte.'} Durumlar Sürat raporu yüklendikçe güncellenir. <span role="button" data-act="tr-reload" style="text-decoration:underline;cursor:pointer">Yenile</span></p>`;
+  if (!L.length) return h + `<div class="panel empty"><h4>${del ? 'Teslim edilen gönderi yok' : 'Yolda gönderi yok'}</h4><p>${q ? 'Aramayla eşleşen gönderi bulunamadı.' : ''}</p></div>`;
+  h += `<div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th>Alıcı</th><th>Takip no</th><th>${del ? 'Teslim' : 'Durum'}</th>${del ? '<th class="r">Kapıda tahsilat</th>' : '<th class="r">Gün</th>'}</tr></thead><tbody>${L.map(x => { const red = !del && bad(x);
+    return `<tr style="${red ? 'background:var(--bad-soft)' : ''}"><td class="mono" style="white-space:nowrap">${esc(x.orderNo || '')}<div class="small muted">${esc(cDay(String(x.at).slice(0, 10)))}</div></td><td>${esc(x.name)}<div class="small muted">${esc([x.ilce, x.il].filter(Boolean).join(' / '))}</div></td><td class="mono small"><a href="https://suratkargo.com.tr/KargoTakip/?kargotakipno=${encodeURIComponent(x.tracking)}" target="_blank" rel="noopener">${esc(x.tracking)}</a></td>
+      <td class="small">${del ? `<b>${esc(cDay(x.deliv))}</b>` : `${x.und ? '<span class="pill p-bad">Teslim edilemedi / iade</span> ' : ''}${esc(x.durum || 'Durum bilgisi yok (rapor yükle)')}`}</td>${del ? `<td class="r">${x.cod ? tl2(x.cod) + (x.collected ? '<div class="small" style="color:var(--good)">tahsil edildi</div>' : '') : '—'}</td>` : `<td class="r"><b style="${x.days > 5 ? 'color:var(--bad)' : ''}">${fmtN(x.days)}</b></td>`}</tr>`; }).join('')}</tbody></table></div>`;
+  return h;
+}
 const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(' / '), a.zip].filter(Boolean).map(esc).join(' · ') : '<span class="muted">Adres yok</span>';
 function viewAddr(){
-  const A = aS(); if (!['bad', 'pending', 'done', 'printed'].includes(A.view)) A.view = 'bad'; /* açılışta Sürat sorunlu */ loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
+  const A = aS(); if (!['bad', 'pending', 'done', 'printed', 'transit', 'delivered'].includes(A.view)) A.view = 'bad'; /* açılışta Sürat sorunlu */ loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Kargolanmamış bütün Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
-  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const cnt = {bad: 0, pending: 0, done: 0, printed: 0}; for (const o of ((A.data && A.data.orders) || [])) { const t = adTab(A, o); if (t) cnt[t]++; } return [['bad', 'Sürat sorunlu'], ['pending', 'Sürat bekleyen'], ['done', 'Sürat kayıtlı'], ['printed', 'Sürat yazdırıldı']].map(([v, t]) => `<button class="chip" data-act="ad-view" data-id="${v}" aria-pressed="${A.view === v}">${t}${A.data ? ' · ' + fmtN(cnt[v]) : ''}</button>`).join(''); })()}</div>
+  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const cnt = {bad: 0, pending: 0, done: 0, printed: 0}; for (const o of ((A.data && A.data.orders) || [])) { const t = adTab(A, o); if (t) cnt[t]++; } return [['bad', 'Sürat sorunlu'], ['pending', 'Sürat bekleyen'], ['done', 'Sürat kayıtlı'], ['printed', 'Sürat yazdırıldı'], ['transit', 'Sürat yolda'], ['delivered', 'Sürat teslim edildi']].map(([v, t]) => { const n = v === 'transit' || v === 'delivered' ? (A.tr ? (A.tr[v] || []).length : null) : (A.data ? cnt[v] : null); return `<button class="chip" data-act="ad-view" data-id="${v}" aria-pressed="${A.view === v}">${t}${n !== null ? ' · ' + fmtN(n) : ''}</button>`; }).join(''); })()}</div>
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
+  if (!A.tr && !A.trLoading) loadTransit();
+  if (A.view === 'transit' || A.view === 'delivered') return h + transitHtml(A);
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
   h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px"><div class="small"><b>Sürat Kargo</b> · ${(() => { const pend = (A.data.ships || []).filter(x => x.mode !== 'api' && !x.exported_at).length; return pend ? `<b style="color:var(--orange)">${fmtN(pend)} gönderi Sürat'a yüklenmeyi bekliyor</b>` : 'Yüklenmeyi bekleyen gönderi yok'; })()}<div class="muted">Barkod bas → Sürat Excel indir → Sürat eKargo'da Gönderi Girişi Excel'e yükle. Takip no için: Sürat eKargo → Gönderi Raporu → Getir → Excel'e aktar → buraya "Sürat raporunu yükle".</div></div><div class="row" style="gap:6px;flex-wrap:wrap">${(() => { if (A.bulk) return `<button class="btn sm" disabled>Oluşturuluyor… ${A.bulk}</button>`;
@@ -4537,6 +4555,7 @@ document.addEventListener('click', async e => {
     case 'ad-view': aS().view = id; aS().sr = null; aS().sel = null; render(); window.scrollTo(0, 0); break;
     case 'ad-more': loadAddrMore(); break;
     case 'ad-addrok': { const A = aS(), on = b.dataset.on === '1'; try { await api('/api/shaddr/addrok', {gid: id, on}); A.data.addrOk = (A.data.addrOk || []).filter(x => x !== id); if (on) A.data.addrOk.push(id); toast(on ? 'Sipariş Sürat bekleyen\'e geçti.' : 'Onay geri alındı.'); render(); } catch (err) { toast(errText(err), true); } break; }
+    case 'tr-reload': aS().tr = null; loadTransit(); render(); break;
     case 'ad-clear': aS().q = ''; aS().data = null; aS().sent = null; render(); break;
     case 'ad-sync': aS().at = 0; aS().data = null; aS().sent = null; render(); break;
     case 'sent-miss': aS().sentMiss = !aS().sentMiss; render(); break;
