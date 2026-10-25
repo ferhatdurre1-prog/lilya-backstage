@@ -1690,6 +1690,7 @@ function viewHome(){
   let h = '';
   if (H) {
     const D = H.days, T = D[D.length - 1], Y = D[D.length - 2] || {rev:0, prof:0}, M = H.month, YS = H.ySame || null;
+    if (H.stale || H.day !== todayTR()) h += `<p class="small muted" style="margin:0 0 8px">⏳ Son kayıtlı özet gösteriliyor${H.day !== todayTR() ? ' (' + esc(cDay(H.day)) + ')' : ''} · güncelleniyor…</p>`;
     const kpi = (k, icon, c, cs, v, sub, vstyle='', go='') => `<div class="kpi" data-act="home-go" data-id="${go}" style="--c:${c};--cs:${cs};cursor:pointer"><div class="hd"><div class="k">${k}</div><div class="ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon]}</svg></div></div><div class="v" style="${vstyle}">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
     const vs = (a, b) => { if (!b) return ''; const d = (a - b) / Math.abs(b) * 100; if (!isFinite(d)) return ''; return ` <span class="${d >= 0 ? 'up' : 'dn'}">${d >= 0 ? '▲' : '▼'} %${Math.abs(d).toFixed(0)}</span>`; };
     const pc = (n) => n < 0 ? 'var(--bad)' : 'var(--good)', pcs = (n) => n < 0 ? 'var(--bad-soft)' : 'var(--good-soft)';
@@ -1792,9 +1793,10 @@ function homeChart(D){
 // Ana ekran özeti: son değer telefonda saklanır, açılışta anında gösterilir; arkada en fazla dakikada bir yenilenir.
 function homeMaybeLoad(force){
   if (S.homeLoading) return;
-  if (!S.home) { try { const c = JSON.parse(localStorage.getItem('lb_home') || 'null'); if (c && c.data && c.data.day === todayTR() && c.data.days) S.home = {...c, at: 0}; } catch(e) {} }
+  if (!S.home) { try { const c = JSON.parse(localStorage.getItem('lb_home') || 'null'); if (c && c.data && c.data.days) S.home = {...c, at: 0, rev: c.data.day === todayTR() ? c.rev : ''}; } catch(e) {} }
   const H = S.home, now = Date.now();
-  if (!force && H && H.data && H.data.day === todayTR() && (H.rev === S.rev || now - H.at < 60000)) return;
+  if (!force && H && H.data && H.data.day === todayTR() && !H.data.stale && (H.rev === S.rev || now - H.at < 60000)) return;
+  if (!force && H && H.data && (H.data.stale || H.data.day !== todayTR()) && now - H.at < 4000) return;
   if (!force && H && H.err && now - H.at < 60000) return;
   if (!force && H && H.pending && now - H.at < 3500) return;
   setTimeout(() => loadHome(force), 0);
@@ -1809,7 +1811,8 @@ async function loadHome(force){
       S.homeLoading = false; setTimeout(() => { if (S.tab === 'home') homeMaybeLoad(); }, 4000); if (S.tab === 'home') render(); return;
     }
     S.home = {rev, at: Date.now(), data};
-    try { localStorage.setItem('lb_home', JSON.stringify({rev, data})); } catch(e) {}
+    if (data.stale) { setTimeout(() => { if (S.tab === 'home') homeMaybeLoad(); }, 4000); } /* son özet gösteriliyor, yenisi hazırlanınca yerine geçer */
+    else try { localStorage.setItem('lb_home', JSON.stringify({rev, data})); } catch(e) {}
   } catch(e) { S.home = S.home && S.home.data ? {...S.home, at: Date.now()} : {rev, at: Date.now(), err: errText(e)}; }
   S.homeLoading = false; if (S.tab === 'home') render();
 }

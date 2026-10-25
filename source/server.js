@@ -2274,6 +2274,8 @@ async function cronRun(env) {
     const sAt = Number(await envc.DB.prepare(`SELECT v FROM settings WHERE k='run_stats_at'`).first().then(r => r && r.v)) || 0;
     const statsEvery = guard.level >= 2 ? 60 : guard.level === 1 ? 20 : 5;
     if (guard.level < 3 && qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= statsEvery * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
+    // Ana ekran özeti önceden hazırlanır: gün dönünce ya da bir düzeltme özeti silince (açılışta bekletmesin)
+    if (guard.level < 3 && Date.now() - t0 < 50000) { try { const hc = JSON.parse((await getSetting(envc, 'home_cache')) || 'null'); if (!hc || hc.day !== trDay(Date.now())) { const j = await homeBg(envc, null); if (j) await j; } } catch (e) {} }
     diag.queries = counter.n; diag.wr = counter.w || 0; diag.rd = counter.r || 0;
     try { await flushUsage(env, { req: 1, wr: diag.wr, rd: diag.rd }); } catch (e) {}
     // Cloudflare gerçek kullanım verisi saatte bir (anahtar varsa)
@@ -2773,8 +2775,15 @@ async function homeData(env, ctx, force) {
     if (Date.now() - busy > 180000) { await setSetting(env, 'home_busy', String(Date.now())); const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {})); if (ctx && ctx.waitUntil) ctx.waitUntil(job); }
   }
   if (cached && cached.day === today) return cached;
+  // Geçerli özet yoksa (gün döndü ya da bir düzeltme özeti sildi): son hesaplanan özet hemen verilir, yenisi arka planda hesaplanır
+  const last = JSON.parse((await getSetting(env, 'home_last')) || 'null');
+  if (last && last.days) { await homeBg(env, ctx); return { ...last, stale: true }; }
   try { return await computeHome(env); } catch (e) { return { pending: true, err: String(e.message || e).slice(0, 200) }; }
 }
+async function homeBg(env, ctx){ const busy = Number(await getSetting(env, 'home_busy')) || 0; if (Date.now() - busy <= 180000) return null;
+  await setSetting(env, 'home_busy', String(Date.now()));
+  const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {}));
+  if (ctx && ctx.waitUntil) ctx.waitUntil(job); return job; }
 // Hızlı: geçmiş günler kayıtlı günlük sonuçlardan (raporlar), sadece bugün ve "dün bu saate kadar" canlı hesaplanır
 async function computeHome(env) {
   const t00 = Date.now(), today = trDay(t00);
@@ -2813,7 +2822,7 @@ async function computeHome(env) {
     // Kâr ekranındaki "Dün" ve "Son 30 gün" ile birebir aynı hesap
     yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null },
     last30: { revenue: R2(M30.summary.revenue), profit: R2(M30.summary.profit), margin: M30.summary.revenue ? R2(M30.summary.profit / M30.summary.revenue * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
-  await setSetting(env, 'home_cache', JSON.stringify(out)); await setSetting(env, 'home_err', '');
+  const js = JSON.stringify(out); await env.DB.batch([setStmt(env, 'home_cache', js), setStmt(env, 'home_last', js), setStmt(env, 'home_err', '')]);
   return out;
 }
 /* ---------- hava durumu (Open-Meteo, anahtar gerektirmez) ---------- */
