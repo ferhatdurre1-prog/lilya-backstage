@@ -780,12 +780,20 @@ function sheetSecurity(){
 /* ============ Tablo sıralama: her tablonun sütun başlığına dokununca büyükten küçüğe / küçükten büyüğe ============ */
 const TSORT = (() => { try { return JSON.parse(localStorage.getItem('lb_tsort') || '{}'); } catch(e) { return {}; } })();
 function tblKey(t){ return [...t.tHead.rows[0].cells].map(c => c.textContent.trim()).join('|'); }
+const TR_MON = ['oca','şub','mar','nis','may','haz','tem','ağu','eyl','eki','kas','ara'];
+function dateVal(t){ let m = /^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:\s+(\d{1,2})[:.](\d{2}))?/.exec(t), d, mo, y, hh = 0, mi = 0;
+  if (m) { d = +m[1]; mo = +m[2]; y = +m[3]; hh = +(m[4] || 0); mi = +(m[5] || 0); }
+  else if ((m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(t))) { y = +m[1]; mo = +m[2]; d = +m[3]; hh = +(m[4] || 0); mi = +(m[5] || 0); }
+  else if ((m = /^(\d{1,2})\s+([A-Za-zÇĞİÖŞÜçğıöşü]{3})[A-Za-zÇĞİÖŞÜçğıöşü]*\.?\s+(\d{4})(?:\s+(\d{1,2})[:.](\d{2}))?/.exec(t))) { const k = TR_MON.indexOf(m[2].toLocaleLowerCase('tr-TR')); if (k < 0) return null; d = +m[1]; mo = k + 1; y = +m[3]; hh = +(m[4] || 0); mi = +(m[5] || 0); }
+  else return null;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null; return y * 1e8 + mo * 1e6 + d * 1e4 + hh * 100 + mi; }
 function cellVal(td){
   if (!td) return null;
   if (td.dataset.v !== undefined) return td.dataset.v;
   const inp = td.querySelector && td.querySelector('input');
   const t = (inp ? inp.value : td.textContent).replace(/\s+/g, ' ').trim();
   if (!t || t === '—' || t === '-') return null;
+  { const dv = dateVal(t); if (dv !== null) return dv; } /* tarih: yıl → ay → gün → saat (sayı gibi okunmasın) */
   const m = t.match(/[\d][\d.]*(?:,\d+)?/);
   if (m && /^[\s−\-+₺%#]*[\d]/.test(t)) { let n = parseFloat(m[0].replace(/\./g, '').replace(',', '.')); if (/^[\s₺+]*[−\-]/.test(t)) n = -n; return n; }
   return t.toLocaleLowerCase('tr-TR');
