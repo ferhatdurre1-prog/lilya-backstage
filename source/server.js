@@ -285,16 +285,17 @@ async function cariLoad(env, only) {
   const pay = (await B(env.DB.prepare(`SELECT id, supplier, date, t, amount, method, note FROM sup_pay WHERE deleted=0${w}`)).all()).results;
   const mov = (await B(env.DB.prepare(`SELECT id, supplier, date, t, kind, amount, note, src FROM sup_mov WHERE deleted=0${w}`)).all()).results;
   const sups = (await env.DB.prepare('SELECT name, terms, manual, currency FROM suppliers').all()).results, K = (x) => String(x || '').toLocaleLowerCase('tr-TR'), sm = new Map(sups.map(x => [K(x.name), x]));
-  const m = new Map(), get = (n) => { const k = K(n); if (!m.has(k)) { const s0 = sm.get(k); m.set(k, { supplier: s0 ? s0.name : n, cur: cariCur(s0 && s0.currency), terms: cariTerms(s0 && s0.terms), buys: [], pays: [] }); } return m.get(k); };
+  const m = new Map(), get = (n) => { const k = K(n); if (!m.has(k)) { const s0 = sm.get(k); m.set(k, { supplier: s0 ? s0.name : n, cur: cariCur(s0 && s0.currency), terms: cariTerms(s0 && s0.terms), buys: [], pays: [], recvs: [] }); } return m.get(k); };
   for (const r of pur) get(r.supplier).buys.push({ id: r.id, doc_no: r.doc_no, units: r.units, date: r.doc_date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(r.total) });
-  for (const r of pay) get(r.supplier).pays.push({ id: r.id, method: r.method, note: r.note, date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(r.amount) });
+  // Eksi tutarlı ödeme = karşı taraftan alınan ödeme (tahsilat): bizim ödemelerimizden düşülür, bakiye artar
+  for (const r of pay) { const x = { id: r.id, method: r.method, note: r.note, date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(Math.abs(r.amount)) }; if (Number(r.amount) < 0) get(r.supplier).recvs.push(x); else get(r.supplier).pays.push(x); }
   // Elle girilen hareketler: devir bakiye / borç (+ borç, − alacak) ve alacak (iade, indirim)
   const MK = { open: 'Devir bakiye', debt: 'Borç', credit: 'Alacak' };
   for (const r of mov) { const a = r2(r.amount), x = { id: 'm' + r.id, mov: true, label: r.src === 'xls' && r.note ? r.note : [MK[r.kind] || 'Hareket', r.note].filter(Boolean).join(' · '), date: r.date || String(r.t || '').slice(0, 10), t: r.t || '' };
     if (r.kind === 'credit' || a < 0) get(r.supplier).pays.push({ ...x, method: MK[r.kind] || 'Alacak', note: r.note, amount: Math.abs(a) }); else get(r.supplier).buys.push({ ...x, amount: a }); }
   if (!only) for (const s0 of sups) if (s0.manual) get(s0.name);
-  return [...m.values()].map(c => { c.buy = r2(c.buys.reduce((a, x) => a + x.amount, 0)); c.paid = r2(c.pays.reduce((a, x) => a + x.amount, 0)); c.bal = r2(c.buy - c.paid);
-    c.last = [...c.buys, ...c.pays].reduce((a, x) => x.date > a ? x.date : a, ''); return c; });
+  return [...m.values()].map(c => { c.buy = r2(c.buys.reduce((a, x) => a + x.amount, 0)); c.recv = r2((c.recvs || []).reduce((a, x) => a + x.amount, 0)); c.paid = r2(c.pays.reduce((a, x) => a + x.amount, 0) - c.recv); c.bal = r2(c.buy - c.paid);
+    c.last = [...c.buys, ...c.pays, ...(c.recvs || [])].reduce((a, x) => x.date > a ? x.date : a, ''); return c; });
 }
 // Ödeme planı: her taksitin vadesi, tutarı ve kalanı (ödemeler en eski vadeden başlayarak düşülür). Haftalık % şeklinde her hafta kalan borcun yüzdesi istenir.
 function nextWday(d, wd) { let t = Date.parse(d + 'T12:00:00Z'); if (!t) return d; while (new Date(t).getUTCDay() !== wd) t += 86400000; return new Date(t).toISOString().slice(0, 10); }
@@ -330,7 +331,7 @@ function cariSchedule(c, today) {
     let pool = c.paid; for (const x of inst) { const p = Math.min(pool, x.amount); pool = r2(pool - p); x.paid = r2(p); x.left = r2(x.amount - p); items.push(x); }
   }
   // Karşı taraf bize borçluysa (bakiye eksi): sattıklarımız aynı ödeme şekliyle vadelenir, onun ödemeleri / bizim alışlarımız en eskiden düşülür → beklenen tahsilatlar
-  let inc = []; if (c.bal < -0.004 && T.kind !== 'pct') { const rb = c.pays.map(p => ({ ...p, mov: true, label: p.label || p.method || 'Alacak' })); inc = cariSchedule({ terms: T, buys: rb, pays: [], paid: c.buy, bal: -c.bal }, today).items.map(x => ({ ...x, dir: 'in' })); }
+  let inc = []; if (c.bal < -0.004 && T.kind !== 'pct') { const rb = c.pays.map(p => ({ ...p, mov: true, label: p.label || p.method || 'Alacak' })); inc = cariSchedule({ terms: T, buys: rb, pays: [], paid: r2(c.buy + (c.recv || 0)), bal: -c.bal }, today).items.map(x => ({ ...x, dir: 'in' })); }
   const wk = addDayStr(today, 7), open = items.filter(x => x.left > 0.004);
   for (const x of items) x.st = x.left <= 0.004 ? 'paid' : x.due < today ? 'late' : x.due === today ? 'today' : x.due <= wk ? 'week' : 'later';
   const sum = (f) => r2(open.filter(f).reduce((a, x) => a + x.left, 0));
@@ -3266,10 +3267,11 @@ ${catalog}` });
   }
   if (path === '/api/cari/get') {
     const sup = String(body.supplier || '').trim(); if (!sup) return bad('Tedarikçi seç.');
-    const c = (await cariLoad(env, sup))[0] || { supplier: sup, terms: cariTerms(null), buys: [], pays: [], buy: 0, paid: 0, bal: 0 };
+    const c = (await cariLoad(env, sup))[0] || { supplier: sup, terms: cariTerms(null), buys: [], pays: [], recvs: [], buy: 0, paid: 0, bal: 0 };
     const tr = await env.DB.prepare('SELECT name, terms, currency FROM suppliers WHERE name=?1').bind(sup).first(); if (tr) { c.supplier = tr.name; c.terms = cariTerms(tr.terms); c.cur = cariCur(tr.currency); }
     const cur = c.cur || 'TL', rate = cur === 'TL' ? 1 : (await fxRates(env))[cur] || null;
     const rows = [...c.buys.map(r => ({ kind: 'buy', id: r.id, mov: !!r.mov, date: r.date, t: r.t, amount: r.amount, text: r.mov ? r.label : `Alış #${r.id}${r.doc_no ? ' · ' + r.doc_no : ''} · ${r.units || 0} adet` })),
+      ...(c.recvs || []).map(r => ({ kind: 'buy', recv: true, id: r.id, mov: false, date: r.date, t: r.t, amount: r.amount, text: ['Tahsilat', r.method, r.note].filter(Boolean).join(' · ') })),
       ...c.pays.map(r => ({ kind: 'pay', id: r.id, mov: !!r.mov, date: r.date, t: r.t, amount: r.amount, text: r.mov ? r.label : [r.method || 'Ödeme', r.note].filter(Boolean).join(' · ') }))]
       .sort((a, b) => a.date.localeCompare(b.date) || a.t.localeCompare(b.t));
     let bal = 0; for (const r of rows) { bal = r2(bal + (r.kind === 'buy' ? r.amount : -r.amount)); r.bal = bal; }
@@ -3290,7 +3292,7 @@ ${catalog}` });
     const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : iso().slice(0, 10);
     await env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(sup, iso()).run();
     const r = await env.DB.prepare('SELECT name FROM suppliers WHERE name=?1').bind(sup).first();
-    await env.DB.prepare('INSERT INTO sup_pay(t, supplier, date, amount, method, note) VALUES(?1,?2,?3,?4,?5,?6)').bind(iso(), r ? r.name : sup, date, amount, String(body.method || '').slice(0, 40), String(body.note || '').slice(0, 160)).run();
+    await env.DB.prepare('INSERT INTO sup_pay(t, supplier, date, amount, method, note) VALUES(?1,?2,?3,?4,?5,?6)').bind(iso(), r ? r.name : sup, date, body.dir === 'in' ? -amount : amount, String(body.method || '').slice(0, 40), String(body.note || '').slice(0, 160)).run();
     return json({ ok: true });
   }
   if (path === '/api/cari/new') {
