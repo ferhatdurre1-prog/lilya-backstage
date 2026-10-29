@@ -3354,6 +3354,50 @@ ${catalog}` });
     await env.DB.prepare(`UPDATE suppliers SET manual=NULL WHERE manual=1 AND NOT EXISTS(SELECT 1 FROM sup_mov m WHERE m.deleted=0 AND m.supplier=suppliers.name) AND NOT EXISTS(SELECT 1 FROM sup_pay p WHERE p.deleted=0 AND p.supplier=suppliers.name) AND NOT EXISTS(SELECT 1 FROM purchases u WHERE u.cari_at IS NOT NULL AND u.status<>'deleted' AND u.supplier=suppliers.name COLLATE NOCASE)`).run();
     return json({ ok: true, n: ((a.meta && a.meta.changes) || 0) + ((c.meta && c.meta.changes) || 0) });
   }
+  if (path === '/api/cari/merge') {
+    // CARİLERİ EŞİTLE: 'from' carisinin bütün kayıtları 'into' carisine taşınır, 'from' silinir; taşınan kayıtlar saklanır (geri alınabilir)
+    await env.DB.prepare('CREATE TABLE IF NOT EXISTS cari_merge(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, from_name TEXT, into_name TEXT, data TEXT, undone_at TEXT)').run();
+    const from = String(body.from || '').trim(), into = String(body.into || '').trim();
+    if (!from || !into) return bad('İki cariyi de seç.'); if (from.toLocaleLowerCase('tr-TR') === into.toLocaleLowerCase('tr-TR')) return bad('Aynı cari seçildi.');
+    await env.DB.batch([env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(into, iso()), env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at) VALUES(?1,?2)').bind(from, iso())]);
+    const F = await env.DB.prepare('SELECT * FROM suppliers WHERE name=?1').bind(from).first(), I = await env.DB.prepare('SELECT * FROM suppliers WHERE name=?1').bind(into).first();
+    const [pu, mv, py, mpF, mpI] = await env.DB.batch([env.DB.prepare('SELECT id, supplier_id FROM purchases WHERE supplier=?1 COLLATE NOCASE').bind(F.name), env.DB.prepare('SELECT id FROM sup_mov WHERE supplier=?1').bind(F.name), env.DB.prepare('SELECT id FROM sup_pay WHERE supplier=?1').bind(F.name),
+      env.DB.prepare('SELECT supplier, k FROM sup_map WHERE supplier=?1 COLLATE NOCASE').bind(F.name), env.DB.prepare('SELECT k FROM sup_map WHERE supplier=?1 COLLATE NOCASE').bind(I.name)]);
+    const has = pu.results.length + mv.results.length + py.results.length;
+    if (has && F.currency !== I.currency && cariCur(F.currency) !== cariCur(I.currency)) return bad(`Döviz farklı: ${F.name} ${cariCur(F.currency)}, ${I.name} ${cariCur(I.currency)}. Önce dövizleri aynı yap.`);
+    const iK = new Set(mpI.results.map(x => x.k)), maps = mpF.results.filter(x => !iK.has(x.k)).map(x => ({ s: x.supplier, k: x.k }));
+    const fill = { terms: !I.terms && F.terms ? F.terms : null, currency: !I.currency && F.currency ? F.currency : null, manual: !I.manual && F.manual ? F.manual : null };
+    const data = { from: F, purchases: pu.results, movs: mv.results.map(x => x.id), pays: py.results.map(x => x.id), maps, fill };
+    const st = [env.DB.prepare('INSERT INTO cari_merge(at, from_name, into_name, data) VALUES(?1,?2,?3,?4)').bind(iso(), F.name, I.name, JSON.stringify(data)),
+      env.DB.prepare('UPDATE purchases SET supplier=?2, supplier_id=?3 WHERE supplier=?1 COLLATE NOCASE').bind(F.name, I.name, I.id),
+      env.DB.prepare('UPDATE sup_mov SET supplier=?2 WHERE supplier=?1').bind(F.name, I.name), env.DB.prepare('UPDATE sup_pay SET supplier=?2 WHERE supplier=?1').bind(F.name, I.name),
+      env.DB.prepare('UPDATE OR IGNORE sup_map SET supplier=?2 WHERE supplier=?1 COLLATE NOCASE').bind(F.name, I.name),
+      env.DB.prepare('UPDATE suppliers SET terms=COALESCE(terms, ?2), currency=COALESCE(currency, ?3), manual=COALESCE(manual, ?4) WHERE id=?1').bind(I.id, fill.terms, fill.currency, fill.manual),
+      env.DB.prepare('DELETE FROM suppliers WHERE id=?1').bind(F.id), REV(env)];
+    await env.DB.batch(st);
+    return json({ ok: true, into: I.name, from: F.name, n: { buys: pu.results.length, movs: mv.results.length, pays: py.results.length } });
+  }
+  if (path === '/api/cari/merges') {
+    await env.DB.prepare('CREATE TABLE IF NOT EXISTS cari_merge(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, from_name TEXT, into_name TEXT, data TEXT, undone_at TEXT)').run();
+    const { results } = await env.DB.prepare('SELECT id, at, from_name, into_name, data FROM cari_merge WHERE undone_at IS NULL AND into_name=?1 COLLATE NOCASE ORDER BY id DESC').bind(String(body.supplier || '')).all();
+    return json({ ok: true, list: results.map(x => { let d = {}; try { d = JSON.parse(x.data); } catch (e) {} return { id: x.id, at: x.at, from: x.from_name, into: x.into_name, buys: (d.purchases || []).length, movs: (d.movs || []).length, pays: (d.pays || []).length }; }) });
+  }
+  if (path === '/api/cari/unmerge') {
+    // EŞİTLEMEYİ GERİ AL: silinen cari eski adıyla geri gelir, taşınan kayıtlar ona döner (eşitlemeden sonra eklenenler kalan caride kalır)
+    const M = await env.DB.prepare('SELECT * FROM cari_merge WHERE id=?1 AND undone_at IS NULL').bind(intOr(body.id, 0)).first(); if (!M) return bad('Bu eşitleme bulunamadı ya da zaten geri alındı.');
+    const d = JSON.parse(M.data || '{}'), F = d.from || { name: M.from_name };
+    await env.DB.prepare('INSERT OR IGNORE INTO suppliers(name, created_at, terms, manual, currency) VALUES(?1,?2,?3,?4,?5)').bind(F.name, F.created_at || iso(), F.terms || null, F.manual || null, F.currency || null).run();
+    const nf = await env.DB.prepare('SELECT id FROM suppliers WHERE name=?1').bind(F.name).first(), I = await env.DB.prepare('SELECT id FROM suppliers WHERE name=?1').bind(M.into_name).first();
+    const st = [];
+    for (const p of d.purchases || []) st.push(env.DB.prepare('UPDATE purchases SET supplier=?2, supplier_id=?3 WHERE id=?1').bind(p.id, F.name, nf ? nf.id : p.supplier_id));
+    for (const id of d.movs || []) st.push(env.DB.prepare('UPDATE sup_mov SET supplier=?2 WHERE id=?1').bind(id, F.name));
+    for (const id of d.pays || []) st.push(env.DB.prepare('UPDATE sup_pay SET supplier=?2 WHERE id=?1').bind(id, F.name));
+    for (const m of d.maps || []) st.push(env.DB.prepare('UPDATE OR IGNORE sup_map SET supplier=?3 WHERE supplier=?1 COLLATE NOCASE AND k=?2').bind(M.into_name, m.k, m.s || F.name));
+    const fl = d.fill || {}; if (I && (fl.terms || fl.currency || fl.manual)) st.push(env.DB.prepare('UPDATE suppliers SET terms=CASE WHEN ?2 IS NOT NULL AND terms=?2 THEN NULL ELSE terms END, currency=CASE WHEN ?3 IS NOT NULL AND currency=?3 THEN NULL ELSE currency END, manual=CASE WHEN ?4 IS NOT NULL THEN NULL ELSE manual END WHERE id=?1').bind(I.id, fl.terms || null, fl.currency || null, fl.manual || null));
+    st.push(env.DB.prepare('UPDATE cari_merge SET undone_at=?2 WHERE id=?1').bind(M.id, iso()), REV(env));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+    return json({ ok: true, from: F.name, into: M.into_name });
+  }
   if (path === '/api/cari/delete') {
     // CARİYİ SİL: firmanın elle girilen / Excel'den gelen hareketleri ve ödemeleri silinir, cariye işlenmiş fişler cariden çıkarılır (fişler ve stok yerinde kalır)
     const sup = String(body.supplier || '').trim(); if (!sup) return bad('Firma seç.');
