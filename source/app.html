@@ -2094,7 +2094,7 @@ const soTotals = (items, disc) => { const r2 = (v) => Math.round(v * 100) / 100,
 let SO_MK = null; // geçmiş listenin PDF'i yeniden alınırken o listenin kâr oranı
 const soPrice = (cost) => Math.round((Number(cost) || 0) * (1 + (SO_MK !== null ? SO_MK : soMarkup()) / 100) * 100) / 100;
 // Satış listesi PDF'i (A4): resim, kod, ürün, adet, birim fiyat (alış + seçilen kâr), tutar; ara toplam, iskonto, genel toplam
-async function soSalesPdf(items, disc, note){
+async function soSalesPdf(items, disc, note, cust){
   const urls = [...new Set(items.map(x => x.image).filter(u => u && /^https:\/\//.test(u) && !LBL_IMGS.has(u)))];
   await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
   const doc = new MiniPdf(210, 297), mm = (v) => v * 8, PW = mm(210), PH = mm(297), m = mm(14), cw = PW - 2 * m;
@@ -2112,7 +2112,8 @@ async function soSalesPdf(items, disc, note){
       font(c, 7, true); const t = 'SATIŞ LİSTESİ'; c.fillText(t, PW - m - c.measureText(t).width, y + mm(1));
       font(c, 3.4, false); c.fillText(dstr, PW - m - c.measureText(dstr).width, y + mm(10));
       if (note) { const nl = wrapText(c, note, mm(90)).slice(0, 2); nl.forEach((t2, k) => c.fillText(t2, PW - m - c.measureText(t2).width, y + mm(15) + k * mm(4.4))); }
-      y += mm(26); }
+      if (cust) { font(c, 4.4, true); c.fillText(wrapText(c, 'Sayın ' + cust, mm(80))[0], m, y + mm(22)); }
+      y += mm(cust ? 30 : 26); }
     else { font(c, 3.4, false); c.fillText('Satış listesi · ' + dstr + ' · sayfa ' + page, m, y); y += mm(7); }
     line(c, y, 0.4); y += mm(2); font(c, 3, true); cols.forEach((cc, i) => cell(c, i, cc[0], y)); y += mm(5); line(c, y, 0.25); y += mm(1.5); };
   head();
@@ -4473,7 +4474,7 @@ document.addEventListener('click', async e => {
     case 'purl-toggle': { const sh = S.sheet; sh.open = sh.open === id ? null : id; renderSheet(false); break; }
     case 'outl-open': openSheet('outlists', {}); break;
     case 'outl-toggle': { const sh = S.sheet; if (!sh) break; sh.open = sh.open === id ? null : id; renderSheet(false); break; }
-    case 'outl-pdf': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break; await run(async () => { SO_MK = Number(L.markup) || 0; try { await deliverPdf(await soSalesPdf(L.items, Number(L.disc) || 0, [L.reason, L.note].filter(Boolean).join(' · ') + ' · liste #' + L.id), `satis-listesi-${L.id}.pdf`, 0, 'Satış listesi'); } finally { SO_MK = null; } }); break; }
+    case 'outl-pdf': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break; await run(async () => { SO_MK = Number(L.markup) || 0; try { await deliverPdf(await soSalesPdf(L.items, Number(L.disc) || 0, [L.reason, String(L.note || '').replace(/(^| · )Cari: .*$/, '')].filter(Boolean).join(' · ') + ' · liste #' + L.id, ((/Cari: (.+)$/.exec(L.note || '') || [])[1] || '').trim()), `satis-listesi-${L.id}.pdf`, 0, 'Satış listesi'); } finally { SO_MK = null; } }); break; }
     case 'outl-revert': { const L = ((S.sheet || {}).data || []).find(x => String(x.id) === id); if (!L) break;
       if (!(await confirmBox(`Liste #${L.id}: ${fmtN(L.items.length)} üründen toplam ${fmtN(L.units)} adet stoğa geri eklenecek. Onaylıyor musun?`, 'Geri al'))) break;
       await run(async () => { await api('/api/outlists/revert', {id: L.id}); await refresh(true); toast(`Liste #${L.id} geri alındı, ${fmtN(L.units)} adet stoğa eklendi.`); S.sheet.data = null; renderSheet(false); }); break; }
@@ -4490,7 +4491,7 @@ document.addEventListener('click', async e => {
       const units = sh.items.reduce((a, x) => a + x.n, 0), neg = sh.items.filter(x => x.n > x.qty);
       if (!(await confirmBox(`${fmtN(sh.items.length)} üründen toplam ${fmtN(units)} adet stoktan düşülecek (${esc(sh.reason)}).${neg.length ? ` ${fmtN(neg.length)} üründe stok eksiye inecek.` : ''}${cust ? ` ${esc(cust)} carisine ${tl2(soTotals(sh.items, sh.disc).total)} alacak (onun borcu) yazılacak.` : ''}`, 'Çıkışı kaydet'))) { scanFocus(); break; }
       const note = 'Barkodla çıkış · ' + sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '');
-      await run(async () => { await api('/api/stock/out-bulk', {items: sh.items.map(x => ({key: x.key, n: x.n, code: x.code, name: x.name, image: x.image, cost: x.cost})), note, reason: sh.reason, extra: (($('#so-note') || {}).value || '').trim(), markup: soMarkup(), disc: sh.disc || 0, total: soTotals(sh.items, sh.disc).total, customer: cust}); if (cust && S.cari) S.cari.at = 0; sh.saved = true; scanStop(); if (sh.pdf) { try { await deliverPdf(await soSalesPdf(sh.items, sh.disc, sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : '')), `satis-listesi-${todayTR()}.pdf`, 0, 'Satış listesi'); } catch (e) { toast('PDF hazırlanamadı: ' + errText(e), true); } } await refresh(true); toast(`Çıkış kaydedildi: ${fmtN(units)} adet.`); closeSheetForce(); }); break; }
+      await run(async () => { const ro = await api('/api/stock/out-bulk', {items: sh.items.map(x => ({key: x.key, n: x.n, code: x.code, name: x.name, image: x.image, cost: x.cost})), note, reason: sh.reason, extra: (($('#so-note') || {}).value || '').trim(), markup: soMarkup(), disc: sh.disc || 0, total: soTotals(sh.items, sh.disc).total, customer: cust}); if (cust && S.cari) S.cari.at = 0; sh.saved = true; scanStop(); if (sh.pdf) { try { await deliverPdf(await soSalesPdf(sh.items, sh.disc, sh.reason + (($('#so-note') || {}).value ? ' · ' + $('#so-note').value.trim() : ''), cust), `satis-listesi-${todayTR()}.pdf`, 0, 'Satış listesi'); } catch (e) { toast('PDF hazırlanamadı: ' + errText(e), true); } } await refresh(true); toast(`Çıkış kaydedildi: ${fmtN(units)} adet${cust ? ' · ' + cust + (ro && ro.cari ? ' carisine ' + tl2(soTotals(sh.items, sh.disc).total) + ' borç yazıldı' : '') : ''}.`); closeSheetForce(); }); break; }
     case 'plabel': { const p = S.products.get(id); const sz = ($('#pl-size') || {}).value; if (sz) plSize(sz); if (p) await printProductLabels([p], ($('#pl-copies') || {}).value); break; }
     case 'plabel-all': { const ps = filteredProducts(); if (!ps.length) { toast('Listede ürün yok.', true); break; } if (!(await confirmBox(`Listede görünen ${fmtN(ps.length)} ürünün her biri için 1 koli etiketi (${plSize().replace('x','×')} mm) hazırlansın mı? Ölçüyü ürün sayfasından değiştirebilirsin; arama ve süzgeçle listeyi daraltabilirsin.`, 'Hazırla'))) break; await printProductLabels(ps, 1); break; }
     case 'merge-open': openSheet('merge', {from: id, q: '', back: S.sheet}); break;

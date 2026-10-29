@@ -184,6 +184,9 @@ async function init0(env) {
     // Kullanıcı isteği (20.10.2026): raporlar 1 Ekim 2026'dan başlar, Eylül verileri hesaba girmez (silinmez)
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_rs1','1')`), setStmt(env, 'report_start', '2026-10-01'), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'stats_first', ''), setStmt(env, 'stats_cursor', ''), setStmt(env, 'home_cache', ''), REV(env)]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_outcari1'`).first())) { // eski barkodla çıkış hareketlerine cari adı (çıkış listesinin notundan)
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_outcari1','1')`), env.DB.prepare(`UPDATE moves SET note = note || ' · Cari: ' || (SELECT trim(substr(l.note, instr(l.note, 'Cari: ') + 6)) FROM out_lists l WHERE 'out:' || l.id = moves.ref) WHERE ref LIKE 'out:%' AND COALESCE(note,'') NOT LIKE '%Cari: %' AND EXISTS (SELECT 1 FROM out_lists l WHERE 'out:' || l.id = moves.ref AND instr(COALESCE(l.note,''), 'Cari: ') > 0)`)]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_missing1'`).first())) {
     try { const { results } = await env.DB.prepare(`SELECT * FROM returns WHERE kept=1 AND status='accepted'`).all();
       const st = [env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_missing1','1')`)];
@@ -3047,7 +3050,8 @@ async function api(req, env, path, ctx) {
     // Barkodla çıkış: stok düşülür ve liste kaydedilir (geçmiş çıkışlarda görülür, PDF'i yeniden alınır, geri alınabilir)
     const items = (Array.isArray(body.items) ? body.items : []).map(x => ({ key: String(x.key || ''), n: intOr(x.n, 0), code: String(x.code || '').slice(0, 40), name: String(x.name || '').slice(0, 200), image: String(x.image || '').slice(0, 500), cost: numOrNull(x.cost) })).filter(x => x.key && x.n > 0 && x.n <= 100000).slice(0, 500);
     if (!items.length) return bad('Çıkış yapılacak ürün yok.');
-    const note = String(body.note || 'Barkodla çıkış').slice(0, 300), units = items.reduce((a, x) => a + x.n, 0);
+    const cust0 = String(body.customer || '').trim().slice(0, 120);
+    const note = (String(body.note || 'Barkodla çıkış').slice(0, 250) + (cust0 ? ' · Cari: ' + cust0 : '')).slice(0, 380), units = items.reduce((a, x) => a + x.n, 0); // hareket notunda kime çıkış yapıldığı görünür
     const lst = await env.DB.prepare(`INSERT INTO out_lists(t, reason, note, markup, disc, items, units, total) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) RETURNING id`).bind(iso(), String(body.reason || '').slice(0, 60), String(body.extra || '').slice(0, 200), numOrNull(body.markup), numOrNull(body.disc) || 0, JSON.stringify(items), units, numOrNull(body.total)).first();
     const st = []; for (const x of items) st.push(...changeQty(env, x.key, -x.n, { type: 'out', channel: 'manuel', ref: 'out:' + lst.id, note: note + ' · liste #' + lst.id }));
     // Kayıtlı cariye satış: listenin genel toplamı o carinin bize borcu (alacak) olarak yazılır
