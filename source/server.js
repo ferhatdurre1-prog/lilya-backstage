@@ -116,7 +116,8 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE bk_ship ADD COLUMN delivered TEXT').run(); } catch (e) {} // Basit Kargo teslim günü
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE products ADD COLUMN mto INTEGER').run(); } catch (e) {} // stoksuz satış (sipariş üzerine)
-  for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
+  try { await env.DB.prepare('CREATE TABLE IF NOT EXISTS desi_pkg(pkg TEXT PRIMARY KEY, comp TEXT, desi REAL, day TEXT)').run(); } catch (e) {} // Trendyol paketlerinin içeriği ve Trendyol'un verdiği desi (tahmin için)
+  for (const c of ['ty_comm REAL', 'ty_vat REAL', 'desi REAL', 'desi_m REAL', 'same_day INTEGER', 'ty_passive INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   if (priceCol && await env.DB.prepare(`SELECT 1 FROM settings WHERE k='ty_prod_done' AND v<>''`).first()) await env.DB.batch([setStmt(env, 'ty_prod_page', 0), setStmt(env, 'ty_prod_done', '1970-01-01T00:00:00.000Z')]);
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tydate'`).first())) {
     const sh = await env.DB.prepare(`SELECT v FROM settings WHERE k='ty_shift'`).first();
@@ -186,6 +187,9 @@ async function init0(env) {
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_outcari1'`).first())) { // eski barkodla çıkış hareketlerine cari adı (çıkış listesinin notundan)
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_outcari1','1')`), env.DB.prepare(`UPDATE moves SET note = note || ' · Cari: ' || (SELECT trim(substr(l.note, instr(l.note, 'Cari: ') + 6)) FROM out_lists l WHERE 'out:' || l.id = moves.ref) WHERE ref LIKE 'out:%' AND COALESCE(note,'') NOT LIKE '%Cari: %' AND EXISTS (SELECT 1 FROM out_lists l WHERE 'out:' || l.id = moves.ref AND instr(COALESCE(l.note,''), 'Cari: ') > 0)`)]); } catch (e) {}
+  }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_desi2'`).first())) { // yeni desi tahmini: geçmiş günler yeniden hesaplansın
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_desi2','1')`), env.DB.prepare(`DELETE FROM settings WHERE k='desi_cur'`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
   }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_missing1'`).first())) {
     try { const { results } = await env.DB.prepare(`SELECT * FROM returns WHERE kept=1 AND status='accepted'`).all();
@@ -2278,6 +2282,7 @@ async function cronRun(env) {
     const sAt = Number(await envc.DB.prepare(`SELECT v FROM settings WHERE k='run_stats_at'`).first().then(r => r && r.v)) || 0;
     const statsEvery = guard.level >= 2 ? 60 : guard.level === 1 ? 20 : 5;
     if (guard.level < 3 && qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= statsEvery * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
+    try { if (guard.level < 3 && Date.now() - t0 < 50000) await desiLearn(envc, 300); } catch (e) {}
     // Ana ekran özeti önceden hazırlanır: gün dönünce ya da bir düzeltme özeti silince (açılışta bekletmesin)
     if (guard.level < 3 && Date.now() - t0 < 50000) { try { const hc = JSON.parse((await getSetting(envc, 'home_cache')) || 'null'); if (!hc || hc.day !== trDay(Date.now())) { const j = await homeBg(envc, null); if (j) await j; } } catch (e) {} }
     diag.queries = counter.n; diag.wr = counter.w || 0; diag.rd = counter.r || 0;
@@ -2375,6 +2380,39 @@ const DEFAULT_DESI_TABLES = {"tex":[{"desi":1,"price":98.34},{"desi":2,"price":9
 const carrierKey = (name) => /ptt/i.test(String(name || '')) ? 'ptt' : 'tex';
 const CARRIER_NAMES = { tex: 'Trendyol Express', ptt: 'PTT Kargo' };
 function tyDesiPrice(fee, desi, carrier) { const c = tyCargo(fee, Infinity, desi, carrier); return c.noTable ? fee.cargoT3 : c.cost; }
+// Desi yuvarlama: küsurat 0,5'in altı aşağı, 0,5 ve üstü yukarı; en az 1 desi
+const dRound = (x) => Math.max(1, Math.floor((Number(x) || 0) + 0.5 + 1e-9));
+const desiComp = (L) => { const m = new Map(); for (const x of L) if (x.pkey && x.qty > 0) m.set(x.pkey, (m.get(x.pkey) || 0) + x.qty); return [...m.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([k, q]) => k + '*' + q).join(','); };
+// Trendyol paketlerinden öğren: paket içeriği (ürün*adet) ve Trendyol'un verdiği desi
+async function desiLearn(env, max = 400) {
+  const cur = (await getSetting(env, 'desi_cur')) || '';
+  const { results } = await env.DB.prepare(`SELECT id, lines, date, updated_at FROM orders WHERE channel='trendyol' AND updated_at > ?1 ORDER BY updated_at LIMIT ?2`).bind(cur, max).all();
+  if (!results.length) return 0; const st = [];
+  for (const o of results) { let ls = []; try { ls = JSON.parse(o.lines || '[]'); } catch (e) {} const pk = new Map();
+    for (const l of ls) { const k = String(l.key || '').split('|')[0]; if (!k) continue; const g = pk.get(k) || { L: [], desi: null, bad: false }; if (l.status === 'cancelled') g.bad = true; else g.L.push({ pkey: l.pkey, qty: Number(l.qty) || 0 }); const d = Number(l.fin && l.fin.desi); if (d > 0) g.desi = d; pk.set(k, g); }
+    for (const [k, g] of pk) if (g.desi && !g.bad && g.L.length) st.push(env.DB.prepare('INSERT INTO desi_pkg(pkg, comp, desi, day) VALUES(?1,?2,?3,?4) ON CONFLICT(pkg) DO UPDATE SET comp=excluded.comp, desi=excluded.desi').bind(k, desiComp(g.L), g.desi, String(o.date || '').slice(0, 10))); }
+  st.push(setStmt(env, 'desi_cur', results[results.length - 1].updated_at || cur));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  return results.length;
+}
+// Desi tahmin motoru: 1) aynı içerikli geçmiş paketlerin ortalaması 2) manuel desiler (adetle toplanıp yuvarlanır) 3) geçmiş paketlerden ürün başı tahmin 4) 1 desi
+async function desiModel(env) {
+  const [h, pr] = await env.DB.batch([env.DB.prepare('SELECT comp, AVG(desi) a, COUNT(*) n FROM desi_pkg GROUP BY comp'), env.DB.prepare('SELECT key, desi, desi_m FROM products WHERE desi_m > 0 OR desi > 0')]);
+  const hist = new Map(h.results.map(x => [x.comp, { a: x.a, n: x.n }])), man = new Map(), unit = new Map(), learned = new Map();
+  for (const x of pr.results) { if (x.desi_m > 0) man.set(x.key, x.desi_m); if (x.desi > 0) learned.set(x.key, x.desi); }
+  // tek ürünlü paketler: en büyük adetli paketlerden ürün başı desi (Trendyol küçük adetleri 1'e yuvarlar)
+  const best = new Map(); for (const x of h.results) { if (x.comp.includes(',')) continue; const [k, q0] = x.comp.split('*'), q = Number(q0) || 1, b = best.get(k); if (!b || q > b.q) best.set(k, { q, a: x.a }); }
+  for (const [k, b] of best) unit.set(k, b.a / b.q);
+  const fmt = (v) => (Math.round(v * 100) / 100).toLocaleString('tr-TR');
+  return { est(L) { const comp = desiComp(L); if (!comp) return { v: 1, how: 'veri yok, 1 sayıldı' };
+      const hh = hist.get(comp); if (hh) return { v: dRound(hh.a), how: `geçmişteki aynı paketlerin ortalaması (${hh.n} paket)` };
+      const items = comp.split(',').map(t => { const [k, q] = t.split('*'); return { k, q: Number(q) || 1 }; });
+      if (items.every(x => man.has(x.k))) { const tot = items.reduce((a, x) => a + man.get(x.k) * x.q, 0); return { v: dRound(tot), how: `manuel desiden (${items.map(x => fmt(man.get(x.k)) + ' × ' + x.q).join(' + ')} = ${fmt(tot)} → ${dRound(tot)})` }; }
+      let tot = 0, known = 0; for (const x of items) { const u = man.get(x.k) || unit.get(x.k) || learned.get(x.k); if (u) { tot += u * x.q; known++; } else tot += 1; }
+      if (!known) return { v: 1, how: 'veri yok, 1 sayıldı' };
+      return { v: dRound(tot), how: `geçmiş paketlerden tahmin (${fmt(tot)} → ${dRound(tot)})` }; },
+    unitOf(k) { return man.get(k) || unit.get(k) || learned.get(k) || null; }, man };
+}
 function tyCargo(fee, amount, desi, carrier) {
   // Barem yalnızca küçük paketlerde: desi 10 ve üzeriyse tutar 350 TL altında olsa da desi fiyatı uygulanır
   const bigDesi = Math.ceil(Number(desi) || 0) >= (fee.baremMaxDesi || 10);
@@ -2413,9 +2451,10 @@ async function computeProfit(env, from, to, ch0) {
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
   const dayFrom = trDay(Date.parse(from)), dayTo = trDay(Date.parse(to) - 1);
   const SUBQ = `SELECT order_no FROM orders WHERE channel='trendyol' AND date >= ?1 AND date < ?2`;
+  const DM = await desiModel(env).catch(() => null);
   const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR, scR, ptR, srtR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
-    env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day, desi FROM products`),
+    env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day, desi, desi_m FROM products`),
     env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, note, kept, inspect, insp_ok FROM returns WHERE order_id<>'' AND status<>'rejected'`),
     env.DB.prepare(`SELECT * FROM order_fin WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare(`SELECT order_no, json_extract(data,'$.name') n FROM order_cust WHERE order_no IN (${SUBQ})`).bind(from, to),
@@ -2519,13 +2558,13 @@ async function computeProfit(env, from, to, ch0) {
       rows.push({ l, qty, retQ, dq, kq, mq, full: (unitRev || 0) * l.qty, revenue, commission, stopaj, cost: (unitCost || 0) * (qty + kq + bq), pr });
     }
     const pkgs = new Map();
-    for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true }; const f = x.l.fin || {}; g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
+    for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true, L: [] }; const f = x.l.fin || {}; if (x.l.status !== 'cancelled') g.L.push({ pkey: x.l.pkey, qty: Number(x.l.qty) || 0 }); g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
     let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0, undel = false, ptFee = 0, ptTxt = '';
     const cargoInfo = [];
-    if (ch === 'trendyol') for (const g of pkgs.values()) { const c = tyCargo(fee, g.amount, g.desi, g.carrier); cargo += c.cost;
+    if (ch === 'trendyol') for (const g of pkgs.values()) { if (!g.desi) { const e = DM ? DM.est(g.L) : { v: 1, how: 'veri yok, 1 sayıldı' }; g.desiEst = e; } const c = tyCargo(fee, g.amount, g.desi || (g.desiEst && g.desiEst.v), g.carrier); cargo += c.cost;
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
-      if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi, g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi, g.carrier);
-      if (g.defVal > 0) penalty += penaltyFor(g.defVal); cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (desi yok, 1 sayıldı)'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
+      if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier);
+      if (g.defVal > 0) penalty += penaltyFor(g.defVal); cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (tahmin: ' + (g.desiEst ? g.desiEst.how : '1 sayıldı') + ')'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
     else if (ch === 'shopify' && rows.some(x => x.qty > 0 || x.retQ > 0)) {
       // Shopify kuralları: 700 TL altı müşteri 100 TL kargo öder; kapıda nakit +50 TL, kapıda kart +100 TL (müşteriden). Gider: kargo firmasının ücreti
       const no = String(ord.order_no || '').replace(/\D/g, ''), bk = bkMap.get(no), pay = shPay.get(no), post = String(ord.date || '') >= SURAT_DIRECT_FROM && !(bk && bk.fee !== null && bk.fee !== undefined) && !bkMark.has(no); // Basit Kargo ücreti olan sipariş tarihi ne olursa olsun Basit Kargo
@@ -2536,9 +2575,9 @@ async function computeProfit(env, from, to, ch0) {
       if (ptSelf.has(no)) { ptTxt = ' · ödeme PayTR dışı alındı (komisyon yok)'; } else if (cod === false || (cod === null && pay)) { const m = ptFind(no, r2(gross + shInc), trDay(Date.parse(ord.date)), pay && pay.tx ? String(pay.tx).split(' ') : null); if (m && m.kesinti !== null) { ptFee = r2(m.kesinti); ptTxt = ` · PayTR komisyonu ${ptFee} TL`; } else if (ptRate > 0) { ptFee = r2((gross + shInc) * ptRate / 100); ptTxt = ` · PayTR komisyonu tahmini %${r2(ptRate)} (${ptFee} TL)`; } }
       const incTxt = shInc ? ` · müşteriden ${[shipInc ? 'kargo ' + shipInc + ' TL' : '', codInc ? 'kapıda ödeme ' + codInc + ' TL' : ''].filter(Boolean).join(' + ')} satışa eklendi` : '';
       if (post) { // 17.10.2026 10:00 sonrası: anlaşmalı Sürat. Sürat raporu yüklendiyse gerçek ücret (KDV + posta vergisi dahil), yoksa tarife (+%2,35 posta vergisi sadece kargoya) + kapıda ödeme bedeli
-        let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null; if (dz === null) { miss++; d += q; } else d += dz * q; }
+        let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi_m) > 0 ? Number(x.pr.desi_m) : DM && x.l.pkey ? DM.unitOf(x.l.pkey) : (x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null); if (!dz) { miss++; d += q; } else d += dz * q; }
         const sc = srCost.get(no), real = sc && sc.cost !== null && sc.cost > 0;
-        const desi = sc && sc.desi !== null ? Math.ceil(sc.desi) : Math.max(0, Math.ceil(d - 1e-9)), base = real ? r2(sc.cost) : r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, ord.date, cod));
+        const desi = sc && sc.desi !== null ? Math.ceil(sc.desi) : dRound(d), base = real ? r2(sc.cost) : r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, ord.date, cod));
         if (sc && sc.undelivered) { // teslim edilemedi: gidiş tam + dönüş yarı fiyat; kapıda ödeme bedeli ve müşteriden gelir yok
           undel = true; cargo = r2(base * 1.5); shInc = 0; shReal = real;
           cargoInfo.push(`TESLİM EDİLEMEDİ · Sürat ${real ? 'gerçek ücret' : 'tarife'} ${base} TL + dönüş yarı fiyat ${r2(base / 2)} TL · ${sc.durum || ''}`); }
@@ -2659,7 +2698,7 @@ async function computePricing(env) {
 /* ---------- API ---------- */
 function mapOrder(r) { return { cname: r.cname || '', id: r.id, channel: r.channel, orderNo: r.order_no, date: r.date, status: r.status, source: r.source, baseline: !!r.baseline, lines: JSON.parse(r.lines || '[]') }; }
 function mapReturn(r) { return { inspect: r.inspect || null, inspOk: r.insp_ok ?? null, kept: !!r.kept, outDesi: Number(r.o_desi) > 0 ? Number(r.o_desi) : null, autoAt: r.auto_at || null, retDesi: r.desi || r.f_ret_desi || null, retCargo: r.f_ret_cargo ?? null, claimId: r.claim_id && r.claim_id !== '-' ? r.claim_id : null, canTy: !!(r.item_id && r.claim_id && r.claim_id !== '-'), customer: r.customer || '', amount: r.amount === null || r.amount === undefined ? null : r.amount, reason: r.reason || '', cnote: r.cnote || '', cargo: r.cargo || '', cargoLink: r.cargo_link || '', extAt: r.ext_at || null, id: r.id, channel: r.channel, orderNo: r.order_no, orderId: r.order_id, lineKey: r.line_key, pkey: r.pkey, sku: r.sku, name: r.name, qty: r.qty, status: r.status, source: r.source, note: r.note, extStatus: r.ext_status, createdAt: r.created_at, decidedAt: r.decided_at }; }
-function mapProduct(r) { return { mto: r.mto === 1, set: BUNDLES.get(r.key) || null, code: r.code || '', merged: r.merged_into || null, passive: r.all_passive !== undefined && r.all_passive !== null ? !!r.all_passive : r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
+function mapProduct(r) { return { mto: r.mto === 1, set: BUNDLES.get(r.key) || null, code: r.code || '', merged: r.merged_into || null, passive: r.all_passive !== undefined && r.all_passive !== null ? !!r.all_passive : r.ty_passive === 1 && !JSON.parse(r.channels || '[]').some(c => c !== 'trendyol'), sameDay: r.same_day === 1, id: r.key, sku: r.sku, name: r.name, barcode: r.barcode, image: r.image, channels: JSON.parse(r.channels || '[]'), qty: r.qty, cost: r.cost, desiM: r.desi_m === undefined ? null : r.desi_m, desiTy: r.desi === undefined ? null : r.desi, min: r.min, tyQty: r.ty_qty === undefined ? null : r.ty_qty, createdAt: r.created_at, updatedAt: r.updated_at }; }
 function mapMove(r) { return { id: r.id, t: r.t, key: r.pkey, sku: r.sku, name: r.name, delta: r.delta, after: r.after, type: r.type, channel: r.channel, ref: r.ref, note: r.note }; }
 async function syncInfo(env) {
   const s = await getSettings(env, ['report_start', 'rev', 'started_at', 'auto_accept', 'ty_ok', 'ty_err', 'ty_prod_done', 'last_import', 'ty_prod_initial', 'ty_push', 'ty_push_at', 'ty_push_count', 'ty_push_err', 'ty_push_fail', 'fee_cargo_t1', 'fee_cargo_t2', 'fee_cargo_t3', 'cargo_desi_mode', 'desi_table', 'desi_tables', 'desi_learned', 'fee_service_ty', 'fee_cargo_sh', 'fee_sh_comm', 'sr_sms_fee', 'sr_sms_until', 'fee_pack_order_sh', 'fee_pack_unit_sh', 'fee_pack_order', 'fee_pack_unit', 'stopaj', 'fin_at', 'fin_err', 'fin_backfill_day', 'fin_stat', 'fin_cargo_check', 'ty_diag', 'cron_gaps', 'fee_service_fast', 'service_cutoff', 'barem_max_desi', 'perf_profit', 'qna_waiting', 'qna_err', 'usage_avg', 'hook_id', 'hook_at', 'hook_err']);
@@ -2970,6 +3009,19 @@ async function api(req, env, path, ctx) {
     if (qty) st.push(...changeQty(env, key, qty, { type: 'initial', channel: 'manuel' }));
     st.push(REV(env)); await env.DB.batch(st); return json({ ok: true, key });
   }
+  if (path === '/api/desi/set') {
+    // Ürün desi bilgisi (manuel): Excel'den toplu; ürün kodu / stok kodu / barkodla eşleşir
+    const items = (Array.isArray(body.items) ? body.items : []).slice(0, 5000); if (!items.length) return bad('Dosyada desi satırı yok.');
+    const P = (await env.DB.prepare('SELECT key, code, sku, barcode, desi_m FROM products').all()).results, F = (v) => skuFold(v), by = new Map();
+    for (const p of P) for (const v of [p.key, p.code, p.sku, p.barcode]) if (v && !by.has(F(v))) by.set(F(v), p);
+    const st = [], miss = []; let n = 0, same = 0, cleared = 0;
+    for (const it of items) { const p = [it.key, it.code, it.sku, it.barcode].map(v => v && by.get(F(v))).find(Boolean); if (!p) { miss.push(String(it.code || it.sku || it.barcode || '?')); continue; }
+      const raw = String(it.desi ?? '').trim(); if (!raw) continue; const d = numOrNull(raw.replace(',', '.')); if (d === null || d < 0 || d > 500) { miss.push((p.code || p.sku) + ' (desi geçersiz)'); continue; }
+      const v = d > 0 ? Math.round(d * 1000) / 1000 : null; if (v === p.desi_m) { same++; continue; } if (v === null) cleared++; else n++;
+      st.push(env.DB.prepare('UPDATE products SET desi_m=?2, updated_at=?3 WHERE key=?1').bind(p.key, v, iso())); }
+    if (st.length) { st.push(env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', ''), REV(env)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
+    return json({ ok: true, updated: n, cleared, same, miss: miss.slice(0, 50), missN: miss.length });
+  }
   if (path === '/api/products/info') {
     const key = String(body.key || ''); const sets = [], vals = [];
     if (body.name !== undefined) { const n = String(body.name).trim(); if (!n) return bad('Ürün adı boş olamaz.'); sets.push('name'); vals.push(n);
@@ -2979,6 +3031,7 @@ async function api(req, env, path, ctx) {
     if (body.min !== undefined) { const m = intOr(body.min, NaN); if (!(m >= 0)) return bad('Düşük stok sınırı geçersiz.'); sets.push('min'); vals.push(m); }
     if (Array.isArray(body.channels)) { sets.push('channels'); vals.push(JSON.stringify(body.channels.map(String))); }
     if (body.sameDay !== undefined) { sets.push('same_day'); vals.push(body.sameDay ? 1 : 0); }
+    if (body.desi !== undefined) { const d = numOrNull(body.desi); if (d !== null && (d < 0 || d > 500)) return bad('Desi 0–500 arası olmalı.'); sets.push('desi_m'); vals.push(d > 0 ? Math.round(d * 1000) / 1000 : null); }
     if (body.code !== undefined) { // ürün kodunu kullanıcı belirleyebilir: büyük harf, benzersiz
       const cd = String(body.code).trim().toLocaleUpperCase('tr-TR').replace(/\s+/g, '-');
       if (!/^[A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9._\-\/]{0,29}$/.test(cd)) return bad('Ürün kodu 1-30 karakter olmalı; harf, rakam, tire, nokta kullanılabilir.');
@@ -2988,7 +3041,7 @@ async function api(req, env, path, ctx) {
     }
     if (!sets.length) return json({ ok: true });
     const sql = `UPDATE products SET ${sets.map((c, i) => `${c}=?${i + 1}`).join(', ')}, updated_at=?${sets.length + 1} WHERE key=?${sets.length + 2}`;
-    const r = await env.DB.batch([env.DB.prepare(sql).bind(...vals, iso(), key), REV(env)]);
+    const r = await env.DB.batch([env.DB.prepare(sql).bind(...vals, iso(), key), REV(env), ...(body.desi !== undefined ? [env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')] : [])]);
     if (!r[0].meta.changes) return bad('Ürün bulunamadı.', 404);
     return json({ ok: true });
   }
