@@ -2285,6 +2285,7 @@ async function cronRun(env) {
     const sAt = Number(await envc.DB.prepare(`SELECT v FROM settings WHERE k='run_stats_at'`).first().then(r => r && r.v)) || 0;
     const statsEvery = guard.level >= 2 ? 60 : guard.level === 1 ? 20 : 5;
     if (guard.level < 3 && qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= statsEvery * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
+    try { if (guard.level < 3 && Date.now() - t0 < 30000) await desiRefill(envc, t0 + 42000); } catch (e) {}
     try { if (guard.level < 3 && Date.now() - t0 < 50000) await desiLearn(envc, 300); } catch (e) {}
     // Ana ekran özeti önceden hazırlanır: gün dönünce ya da bir düzeltme özeti silince (açılışta bekletmesin)
     if (guard.level < 3 && Date.now() - t0 < 50000) { try { const hc = JSON.parse((await getSetting(envc, 'home_cache')) || 'null'); if (!hc || hc.day !== trDay(Date.now())) { const j = await homeBg(envc, null); if (j) await j; } } catch (e) {} }
@@ -2397,6 +2398,29 @@ async function desiLearn(env, max = 400) {
   st.push(setStmt(env, 'desi_cur', results[results.length - 1].updated_at || cur));
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   return results.length;
+}
+// Eksik desileri Trendyol'dan tamamla: geçmiş günleri gün gün yeniden okur (paketin güncel hali desiyi içerir), boş desileri doldurur.
+// İlk tur son 60 gün; sonra son 21 gün sürekli döner (Trendyol desiyi paketten sonra yazabildiği için).
+async function desiRefill(env, deadline) {
+  const s = await getSettings(env, ['desi_ref_pos', 'desi_ref_pass', 'desi_ref_n', 'desi_ref_wait']); const now = Date.now();
+  if (Number(s.desi_ref_wait) > now) return null; // tur bitti, kısa mola
+  let pos = Number(s.desi_ref_pos) || now, pass = Number(s.desi_ref_pass) || 0, filled = Number(s.desi_ref_n) || 0, days = 0;
+  const back = pass === 0 ? 60 : 21, stopAt = now - back * 86400000;
+  while (Date.now() < deadline && days < 3) {
+    const end = pos + TY_TZ + 60000, start = pos - 86400000 + TY_TZ - 60000; let pkgs = [];
+    try { pkgs = await fetchOrderPackages(env, start, end); } catch (e) { break; }
+    const dm = new Map(); for (const p of pkgs) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); if (d > 0) dm.set(String(p.shipmentPackageId || p.id), { d, no: String(p.orderNumber), carrier: p.cargoProviderName || null }); }
+    const ids = [...new Set([...dm.values()].map(x => orderId('trendyol', x.no)))];
+    if (ids.length) { const rows = await selectIn(env, 'SELECT id, lines, date FROM orders', 'id', ids), st = [];
+      for (const o of rows) { let ls = []; try { ls = JSON.parse(o.lines || '[]'); } catch (e) {} let ch = false;
+        for (const l of ls) { const x = dm.get(String(l.key || '').split('|')[0]); if (!x) continue; l.fin = l.fin || {}; if (!(Number(l.fin.desi) > 0)) { l.fin.desi = x.d; ch = true; } if (!l.fin.carrier && x.carrier) { l.fin.carrier = x.carrier; ch = true; } }
+        if (ch) { filled++; st.push(env.DB.prepare('UPDATE orders SET lines=?2, updated_at=?3 WHERE id=?1').bind(o.id, JSON.stringify(ls), iso())); } }
+      if (st.length) { st.push(env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', ''), REV(env)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); } }
+    pos -= 86400000; days++;
+    if (pos < stopAt) { pos = now; pass++; await env.DB.batch([setStmt(env, 'desi_ref_wait', String(now + 30 * 60000)), setStmt(env, 'desi_ref_last', iso())]); break; }
+  }
+  await env.DB.batch([setStmt(env, 'desi_ref_pos', String(pos)), setStmt(env, 'desi_ref_pass', String(pass)), setStmt(env, 'desi_ref_n', String(filled))]);
+  return { days, filled, pass };
 }
 // Desi tahmin motoru: 1) aynı içerikli geçmiş paketlerin ortalaması 2) manuel desiler (adetle toplanıp yuvarlanır) 3) geçmiş paketlerden ürün başı tahmin 4) 1 desi
 async function desiModel(env) {
@@ -3014,6 +3038,8 @@ async function api(req, env, path, ctx) {
     if (qty) st.push(...changeQty(env, key, qty, { type: 'initial', channel: 'manuel' }));
     st.push(REV(env)); await env.DB.batch(st); return json({ ok: true, key });
   }
+  if (path === '/api/desi/status') { const s = await getSettings(env, ['desi_ref_pos', 'desi_ref_pass', 'desi_ref_n', 'desi_ref_last']); const pos = Number(s.desi_ref_pos) || 0, pass = Number(s.desi_ref_pass) || 0;
+    return json({ ok: true, pass, filled: Number(s.desi_ref_n) || 0, daysDone: pos ? Math.max(0, Math.round((Date.now() - pos) / 86400000)) : 0, total: pass === 0 ? 60 : 21, last: s.desi_ref_last || null }); }
   if (path === '/api/desi/set') {
     // Ürün desi bilgisi (manuel): Excel'den toplu; ürün kodu / stok kodu / barkodla eşleşir
     const items = (Array.isArray(body.items) ? body.items : []).slice(0, 5000); if (!items.length) return bad('Dosyada desi satırı yok.');
