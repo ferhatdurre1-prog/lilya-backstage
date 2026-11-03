@@ -188,6 +188,9 @@ async function init0(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_outcari1'`).first())) { // eski barkodla çıkış hareketlerine cari adı (çıkış listesinin notundan)
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_outcari1','1')`), env.DB.prepare(`UPDATE moves SET note = note || ' · Cari: ' || (SELECT trim(substr(l.note, instr(l.note, 'Cari: ') + 6)) FROM out_lists l WHERE 'out:' || l.id = moves.ref) WHERE ref LIKE 'out:%' AND COALESCE(note,'') NOT LIKE '%Cari: %' AND EXISTS (SELECT 1 FROM out_lists l WHERE 'out:' || l.id = moves.ref AND instr(COALESCE(l.note,''), 'Cari: ') > 0)`)]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_fail1'`).first())) { // kargo adı gizli (***) teslim edilemeyenler %0: günler yeniden hesaplansın
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_fail1','1')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_late1'`).first())) { // geç kargolanma (Tablo 2) + 10 desi kuralı: son 60 gün baştan taransın, günler yeniden hesaplansın
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_late1','1')`), env.DB.prepare(`DELETE FROM settings WHERE k IN ('desi_ref_pos','desi_ref_pass','desi_ref_n','desi_ref_wait','late_stat')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
   }
@@ -1945,7 +1948,7 @@ const DEFECT_RE = /yanlış ürün|eksik gönderil|parça|aksesuar|kusurlu|hasar
 const PENALTY_TABLE = [[200, 50], [350, 100], [600, 120], [1000, 180], [3000, 300], [10000, 600], [Infinity, 1200]];
 const penaltyFor = (amount) => (PENALTY_TABLE.find(([lim]) => amount < lim) || [0, 0])[1];
 // Başarısız teslimat ek bedeli: gönderi ücretinin yüzdesi (Kargo Fiyatları Tablosu, 10.08.2026)
-function failPct(carrier) { const c = String(carrier || '').toLocaleLowerCase('tr-TR'); if (!c || /trendyol|express|tex/.test(c)) return 0; if (/ptt/.test(c)) return 0.3; if (/sürat|surat/.test(c)) return 0.25; if (/borusan|ceva|horoz/.test(c)) return 1; return 0.5; }
+function failPct(carrier) { const c = String(carrier || '').toLocaleLowerCase('tr-TR').trim(); if (!c || /^[*\s.-]+$/.test(c) || /trendyol|express|tex/.test(c)) return 0; // adı gizli (***) ya da boş: Trendyol Express sayılır if (/ptt/.test(c)) return 0.3; if (/sürat|surat/.test(c)) return 0.25; if (/borusan|ceva|horoz/.test(c)) return 1; return 0.5; }
 const UNDELIVERED_RE = /teslim\s*edile?me|ula[sş][ıi]lam|bulunamad|undeliver/;
 const FIN_TYPES = 'Sale,Return,Discount,DiscountCancel,Coupon,CouponCancel,ManualRefund,ManualRefundCancel';
 async function syncTrendyolFinance(env, force, deadline) {
