@@ -2772,25 +2772,23 @@ async function refreshStats(env, deadline, maxDays) {
 // Hesap arka planda yapılır; istek hiç beklemez, varsa son hesaplanan değer hemen döner.
 async function homeData(env, ctx, force) {
   const today = trDay(Date.now());
-  const cached = JSON.parse((await getSetting(env, 'home_cache')) || 'null');
-  const fresh = cached && cached.day === today && Date.now() - cached.at < 90000;
-  if ((!fresh || force) && cached && cached.day === today) {
-    const busy = Number(await getSetting(env, 'home_busy')) || 0;
-    if (Date.now() - busy > 180000) { await setSetting(env, 'home_busy', String(Date.now())); const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {})); if (ctx && ctx.waitUntil) ctx.waitUntil(job); }
-  }
+  const ss = await getSettings(env, ['home_cache', 'rev']), cached = JSON.parse(ss.home_cache || 'null'), rev = String(ss.rev || '');
+  // Özet, hesaplandığı andaki sürümü (rev) hatırlar: yeni sipariş / değişiklik geldiyse 90 sn beklemeden yeniden hesaplanır
+  const fresh = cached && cached.day === today && String(cached.rev || '') === rev && Date.now() - cached.at < 90000;
+  if ((!fresh || force) && cached && cached.day === today) { await homeBg(env, ctx); return { ...cached, refreshing: true }; }
   if (cached && cached.day === today) return cached;
   // Geçerli özet yoksa (gün döndü ya da bir düzeltme özeti sildi): son hesaplanan özet hemen verilir, yenisi arka planda hesaplanır
   const last = JSON.parse((await getSetting(env, 'home_last')) || 'null');
   if (last && last.days) { await homeBg(env, ctx); return { ...last, stale: true }; }
   try { return await computeHome(env); } catch (e) { return { pending: true, err: String(e.message || e).slice(0, 200) }; }
 }
-async function homeBg(env, ctx){ const busy = Number(await getSetting(env, 'home_busy')) || 0; if (Date.now() - busy <= 180000) return null;
+async function homeBg(env, ctx){ const busy = Number(await getSetting(env, 'home_busy')) || 0; if (Date.now() - busy <= 30000) return null;
   await setSetting(env, 'home_busy', String(Date.now()));
   const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {}));
   if (ctx && ctx.waitUntil) ctx.waitUntil(job); return job; }
 // Hızlı: geçmiş günler kayıtlı günlük sonuçlardan (raporlar), sadece bugün ve "dün bu saate kadar" canlı hesaplanır
 async function computeHome(env) {
-  const t00 = Date.now(), today = trDay(t00);
+  const t00 = Date.now(), today = trDay(t00), rev0 = String((await getSetting(env, 'rev')) || '');
   const t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', w0d = addDay(today, -6);
   const f30 = addDay(today, -29), fromD = [m0d, w0d, f30].sort()[0], yday = addDay(today, -1);
   const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
@@ -2820,7 +2818,7 @@ async function computeHome(env) {
   const chOf = (P) => { const o = {}; for (const c of ['trendyol', 'shopify']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
       const prof = L.reduce((a, x) => a + (x.profit || 0), 0) - ads - (c === 'trendyol' ? (P.summary.otherFees || 0) - (P.summary.compensation || 0) : 0);
       o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; };
-  const out = { day: today, at: Date.now(), ch: { today: chOf(T), ys: chOf(YS), yday: chOf(YD), month: chOf(M), d30: chOf(M30), pm: PM ? chOf(PM) : null, p30: P30 ? chOf(P30) : null }, todayN: T.summary.orders, ysN: YS.summary.orders,
+  const out = { day: today, rev: rev0, at: Date.now(), ch: { today: chOf(T), ys: chOf(YS), yday: chOf(YD), month: chOf(M), d30: chOf(M30), pm: PM ? chOf(PM) : null, p30: P30 ? chOf(P30) : null }, todayN: T.summary.orders, ysN: YS.summary.orders,
     pm: PM ? { revenue: R2(PM.summary.revenue), profit: R2(PM.summary.profit) } : null, p30: P30 ? { revenue: R2(P30.summary.revenue), profit: R2(P30.summary.profit) } : null, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
     month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
     // Kâr ekranındaki "Dün" ve "Son 30 gün" ile birebir aynı hesap
