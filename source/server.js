@@ -3047,6 +3047,23 @@ async function api(req, env, path, ctx) {
     if (qty) st.push(...changeQty(env, key, qty, { type: 'initial', channel: 'manuel' }));
     st.push(REV(env)); await env.DB.batch(st); return json({ ok: true, key });
   }
+  if (path === '/api/retcargo/analysis') {
+    // İade kargo faturası analizi: Trendyol'un faturada kestiği iade ücreti hangi fiyata eşit (Tablo 1 / Tablo 2 barem, desi fiyatı)?
+    const fee = await loadFees(env), V = 1.2, T2 = [73.33, 78.74]; // Tablo 2 (TEX/PTT, KDV hariç)
+    const { results } = await env.DB.prepare(`SELECT f.order_no, f.ret_cargo, f.ret_desi, f.cargo, o.date, o.lines FROM order_fin f JOIN orders o ON o.order_no=f.order_no AND o.channel='trendyol' WHERE f.ret_cargo > 0 ORDER BY o.date DESC LIMIT 3000`).all();
+    const near = (a, b) => b !== null && b !== undefined && Math.abs(a - b) <= 0.06, items = [];
+    for (const r of results) { let ls = []; try { ls = JSON.parse(r.lines || '[]'); } catch (e) {} let amt = 0, carrier = null, desi = null;
+      for (const l of ls) { const f = l.fin || {}; amt += (f.paid !== null && f.paid !== undefined ? Number(f.paid) : Number(f.revenue) || 0); if (f.carrier) carrier = f.carrier; if (Number(f.desi) > 0) desi = Number(f.desi); }
+      amt = r2(amt); const rd = Number(r.ret_desi) > 0 ? Number(r.ret_desi) : desi, ret = r2(r.ret_cargo), tier = amt < 200 ? 0 : amt < 350 ? 1 : null;
+      const t1 = tier === null ? null : (tier === 0 ? fee.cargoT1 : fee.cargoT2), t2 = tier === null ? null : r2(T2[tier] * V), dp = tyDesiPrice(fee, rd || 1, carrier);
+      const cands = [['t1', t1], ['t1', t1 !== null ? r2(t1 / V) : null], ['t2', t2], ['t2', tier === null ? null : T2[tier]], ['desi', dp], ['desi', r2(dp / V)]];
+      let cls = 'none'; for (const [k, v] of cands) if (near(ret, v)) { cls = k; break; }
+      if (cls === 'none') for (const [k, v] of cands) if (v && near(ret, r2(v * 2))) { cls = k + '2'; break; } // iki iade paketi
+      items.push({ no: r.order_no, date: r.date, amt, desi: rd || null, ret, t1, t2, dp, cls, barem: tier !== null && (!rd || rd <= 10), after: String(r.date || '') >= '2026-08-10' }); }
+    const sum = (L) => { const o = { n: L.length, t1: 0, t2: 0, desi: 0, none: 0 }; for (const x of L) o[x.cls.replace('2', '')]++; return o; };
+    const B = items.filter(x => x.barem), N = items.filter(x => !x.barem);
+    return json({ ok: true, n: items.length, barem: { after: sum(B.filter(x => x.after)), before: sum(B.filter(x => !x.after)) }, other: sum(N), items: items.slice(0, 500) });
+  }
   if (path === '/api/desi/status') { const s = await getSettings(env, ['desi_ref_pos', 'desi_ref_pass', 'desi_ref_n', 'desi_ref_last', 'desi_ref_err']); const pos = Number(s.desi_ref_pos) || 0, pass = Number(s.desi_ref_pass) || 0;
     return json({ ok: true, pass, filled: Number(s.desi_ref_n) || 0, daysDone: pos ? Math.max(0, Math.round((Date.now() - pos) / 86400000)) : 0, total: pass === 0 ? 60 : 21, last: s.desi_ref_last || null, err: s.desi_ref_err || '' }); }
   if (path === '/api/desi/set') {
