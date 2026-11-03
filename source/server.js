@@ -1948,7 +1948,7 @@ const DEFECT_RE = /yanlış ürün|eksik gönderil|parça|aksesuar|kusurlu|hasar
 const PENALTY_TABLE = [[200, 50], [350, 100], [600, 120], [1000, 180], [3000, 300], [10000, 600], [Infinity, 1200]];
 const penaltyFor = (amount) => (PENALTY_TABLE.find(([lim]) => amount < lim) || [0, 0])[1];
 // Başarısız teslimat ek bedeli: gönderi ücretinin yüzdesi (Kargo Fiyatları Tablosu, 10.08.2026)
-function failPct(carrier) { const c = String(carrier || '').toLocaleLowerCase('tr-TR').trim(); if (!c || /^[*\s.-]+$/.test(c) || /trendyol|express|tex/.test(c)) return 0; // adı gizli (***) ya da boş: Trendyol Express sayılır if (/ptt/.test(c)) return 0.3; if (/sürat|surat/.test(c)) return 0.25; if (/borusan|ceva|horoz/.test(c)) return 1; return 0.5; }
+function failPct(carrier) { const c = String(carrier || '').toLocaleLowerCase('tr-TR').trim(); if (!c || /^[*\s.-]+$/.test(c) || /trendyol|express|tex/.test(c)) return 0; /* adı gizli (***) ya da boş: Trendyol Express sayılır */ if (/ptt/.test(c)) return 0.3; if (/sürat|surat/.test(c)) return 0.25; if (/borusan|ceva|horoz/.test(c)) return 1; return 0.5; }
 const UNDELIVERED_RE = /teslim\s*edile?me|ula[sş][ıi]lam|bulunamad|undeliver/;
 const FIN_TYPES = 'Sale,Return,Discount,DiscountCancel,Coupon,CouponCancel,ManualRefund,ManualRefundCancel';
 async function syncTrendyolFinance(env, force, deadline) {
