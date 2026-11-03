@@ -3354,6 +3354,69 @@ ${catalog}` });
     await env.DB.prepare(`UPDATE suppliers SET manual=NULL WHERE manual=1 AND NOT EXISTS(SELECT 1 FROM sup_mov m WHERE m.deleted=0 AND m.supplier=suppliers.name) AND NOT EXISTS(SELECT 1 FROM sup_pay p WHERE p.deleted=0 AND p.supplier=suppliers.name) AND NOT EXISTS(SELECT 1 FROM purchases u WHERE u.cari_at IS NOT NULL AND u.status<>'deleted' AND u.supplier=suppliers.name COLLATE NOCASE)`).run();
     return json({ ok: true, n: ((a.meta && a.meta.changes) || 0) + ((c.meta && c.meta.changes) || 0) });
   }
+  if (path === '/api/cari/report' || path === '/api/cari/reportall') {
+    // CARİ RAPORU: ilişki, hacim, ödeme performansı (biz ona / o bize), alınan ürünler ve fiyat değişimi, ürünlerin bizdeki durumu
+    const today = trToday(), from = /^\d{4}-\d{2}-\d{2}$/.test(body.from || '') ? body.from : '2000-01-01', to = /^\d{4}-\d{2}-\d{2}$/.test(body.to || '') ? body.to : today;
+    const one = path === '/api/cari/report' ? String(body.supplier || '').trim() : ''; if (path === '/api/cari/report' && !one) return bad('Cari seç.');
+    const cs = await cariLoad(env, one || undefined), sR = (await env.DB.prepare('SELECT name, terms, currency FROM suppliers').all()).results, sm = new Map(sR.map(x => [x.name.toLocaleLowerCase('tr-TR'), x]));
+    for (const c of cs) { const r = sm.get(String(c.supplier).toLocaleLowerCase('tr-TR')); if (r) { c.terms = cariTerms(r.terms); c.cur = cariCur(r.currency); } }
+    const pur = (await (one ? env.DB.prepare(`SELECT id, supplier, doc_no, doc_date, t, total, units, items FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted' AND supplier=?1 COLLATE NOCASE`).bind(one) : env.DB.prepare(`SELECT id, supplier, doc_no, doc_date, t, total, units, items FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted'`)).all()).results;
+    const purBy = new Map(); for (const p of pur) { const k = String(p.supplier || '').toLocaleLowerCase('tr-TR'); (purBy.get(k) || purBy.set(k, []).get(k)).push(p); }
+    const dd = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000), inP = (d) => d >= from && d <= to;
+    // Zamanında ödeme: vadeler sırayla, ödemeler en eski vadeden başlayarak düşülür; vadenin kapandığı gün = birikimli ödemenin o vadeye ulaştığı gün
+    const perf = (inst, events) => { inst = inst.slice().sort((a, b) => a.due.localeCompare(b.due)); const ev = events.slice().sort((a, b) => a.date.localeCompare(b.date)); let C = 0, S = 0, j = 0; const L = [];
+      for (const x of inst) { C = r2(C + x.amount); while (S < C - 0.004 && j < ev.length) { S = r2(S + ev[j].amount); j++; } const paidOn = S >= C - 0.004 && j > 0 ? ev[j - 1].date : null;
+        L.push({ due: x.due, amount: r2(x.amount), C, label: x.label || '', paidOn, delay: paidOn ? dd(paidOn, x.due) : null, overdue: !paidOn && x.due < today ? dd(today, x.due) : 0 }); }
+      const ST = r2(ev.reduce((a, e) => a + e.amount, 0)); for (const x of L) { x.left = x.paidOn ? 0 : r2(Math.max(0, Math.min(x.amount, x.C - ST))); delete x.C; }
+      const due = L.filter(x => x.due <= today && inP(x.due)), paid = due.filter(x => x.paidOn), late = paid.filter(x => x.delay > 0), ontime = paid.filter(x => x.delay <= 0), open = L.filter(x => !x.paidOn), od = open.filter(x => x.due < today);
+      const lateDays = late.map(x => x.delay), wAvg = (arr) => { const w = arr.reduce((a, x) => a + x.amount, 0); return w ? Math.round(arr.reduce((a, x) => a + Math.max(0, x.delay) * x.amount, 0) / w * 10) / 10 : 0; };
+      return { n: due.length, paid: paid.length, ontime: ontime.length, late: late.length, unpaid: due.length - paid.length, ontimePct: due.length ? Math.round(ontime.length / due.length * 100) : null,
+        avgLate: lateDays.length ? Math.round(lateDays.reduce((a, x) => a + x, 0) / lateDays.length * 10) / 10 : 0, wAvgDelay: wAvg(paid), maxLate: Math.max(0, ...lateDays, ...od.map(x => x.overdue)), early: ontime.filter(x => x.delay < 0).length,
+        overdue: r2(od.reduce((a, x) => a + x.left, 0)), overdueN: od.length, overdueMax: Math.max(0, ...od.map(x => x.overdue)), openAmt: r2(open.reduce((a, x) => a + x.left, 0)), list: L.filter(x => inP(x.due) || !x.paidOn).slice(-300) }; };
+    const analyze = (c, full) => {
+      const all = [...c.buys.map(x => x.date), ...c.pays.map(x => x.date), ...(c.recvs || []).map(x => x.date)].filter(Boolean).sort(), first = all[0] || null, last = all[all.length - 1] || null;
+      const months = first ? Math.max(1, Math.round(dd(last > today ? last : today, first) / 30.4)) : 0;
+      const credits = c.pays.filter(x => x.mov), cash = c.pays.filter(x => !x.mov), sales = credits.filter(x => /sat[ıi]ş/i.test(x.label || x.note || '')), other = credits.filter(x => !/sat[ıi]ş/i.test(x.label || x.note || ''));
+      const S = (L) => r2(L.filter(x => inP(x.date)).reduce((a, x) => a + x.amount, 0));
+      const tot = { buy: S(c.buys), pay: S(cash), sales: S(sales), credit: S(other), recv: S(c.recvs || []), nBuys: c.buys.filter(x => inP(x.date)).length, nPays: cash.filter(x => inP(x.date)).length, bal: c.bal, buyAll: c.buy, paidAll: c.paid };
+      const pm = Math.max(1, Math.round(dd(to < today ? to : today, from > (first || from) ? from : (first || from)) / 30.4)); tot.avgMonthBuy = r2(tot.buy / pm);
+      // aylık
+      const mm = new Map(), M = (d) => { const k = d.slice(0, 7); if (!mm.has(k)) mm.set(k, { m: k, buy: 0, pay: 0, sales: 0, credit: 0, recv: 0 }); return mm.get(k); };
+      for (const x of c.buys) if (inP(x.date)) M(x.date).buy = r2(M(x.date).buy + x.amount);
+      for (const x of cash) if (inP(x.date)) M(x.date).pay = r2(M(x.date).pay + x.amount);
+      for (const x of sales) if (inP(x.date)) M(x.date).sales = r2(M(x.date).sales + x.amount);
+      for (const x of other) if (inP(x.date)) M(x.date).credit = r2(M(x.date).credit + x.amount);
+      for (const x of (c.recvs || [])) if (inP(x.date)) M(x.date).recv = r2(M(x.date).recv + x.amount);
+      const monthly = [...mm.values()].sort((a, b) => a.m.localeCompare(b.m));
+      // biz ona: vadeler (çalışma şekline göre), ödeme olayları = nakit ödemeler + alacaklar (iade/satış mahsubu) − tahsilatlar
+      const sc = cariSchedule(c, today), ours = perf(sc.items.map(x => ({ due: x.due, amount: x.amount, label: x.label })), [...c.pays.map(x => ({ date: x.date, amount: x.amount })), ...(c.recvs || []).map(x => ({ date: x.date, amount: -x.amount }))]);
+      // o bize: satışlarımız (alacak) satış gününde vadeli sayılır; karşı tarafın ödemeleri = tahsilatlar
+      const theirs = sales.length ? perf(sales.map(x => ({ due: x.date, amount: x.amount, label: x.label })), (c.recvs || []).map(x => ({ date: x.date, amount: x.amount }))) : null;
+      // ürünler
+      const prows = (purBy.get(String(c.supplier).toLocaleLowerCase('tr-TR')) || []).map(p => ({ ...p, date: p.doc_date || String(p.t || '').slice(0, 10) })).sort((a, b) => a.date.localeCompare(b.date));
+      const pg = new Map(); for (const p of prows) { let its = []; try { its = JSON.parse(p.items || '[]'); } catch (e) {}
+        for (const x of its) { const q = Number(x.qty) || 0, u = Number(x.unit) || 0; if (q <= 0) continue; const k = x.pkey || ('n:' + (x.pname || x.name || '')); const g = pg.get(k) || { pkey: x.pkey || null, name: x.pname || x.name || '', code: x.pcode || x.code || '', qty: 0, amount: 0, qtyP: 0, amountP: 0, n: 0, hist: [] };
+          g.qty += q; g.amount = r2(g.amount + q * u); g.n++; if (inP(p.date)) { g.qtyP += q; g.amountP = r2(g.amountP + q * u); } if (u > 0) g.hist.push({ date: p.date, unit: r2(u), qty: q, id: p.id }); pg.set(k, g); } }
+      const prods = [...pg.values()].map(g => { const h = g.hist, f = h[0], l = h[h.length - 1], hp = h.filter(x => inP(x.date)), fp = hp[0], lp = hp[hp.length - 1];
+        return { ...g, first: f || null, last: l || null, chg: f && l && f.unit > 0 && h.length > 1 ? Math.round((l.unit - f.unit) / f.unit * 1000) / 10 : null, chgP: fp && lp && fp !== lp && fp.unit > 0 ? Math.round((lp.unit - fp.unit) / fp.unit * 1000) / 10 : null, hist: full ? h.slice(-40) : undefined }; })
+        .filter(g => g.qtyP > 0 || full).sort((a, b) => b.amountP - a.amountP || b.amount - a.amount);
+      const ch = prods.filter(x => x.chgP !== null), priceChg = ch.length ? Math.round(ch.reduce((a, x) => a + x.chgP * (x.amountP || 1), 0) / ch.reduce((a, x) => a + (x.amountP || 1), 0) * 10) / 10 : null;
+      const out = { supplier: c.supplier, cur: c.cur || 'TL', terms: c.terms, first, last, months, tot, ours: { ...ours, list: full ? ours.list : undefined }, theirs: theirs ? { ...theirs, list: full ? theirs.list : undefined } : null,
+        nProd: prods.filter(x => x.qtyP > 0).length, priceChg, upcoming: sc.items.filter(x => x.left > 0.004).slice(0, 60).map(x => ({ due: x.due, left: x.left, label: x.label, st: x.st })) };
+      if (full) { out.monthly = monthly; out.prods = prods.slice(0, 200); out.buys = prows.filter(p => inP(p.date)).reverse().slice(0, 300).map(p => { let its = []; try { its = JSON.parse(p.items || '[]'); } catch (e) {} return { id: p.id, date: p.date, doc: p.doc_no || '', units: p.units || 0, total: r2(p.total || 0), items: its.slice(0, 60).map(x => ({ name: x.pname || x.name || '', code: x.pcode || x.code || '', qty: Number(x.qty) || 0, unit: r2(Number(x.unit) || 0) })) }; });
+        const rows = [...c.buys.map(r => ({ kind: 'buy', date: r.date, t: r.t || '', amount: r.amount, text: r.mov ? r.label : `Alış #${r.id}${r.doc_no ? ' · ' + r.doc_no : ''} · ${r.units || 0} adet` })), ...(c.recvs || []).map(r => ({ kind: 'buy', date: r.date, t: r.t || '', amount: r.amount, text: ['Tahsilat', r.method, r.note].filter(Boolean).join(' · ') })), ...c.pays.map(r => ({ kind: 'pay', date: r.date, t: r.t || '', amount: r.amount, text: r.mov ? r.label : [r.method || 'Ödeme', r.note].filter(Boolean).join(' · ') }))].sort((a, b) => a.date.localeCompare(b.date) || a.t.localeCompare(b.t));
+        let b = 0; for (const r of rows) { b = r2(b + (r.kind === 'buy' ? r.amount : -r.amount)); r.bal = b; } out.rows = rows.filter(r => inP(r.date)).reverse(); }
+      return out; };
+    if (one) { const c = cs[0]; if (!c) return bad('Bu cariye ait kayıt yok.'); const R = analyze(c, true);
+      // ürünlerin bizdeki durumu: stok, alış fiyatı, son 30 gün satış ve kâr
+      const keys = R.prods.filter(x => x.pkey).map(x => x.pkey).slice(0, 200);
+      if (keys.length) { const pr = new Map((await selectIn(env, 'SELECT key, qty, cost, name FROM products', 'key', keys)).map(x => [x.key, x])), d30 = addDayStr(today, -29);
+        const sold = new Map(); for (let i = 0; i < keys.length; i += 90) { const ks = keys.slice(i, i + 90); const { results } = await env.DB.prepare(`SELECT pkey, SUM(units) u, SUM(ret_units) r, SUM(revenue) rev, SUM(profit) p FROM product_daily WHERE day >= ?1 AND pkey IN (${ks.map((_, j) => '?' + (j + 2)).join(',')}) GROUP BY pkey`).bind(d30, ...ks).all(); for (const x of results) sold.set(x.pkey, x); }
+        for (const x of R.prods) if (x.pkey) { const p = pr.get(x.pkey), s0 = sold.get(x.pkey); x.stock = p ? p.qty : null; x.cost = p ? p.cost : null; x.sold30 = s0 ? (s0.u || 0) - (s0.r || 0) : 0; x.rev30 = s0 ? r2(s0.rev || 0) : 0; x.prof30 = s0 ? r2(s0.p || 0) : 0; x.stockVal = p && p.cost ? r2(Math.max(0, p.qty) * p.cost) : 0; } }
+      return json({ ok: true, from, to, today, report: R }); }
+    const list = cs.map(c => analyze(c, false)).filter(x => x.tot.buy || x.tot.pay || x.tot.sales || x.tot.credit || Math.abs(x.tot.bal) > 0.004);
+    return json({ ok: true, from, to, today, list });
+  }
   if (path === '/api/cari/merge') {
     // CARİLERİ EŞİTLE: 'from' carisinin bütün kayıtları 'into' carisine taşınır, 'from' silinir; taşınan kayıtlar saklanır (geri alınabilir)
     await env.DB.prepare('CREATE TABLE IF NOT EXISTS cari_merge(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, from_name TEXT, into_name TEXT, data TEXT, undone_at TEXT)').run();
