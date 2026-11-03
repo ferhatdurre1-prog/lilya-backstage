@@ -3056,6 +3056,19 @@ async function api(req, env, path, ctx) {
     if (qty) st.push(...changeQty(env, key, qty, { type: 'initial', channel: 'manuel' }));
     st.push(REV(env)); await env.DB.batch(st); return json({ ok: true, key });
   }
+  if (path === '/api/undcargo/analysis') {
+    // Teslim edilemeyen paketler: faturada gidiş ve dönüş için ne kesilmiş (kargo firmasına göre dönüş / gidiş oranı)
+    const [oR, rR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, f.cargo, f.ret_cargo FROM orders o LEFT JOIN order_fin f ON f.order_no=o.order_no WHERE o.channel='trendyol' AND (o.lines LIKE '%"und":true%' OR o.id IN (SELECT order_id FROM returns WHERE order_id<>'' AND status<>'rejected')) ORDER BY o.date DESC LIMIT 4000`),
+      env.DB.prepare(`SELECT order_id, note, ext_status FROM returns WHERE order_id<>'' AND status<>'rejected'`)]);
+    const undR = new Set(rR.results.filter(x => UNDELIVERED_RE.test(String(x.note || '') + ' ' + String(x.ext_status || ''))).map(x => x.order_id)), items = [];
+    for (const o of oR.results) { let ls = []; try { ls = JSON.parse(o.lines || '[]'); } catch (e) {} const und = ls.some(l => l.fin && l.fin.und) || undR.has(o.id); if (!und) continue;
+      const carrier = (ls.find(l => l.fin && l.fin.carrier) || { fin: {} }).fin.carrier || '', cargo = o.cargo === null || o.cargo === undefined ? null : r2(o.cargo), ret = o.ret_cargo === null || o.ret_cargo === undefined ? null : r2(o.ret_cargo);
+      items.push({ no: o.order_no, date: o.date, carrier, cargo, ret, ratio: cargo > 0 && ret !== null ? Math.round(ret / cargo * 100) : null }); }
+    const by = new Map(); for (const x of items) { const k = /ptt/i.test(x.carrier) ? 'PTT' : /trendyol|express|tex/i.test(x.carrier) || !x.carrier ? 'Trendyol Express' : x.carrier; const g = by.get(k) || { carrier: k, n: 0, inv: 0, retZero: 0, retSome: 0, ratios: [] }; g.n++;
+      if (x.cargo !== null) { g.inv++; if (!x.ret) g.retZero++; else { g.retSome++; if (x.ratio !== null) g.ratios.push(x.ratio); } } by.set(k, g); }
+    const groups = [...by.values()].map(g => { const r = g.ratios.sort((a, b) => a - b); return { carrier: g.carrier, n: g.n, inv: g.inv, retZero: g.retZero, retSome: g.retSome, median: r.length ? r[Math.floor(r.length / 2)] : null, min: r.length ? r[0] : null, max: r.length ? r[r.length - 1] : null }; });
+    return json({ ok: true, n: items.length, groups, items: items.slice(0, 400) });
+  }
   if (path === '/api/retcargo/analysis') {
     // İade kargo faturası analizi: Trendyol'un faturada kestiği iade ücreti hangi fiyata eşit (Tablo 1 / Tablo 2 barem, desi fiyatı)?
     const fee = await loadFees(env), V = 1.2, T2 = [73.33, 78.74]; // Tablo 2 (TEX/PTT, KDV hariç)
