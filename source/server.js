@@ -188,6 +188,9 @@ async function init0(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_outcari1'`).first())) { // eski barkodla çıkış hareketlerine cari adı (çıkış listesinin notundan)
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_outcari1','1')`), env.DB.prepare(`UPDATE moves SET note = note || ' · Cari: ' || (SELECT trim(substr(l.note, instr(l.note, 'Cari: ') + 6)) FROM out_lists l WHERE 'out:' || l.id = moves.ref) WHERE ref LIKE 'out:%' AND COALESCE(note,'') NOT LIKE '%Cari: %' AND EXISTS (SELECT 1 FROM out_lists l WHERE 'out:' || l.id = moves.ref AND instr(COALESCE(l.note,''), 'Cari: ') > 0)`)]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_desi3'`).first())) { // desi tahmini düzeltildi (tek adetli 1 desi paketleri çarpılmaz): günler yeniden hesaplansın
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_desi3','1')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
+  }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_desi2'`).first())) { // yeni desi tahmini: geçmiş günler yeniden hesaplansın
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_desi2','1')`), env.DB.prepare(`DELETE FROM settings WHERE k='desi_cur'`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
   }
@@ -2401,16 +2404,17 @@ async function desiModel(env) {
   const hist = new Map(h.results.map(x => [x.comp, { a: x.a, n: x.n }])), man = new Map(), unit = new Map(), learned = new Map();
   for (const x of pr.results) { if (x.desi_m > 0) man.set(x.key, x.desi_m); if (x.desi > 0) learned.set(x.key, x.desi); }
   // tek ürünlü paketler: en büyük adetli paketlerden ürün başı desi (Trendyol küçük adetleri 1'e yuvarlar)
-  const best = new Map(); for (const x of h.results) { if (x.comp.includes(',')) continue; const [k, q0] = x.comp.split('*'), q = Number(q0) || 1, b = best.get(k); if (!b || q > b.q) best.set(k, { q, a: x.a }); }
+  // tek adetli "1 desi" paketleri bilgi vermez (Trendyol en az 1 yazar): yalnız 2+ adetli ya da 1'den büyük desili paketler kullanılır
+  const best = new Map(); for (const x of h.results) { if (x.comp.includes(',')) continue; const [k, q0] = x.comp.split('*'), q = Number(q0) || 1; if (q < 2 && !(x.a > 1)) continue; const b = best.get(k); if (!b || q > b.q) best.set(k, { q, a: x.a }); }
   for (const [k, b] of best) unit.set(k, b.a / b.q);
   const fmt = (v) => (Math.round(v * 100) / 100).toLocaleString('tr-TR');
-  return { est(L) { const comp = desiComp(L); if (!comp) return { v: 1, how: 'veri yok, 1 sayıldı' };
-      const hh = hist.get(comp); if (hh) return { v: dRound(hh.a), how: `geçmişteki aynı paketlerin ortalaması (${hh.n} paket)` };
+  return { est(L) { const comp = desiComp(L); if (!comp) return { v: 1, how: 'veri yok, 1 sayıldı', m: 'none' };
+      const hh = hist.get(comp); if (hh) return { v: dRound(hh.a), how: `geçmişteki aynı paketlerin ortalaması (${hh.n} paket)`, m: 'hist' };
       const items = comp.split(',').map(t => { const [k, q] = t.split('*'); return { k, q: Number(q) || 1 }; });
-      if (items.every(x => man.has(x.k))) { const tot = items.reduce((a, x) => a + man.get(x.k) * x.q, 0); return { v: dRound(tot), how: `manuel desiden (${items.map(x => fmt(man.get(x.k)) + ' × ' + x.q).join(' + ')} = ${fmt(tot)} → ${dRound(tot)})` }; }
-      let tot = 0, known = 0; for (const x of items) { const u = man.get(x.k) || unit.get(x.k) || learned.get(x.k); if (u) { tot += u * x.q; known++; } else tot += 1; }
-      if (!known) return { v: 1, how: 'veri yok, 1 sayıldı' };
-      return { v: dRound(tot), how: `geçmiş paketlerden tahmin (${fmt(tot)} → ${dRound(tot)})` }; },
+      if (items.every(x => man.has(x.k))) { const tot = items.reduce((a, x) => a + man.get(x.k) * x.q, 0); return { v: dRound(tot), how: `manuel desiden (${items.map(x => fmt(man.get(x.k)) + ' × ' + x.q).join(' + ')} = ${fmt(tot)} → ${dRound(tot)})`, m: 'man' }; }
+      let tot = 0, known = 0; for (const x of items) { const u = man.get(x.k) || unit.get(x.k); if (u) { tot += u * x.q; known++; } }
+      if (!known) return { v: 1, how: 'veri yok, 1 sayıldı', m: 'none' };
+      return { v: dRound(tot), how: `geçmiş paketlerden tahmin (${fmt(tot)} → ${dRound(tot)})`, m: 'model' }; },
     unitOf(k) { return man.get(k) || unit.get(k) || learned.get(k) || null; }, man };
 }
 function tyCargo(fee, amount, desi, carrier) {
@@ -2509,7 +2513,7 @@ async function computeProfit(env, from, to, ch0) {
   mark('misc'); const R2 = (n) => Math.round(n * 100) / 100;
   const blank = () => ({ revenue: 0, commission: 0, cargo: 0, retCargo: 0, penalty: 0, service: 0, stopaj: 0, cost: 0, pack: 0, profit: 0, units: 0, retUnits: 0 });
   const add = (a, b) => { for (const k in b) if (typeof b[k] === 'number' && k in a) a[k] += b[k]; };
-  const sum = { ...blank(), retOrders: 0, retCargoEst: 0, undOrders: 0, unsOrders: 0, defOrders: 0, penaltyEst: 0, penaltyActual: 0, otherFees: 0, orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false };
+  const sum = { ...blank(), retOrders: 0, retCargoEst: 0, undOrders: 0, unsOrders: 0, defOrders: 0, penaltyEst: 0, penaltyActual: 0, otherFees: 0, orders: 0, actualOrders: 0, missingCost: 0, missingPrice: 0, desiOrders: 0, desiMissing: 0, noDesiTable: false, desiEst: { real: { n: 0, cost: 0 }, hist: { n: 0, cost: 0, extra: 0 }, man: { n: 0, cost: 0, extra: 0 }, model: { n: 0, cost: 0, extra: 0 }, none: { n: 0, cost: 0, extra: 0 } } };
   const rep = { grossU: 0, grossTL: 0, cancelU: 0, cancelTL: 0, retU: 0, retTL: 0, pendU: 0, pendTL: 0, discTL: 0, netU: 0, netTL: 0, noGross: 0 };
   for (const ord of o.results) for (const l of JSON.parse(ord.lines || '[]')) {
     if (!l.qty) continue; const f = l.fin || {}; const unitG = (f.gross ?? f.revenue ?? 0) / l.qty, unitR = (f.revenue ?? 0) / l.qty;
@@ -2561,7 +2565,8 @@ async function computeProfit(env, from, to, ch0) {
     for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true, L: [] }; const f = x.l.fin || {}; if (x.l.status !== 'cancelled') g.L.push({ pkey: x.l.pkey, qty: Number(x.l.qty) || 0 }); g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
     let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0, undel = false, ptFee = 0, ptTxt = '';
     const cargoInfo = [];
-    if (ch === 'trendyol') for (const g of pkgs.values()) { if (!g.desi) { const e = DM ? DM.est(g.L) : { v: 1, how: 'veri yok, 1 sayıldı' }; g.desiEst = e; } const c = tyCargo(fee, g.amount, g.desi || (g.desiEst && g.desiEst.v), g.carrier); cargo += c.cost;
+    if (ch === 'trendyol') for (const g of pkgs.values()) { if (!g.desi) { const e = DM ? DM.est(g.L) : { v: 1, how: 'veri yok, 1 sayıldı', m: 'none' }; g.desiEst = e; } const c = tyCargo(fee, g.amount, g.desi || (g.desiEst && g.desiEst.v), g.carrier);
+      if (c.tier === 3 && !c.flat && g.L.length) { const de = sum.desiEst[g.desi ? 'real' : (g.desiEst.m || 'none')]; de.n++; de.cost = r2(de.cost + c.cost); if (!g.desi) de.extra = r2(de.extra + c.cost - tyCargo(fee, g.amount, 1, g.carrier).cost); } cargo += c.cost;
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
       if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier);
       if (g.defVal > 0) penalty += penaltyFor(g.defVal); cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' : c.tier === 2 ? '200–349,99 TL baremi' : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${c.desi} desi${g.desi ? '' : ' (tahmin: ' + (g.desiEst ? g.desiEst.how : '1 sayıldı') + ')'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
