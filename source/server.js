@@ -2285,7 +2285,6 @@ async function cronRun(env) {
     const sAt = Number(await envc.DB.prepare(`SELECT v FROM settings WHERE k='run_stats_at'`).first().then(r => r && r.v)) || 0;
     const statsEvery = guard.level >= 2 ? 60 : guard.level === 1 ? 20 : 5;
     if (guard.level < 3 && qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= statsEvery * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
-    try { if (guard.level < 3 && Date.now() - t0 < 30000) await desiRefill(envc, t0 + 42000); } catch (e) {}
     try { if (guard.level < 3 && Date.now() - t0 < 50000) await desiLearn(envc, 300); } catch (e) {}
     // Ana ekran özeti önceden hazırlanır: gün dönünce ya da bir düzeltme özeti silince (açılışta bekletmesin)
     if (guard.level < 3 && Date.now() - t0 < 50000) { try { const hc = JSON.parse((await getSetting(envc, 'home_cache')) || 'null'); if (!hc || hc.day !== trDay(Date.now())) { const j = await homeBg(envc, null); if (j) await j; } } catch (e) {} }
@@ -2422,6 +2421,11 @@ async function desiRefill(env, deadline) {
   await env.DB.batch([setStmt(env, 'desi_ref_pos', String(pos)), setStmt(env, 'desi_ref_pass', String(pass)), setStmt(env, 'desi_ref_n', String(filled))]);
   return { days, filled, pass };
 }
+// Ayrı çalışır (ana senkronu beklemez); üst üste binmesin diye kısa kilit
+async function desiRefillCron(env) { const t0 = Date.now();
+  try { await init(env); if (!tyConfigured(env)) return; const busy = Number(await getSetting(env, 'desi_ref_busy')) || 0; if (t0 - busy < 55000) return;
+    await setSetting(env, 'desi_ref_busy', String(t0)); await desiRefill(env, t0 + 40000); } catch (e) { try { await setSetting(env, 'desi_ref_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }
+  finally { try { await setSetting(env, 'desi_ref_busy', '0'); } catch (e) {} } }
 // Desi tahmin motoru: 1) aynı içerikli geçmiş paketlerin ortalaması 2) manuel desiler (adetle toplanıp yuvarlanır) 3) geçmiş paketlerden ürün başı tahmin 4) 1 desi
 async function desiModel(env) {
   const [h, pr] = await env.DB.batch([env.DB.prepare('SELECT comp, AVG(desi) a, COUNT(*) n FROM desi_pkg GROUP BY comp'), env.DB.prepare('SELECT key, desi, desi_m FROM products WHERE desi_m > 0 OR desi > 0')]);
@@ -4905,7 +4909,7 @@ export default {
     }
   },
   // Ana eşitleme her dakika; raporlar 2 dakikada bir ayrı çalışmada (sorgu sınırı ayrı sayılsın, eşitlemeyi yavaşlatmasın)
-  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); }
+  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); ctx.waitUntil(desiRefillCron(env)); }
 };
 
 const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d2235"/><stop offset=".55" stop-color="#0f121c"/><stop offset="1" stop-color="#06070b"/></linearGradient><radialGradient id="g1" cx="860" cy="140" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#6366f1" stop-opacity=".62"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/></radialGradient><radialGradient id="g2" cx="120" cy="980" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient><linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset=".5" stop-color="#818cf8"/><stop offset="1" stop-color="#22d3ee"/></linearGradient><clipPath id="r"><rect width="1024" height="1024" rx="230"/></clipPath></defs><g clip-path="url(#r)"><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#g1)"/><rect width="1024" height="1024" fill="url(#g2)"/><g fill="#fff"><rect x="262" y="236" width="156" height="548" rx="40"/><rect x="262" y="628" width="392" height="156" rx="40"/></g><circle cx="742" cy="706" r="78" fill="url(#ac)"/></g></svg>`;
