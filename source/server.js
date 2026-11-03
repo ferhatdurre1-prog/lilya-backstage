@@ -3042,8 +3042,8 @@ async function api(req, env, path, ctx) {
     if (qty) st.push(...changeQty(env, key, qty, { type: 'initial', channel: 'manuel' }));
     st.push(REV(env)); await env.DB.batch(st); return json({ ok: true, key });
   }
-  if (path === '/api/desi/status') { const s = await getSettings(env, ['desi_ref_pos', 'desi_ref_pass', 'desi_ref_n', 'desi_ref_last']); const pos = Number(s.desi_ref_pos) || 0, pass = Number(s.desi_ref_pass) || 0;
-    return json({ ok: true, pass, filled: Number(s.desi_ref_n) || 0, daysDone: pos ? Math.max(0, Math.round((Date.now() - pos) / 86400000)) : 0, total: pass === 0 ? 60 : 21, last: s.desi_ref_last || null }); }
+  if (path === '/api/desi/status') { const s = await getSettings(env, ['desi_ref_pos', 'desi_ref_pass', 'desi_ref_n', 'desi_ref_last', 'desi_ref_err']); const pos = Number(s.desi_ref_pos) || 0, pass = Number(s.desi_ref_pass) || 0;
+    return json({ ok: true, pass, filled: Number(s.desi_ref_n) || 0, daysDone: pos ? Math.max(0, Math.round((Date.now() - pos) / 86400000)) : 0, total: pass === 0 ? 60 : 21, last: s.desi_ref_last || null, err: s.desi_ref_err || '' }); }
   if (path === '/api/desi/set') {
     // Ürün desi bilgisi (manuel): Excel'den toplu; ürün kodu / stok kodu / barkodla eşleşir
     const items = (Array.isArray(body.items) ? body.items : []).slice(0, 5000); if (!items.length) return bad('Dosyada desi satırı yok.');
