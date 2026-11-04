@@ -1088,7 +1088,55 @@ async function srCancel(env, creds, ref, tracking) {
   const ok = r.ok && /ba[sş]ar|iptal edil|geri [çc]ekil|\btrue\b|\bok\b/i.test(t) && !/hata|bulunamad|yap[ıi]lamaz|edilemez|ge[çc]ersiz|\bfalse\b/i.test(t);
   return ok ? { ok: true, msg: t.slice(0, 300) || ('HTTP ' + r.status) } : { ok: false, msg: 'Sürat: ' + (t.slice(0, 300) || ('HTTP ' + r.status)) };
 }
+/* ---- Sürat yeni REST servisi (api01.suratkargo.com.tr): eski SOAP adresi (webservices…) Cloudflare'a takılıyordu ---- */
+const SR_API = 'https://api01.suratkargo.com.tr/api/';
+async function srRest(path, qs, body) {
+  const url = SR_API + path + (qs ? '?' + new URLSearchParams(qs).toString() : '');
+  const r = await srFetch(url, { method: 'POST', headers: { accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {}
+  if (r.status === 403 && /cloudflare|attention|just a moment/i.test(t)) { const err = new Error('Sürat 403: Cloudflare engeli (yeni adres)'); err.cf = true; throw err; }
+  return { status: r.status, ok: r.ok, j, t };
+}
+const srRestMsg = (x) => { const j = x.j; if (typeof j === 'string') return j; if (j && typeof j === 'object') return String(j.Message || j.errorMessage || j.Mesaj || j.message || '').trim() || x.t.slice(0, 200); return srText(x.t).slice(0, 200) || ('HTTP ' + x.status); };
+const srAuthErr = (m) => /[şs]ifre|kullan[ıi]c[ıi] (ad|kod)|yetki|001/i.test(m) && /hatal|yanl[ıi][şs]|ge[çc]ersiz|yetki/i.test(m);
+/* Takip: bizim barkodla (WebSiparisKodu) Sürat takip no + durum. Şifre hatalıysa kullanıcı adı / web şifresiyle tekrar denenir */
+async function srQueryRest(creds, ref) {
+  const tries = [[creds.cari, creds.pass]]; if (creds.user && creds.user !== creds.cari) tries.push([creds.user, creds.pass]); if (creds.web && creds.web !== creds.pass) tries.push([creds.cari, creds.web]);
+  let last = null;
+  for (const [ck, pw] of tries) { const x = await srRest('KargoTakipHareketDetayi', { CariKodu: ck, Sifre: pw, WebSiparisKodu: ref }); last = x;
+    const j = x.j && typeof x.j === 'object' ? x.j : null, G = j && Array.isArray(j.Gonderiler) ? j.Gonderiler : [];
+    if (G.length) { const g = G.find(z => z && z.KargoTakipNo) || G[0];
+      return { no: String(g.KargoTakipNo || '').trim(), durum: [g.KargonunDurumu, g.KargonunBulunduguYer].filter(Boolean).join(' · ').slice(0, 160), sayi: Number(g.KargonunDurumuSayi) || 0, tutar: Number(g.Tutar) || null, desi: Number(g.ToplamDesiKg) || null, teslim: g.TeslimTarihi || '', iade: g.IadeDurum, raw: JSON.stringify(g).slice(0, 600), rest: true }; }
+    const m = srRestMsg(x); if (!srAuthErr(m)) return { no: '', durum: m || 'Gönderi bulunamadı', raw: m, rest: true }; }
+  const m = srRestMsg(last); return { no: '', durum: m, raw: m, rest: true, auth: true };
+}
+/* Gönderi kaydı (GonderiyiKargoyaGonder): cevap "Tamam" ise kabul */
+async function srSendRest(creds, g) {
+  const dec = (v) => String(Number(v) || 0).replace('.', ',');
+  const G = { KisiKurum: g.kisikurum, SahisBirim: '', AliciAdresi: g.aliciadresi, Il: g.il, Ilce: g.ilce, TelefonEv: '', TelefonIs: '', TelefonCep: g.telefoncep, Email: g.email || '', AliciKodu: '', KargoTuru: g.kargoturu || 3, OdemeTipi: g.odemetipi || 1, IrsaliyeSeriNo: g.irsaliyeserino || '', IrsaliyeSiraNo: g.irsaliyesirano || '', ReferansNo: g.referansno || '', OzelKargoTakipNo: g.ozelkargotakipno, Adet: g.adet || 1, BirimDesi: dec(g.birimdesi), BirimKg: dec(g.birimkg || 1), KargoIcerigi: g.kargoicerigi || '', KapidanOdemeTahsilatTipi: g.kapidanodemetahsilattipi || 0, KapidanOdemeTutari: g.kapidanodemetahsilattipi ? Number(g.kapidanodemetutari) || 0 : 0, EkHizmetler: '', TasimaSekli: 1, TeslimSekli: 1, SevkAdresi: '', GonderiSekli: 0, TeslimSubeKodu: '', Pazaryerimi: 0, EntegrasyonFirmasi: '', Iademi: 0 };
+  const x = await srRest('GonderiyiKargoyaGonder', null, { KullaniciAdi: creds.user || creds.cari, Sifre: creds.pass, Gonderi: G });
+  const m = srRestMsg(x);
+  if (/^\W*tamam\W*$/i.test(m) || (x.ok && /tamam|ba[şs]ar/i.test(m) && !SR_FAIL.test(m))) return { msg: 'Tamam (yeni servis)', method: 'REST', barcode: '' };
+  throw new Error('Sürat kabul etmedi: ' + (m || 'boş cevap'));
+}
+/* İptal (GonderiSil): evrakı basılmamış gönderiyi Sürat'ta pasif eder */
+async function srCancelRest(creds, ref) {
+  const tries = [[creds.cari, creds.pass]]; if (creds.user && creds.user !== creds.cari) tries.push([creds.user, creds.pass]); if (creds.web && creds.web !== creds.pass) tries.push([creds.cari, creds.web]);
+  let m = '';
+  for (const [ck, pw] of tries) { const x = await srRest('GonderiSil', { CariKodu: ck, Sifre: pw, WebSiparisKodu: ref }); m = srRestMsg(x);
+    const j = x.j && typeof x.j === 'object' ? x.j : {};
+    if (x.ok && j.IsError === false) return { ok: true, msg: m || 'Silindi' };
+    if (!srAuthErr(m)) return { ok: false, msg: m || ('HTTP ' + x.status), notFound: /bulunamad/i.test(m) }; }
+  return { ok: false, msg: m };
+}
+/* SOAP adresi Cloudflare'a takıldıysa 30 dk ona hiç gidilmez */
+async function srSoapBlocked(env) { return Date.now() < (Number(await getSetting(env, 'sr_soap_block')) || 0); }
+async function srSoapMark(env, e) { if (e && (e.cf || /403|cloudflare/i.test(String(e.message)))) await setSetting(env, 'sr_soap_block', String(Date.now() + 30 * 60000)); }
 async function srQuery(env, creds, ref) {
+  try { return await srQueryRest(creds, ref); }
+  catch (e) { if (await srSoapBlocked(env)) throw e; try { return await srQuerySoap(env, creds, ref); } catch (e2) { await srSoapMark(env, e2); throw e; } }
+}
+async function srQuerySoap(env, creds, ref) {
   const sc = await srSchema(env, false); const q = sc.query; if (!q) throw new Error('Sürat web servisinde gönderi sorgulama bulunamadı.');
   const px = q.params.map(p => { const n = p.name;
     const v = /cari|kullanici/i.test(n) ? creds.cari : /sifre|password|parola/i.test(n) ? (creds.pass || creds.web) : /siparis|referans|ozel|kod/i.test(n) ? ref : null;
@@ -1205,7 +1253,7 @@ async function srTrackPending(env, limit) {
   const { results: all } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
   const out = [];
   for (const acct of ['', 'cod']) { const results = all.filter(r => (r.acct || '') === acct); if (!results.length) continue; const cr = await srCreds(env, acct); if (!cr.pass) continue;
-  let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
+  let rows = null; if (!(await srSoapBlocked(env))) try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) { await srSoapMark(env, e); }
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
   let solo = 0; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 20 * 60000)); break; } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
@@ -3966,7 +4014,7 @@ ${catalog}` });
   if (path === '/api/surat/connect') {
     const user = String(body.user || '').trim(), cari = String(body.cari || '').trim() || user, pass = String(body.pass || '').trim(), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2));
     if (!user || !pass) return bad('Kullanıcı adı ve şifre gerekli.');
-    try { await srSchema(env, true); } catch (e) { return bad(String(e.message || e)); }
+    try { await srSchema(env, true); } catch (e) { if (!(e.cf || /403|cloudflare/i.test(String(e.message)))) return bad(String(e.message || e)); } /* eski adres engelliyse yine kaydedilir: yeni servis kullanılır */
     await env.DB.batch([setStmt(env, 'sr_cari', cari), setStmt(env, 'sr_user', user), setStmt(env, 'sr_pass', pass), setStmt(env, 'sr_web', String(body.web || '').trim()), setStmt(env, 'sr_desi', String(desi)), setStmt(env, 'sr_err', '')]);
     return json({ ok: true });
   }
@@ -4115,6 +4163,10 @@ ${catalog}` });
     const cr = await srCreds(env, body.acct === 'cod' ? 'cod' : ''), out = { creds: {}, tests: [], acct: cr.acct }; if (body.acct === 'cod' && cr.acct !== 'cod') return bad('Kapıda ödeme carisi kayıtlı değil.');
     const info = (x) => ({ len: x.length, space: /^\s|\s$/.test(x), nonAscii: /[^\x20-\x7e]/.test(x) });
     out.creds = { user: { ...info(cr.user), mask: cr.user.slice(0, 2) + '•••' + cr.user.slice(-2) }, cari: { ...info(cr.cari), mask: cr.cari.slice(0, 2) + '•••' + cr.cari.slice(-2) }, pass: info(cr.pass), web: cr.web ? info(cr.web) : null };
+    out.rest = [];
+    try { const q = await srQueryRest(cr, 'LHTEST0'); out.rest.push({ label: 'Takip sorgusu (yeni adres)', ok: !q.auth, msg: q.no ? 'Takip no: ' + q.no : (q.durum || '(boş cevap)') }); } catch (e) { out.rest.push({ label: 'Takip sorgusu (yeni adres)', ok: false, msg: e.cf ? 'Engellendi (Cloudflare)' : String(e.message || e).slice(0, 200) }); }
+    try { const x = await srRest('GonderiyiKargoyaGonder', null, { KullaniciAdi: cr.user || cr.cari, Sifre: cr.pass, Gonderi: { KisiKurum: '', AliciAdresi: '', Il: '', Ilce: '', TelefonCep: '', KargoTuru: 3, OdemeTipi: 1, OzelKargoTakipNo: '', Adet: 1, BirimDesi: '1', BirimKg: '1', KapidanOdemeTahsilatTipi: 0, KapidanOdemeTutari: 0, TasimaSekli: 1, TeslimSekli: 1, GonderiSekli: 0, Pazaryerimi: 0, Iademi: 0 } }); const m = srRestMsg(x); out.rest.push({ label: 'Gönderi girişi (yeni adres, boş deneme — kayıt oluşmaz)', ok: !/001|018|[şs]ifre|s[öo]zle[şs]me/i.test(m), msg: m }); } catch (e) { out.rest.push({ label: 'Gönderi girişi (yeni adres)', ok: false, msg: e.cf ? 'Engellendi (Cloudflare)' : String(e.message || e).slice(0, 200) }); }
+    if (body.quick !== false && out.rest.every(t => t.ok)) return json(out); /* yeni adres çalışıyorsa eski adres denenmez */
     let sc; try { sc = await srSchema(env, true); out.schema = { ns: sc.ns, create: (sc.alts || []).map(a => a.method + '(' + a.params.map(p => p.name).join(', ') + ')'), query: sc.query ? sc.query.method + '(' + sc.query.params.map(p => p.name).join(', ') + ')' : null, ops: sc.ops }; } catch (e) { out.schema = { err: String(e.message || e) }; return json(out); }
     const tries = [['Cari kodu + şifre', { ...cr, cari: cr.cari, web: '' }]];
     if (cr.user && cr.user !== cr.cari) tries.push(['Kullanıcı adı + şifre', { ...cr, cari: cr.user, web: '' }]);
@@ -4208,10 +4260,10 @@ ${catalog}` });
     if (f) return bad("Bu sipariş Shopify'da kargolandı olarak işlendi; geri alınamaz.");
     // Web servisiyle Sürat'a gönderilmiş kayıtlar Sürat'ta da geri çekilir; çekilemezse yine de bekleyene alınır, uyarı döner
     const { results: rows } = await env.DB.prepare(`SELECT ref, acct, tracking, order_no FROM sr_ship WHERE gid=?1 AND mode='api'`).bind(gid).all(), warn = [], replies = [];
-    if (false) for (const x of rows) { try { const r = await srCancel( /* 21.10.2026: GonderiGeriCek'in ne yaptığı belirsiz ("İşlem Başarılı" dönüyor ama eKargo'da iptal görünmüyor) — Sürat'tan doğru işlem öğrenilene kadar kapalı */env, await srCreds(env, x.acct || ''), x.ref, x.tracking); replies.push({ ref: x.ref, ok: r.ok, msg: r.msg }); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { const m = String(e.message || e).slice(0, 200); replies.push({ ref: x.ref, ok: false, msg: m }); warn.push(`${x.ref}: ${m}`); } }
+    let cancelled = 0; for (const x of rows) { try { const r = await srCancelRest(await srCreds(env, x.acct || ''), x.ref); if (r.ok) cancelled++; replies.push({ ref: x.ref, ok: r.ok, msg: r.msg }); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { const m = String(e.message || e).slice(0, 200); replies.push({ ref: x.ref, ok: false, msg: m }); warn.push(`${x.ref}: ${m}`); } }
     if (replies.length) await setSetting(env, 'sr_cancel_last', JSON.stringify({ at: iso(), gid, replies }).slice(0, 2000)); // son iptal cevabı (teşhis için)
     await env.DB.prepare('DELETE FROM sr_ship WHERE gid=?1').bind(gid).run();
-    return json({ ok: true, cancelled: 0, warn, replies, sent: rows.length });
+    return json({ ok: true, cancelled, warn, replies, sent: rows.length });
   }
   // ---------- Yeni Shopify siparişi (elle) ----------
   if (path === '/api/shorder/products') {
@@ -4279,7 +4331,8 @@ ${catalog}` });
     if (codTip && !(cod > 0)) return bad('Kapıda ödeme tutarı girilmeli.');
     const acct = codTip ? 'cod' : '', crS = await srCreds(env, acct); if (crS.pass) Object.assign(cr, crS); // kapıda ödemeli gönderi kapıda ödeme carisinden
     const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: codTip, kapidanodemetutari: codTip ? cod : 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: codTip ? 'LH' : '', irsaliyesirano: codTip ? String(o.name || '').replace(/\D/g, '') + (ref.length > base.length ? String(ref.charCodeAt(base.length) - 64) : '') : '' }; // Sürat: sıra no yalnız rakam (yeniden oluşturulanda B→2, C→3…) // kapıda ödemede Sürat irsaliye seri/sıra no istiyor
-    let res; if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); if (!res.barcode && !/hata|olamaz|olmal|ge[cç]ersiz|a[sş]t[ıi]n[ıi]z|hatal/i.test(res.msg)) { // kabul edildi ama barkod dönmedi: Sürat barkodunu ayrıca iste (bizim ref, sonra sipariş no)
+    let res; if (apiMode) { try { res = await srSendRest(cr, g); try { const q = await srQueryRest(cr, ref); if (q.no) res.barcode = q.no; } catch (e) {} } catch (e) { if (!(e.cf || /fetch|network|timed? ?out|50\d/i.test(String(e.message)))) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); } } } /* yeni servis; yalnız ulaşılamazsa eski yol */
+    if (res) {} else if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); if (!res.barcode && !/hata|olamaz|olmal|ge[cç]ersiz|a[sş]t[ıi]n[ıi]z|hatal/i.test(res.msg)) { // kabul edildi ama barkod dönmedi: Sürat barkodunu ayrıca iste (bizim ref, sonra sipariş no)
           let fb = await srFetchBarcode(env, cr, ref); if (!fb.barcode) { const fb2 = await srFetchBarcode(env, cr, String(o.name || '').replace(/\D/g, '')); if (fb2.barcode) fb = fb2; }
           if (fb.barcode) res.barcode = fb.barcode; else errs.push('Sürat barkodu henüz yok (şube okutunca gelir): ' + fb.log.join(' / ').slice(0, 200)); } if (errs.length) res.msg = res.msg + ' ‖ ' + errs.join(' | '); break; } catch (e1) { errs.push(a.method.replace('GonderiyiKargoyaGonder', '…') + ': ' + String(e1.message || e1).slice(0, 220)); } } if (!res) throw new Error(errs.join(' | ')); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
     const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik, codTip, cod };
