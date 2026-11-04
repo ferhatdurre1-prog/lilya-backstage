@@ -2701,7 +2701,7 @@ async function computeProfit(env, from, to, ch0) {
     if (ch === 'trendyol') for (const g of pkgs.values()) { const f = g.fast && (g.ship ? g.ship === ordDay : ordHour < fee.serviceCutoff), fp = ordDay && ordDay < '2026-06-15' ? 8.39 : fee.serviceFast;
       service += f ? fp : fee.serviceTy; if (f) fastPk++;
       svcN.push(!g.fast ? `normal ${fee.serviceTy} TL (Bugün Kargoda değil)` : f ? `indirimli ${fp} TL (Bugün Kargoda${g.ship ? ', aynı gün kargoda' : ', henüz kargoda değil · saat ' + fee.serviceCutoff + ' öncesi'})` : `normal ${fee.serviceTy} TL (Bugün Kargoda ama ${g.ship ? g.ship.slice(8, 10) + '.' + g.ship.slice(5, 7) + ' kargoya verildi' : 'saat ' + fee.serviceCutoff + ' sonrası'})`); }
-    service = r2(service); const svcEst0 = service;
+    service = r2(service); const svcEst0 = service; let svcOdd = 0;
     if (fastPk) sum.fastPkgs = (sum.fastPkgs || 0) + fastPk;
     const est = rows.reduce((a, x) => a + x.revenue, 0);
     let revenue = est + shInc, commission = rows.reduce((a, x) => a + x.commission, 0) + (ch === 'shopify' ? r2((est + shInc) * (fee.shComm || 0) / 100) + ptFee : 0); /* Shopify: Meta yardımcısının komisyonu (ciro × %) */ let actual = shReal, svcActual = false; // Shopify: satış tutarı Shopify'dan, kargo Basit Kargo'dan gerçekse sipariş gerçek sayılır
@@ -2715,7 +2715,9 @@ async function computeProfit(env, from, to, ch0) {
       if (fa.revenue !== null && !retUnits) { revenue = fa.revenue; commission = fa.commission || 0; actual = true; }
       if (fa.cargo !== null) { cargo = fa.cargo; actual = true; }
       if (fa.ret_cargo !== null && fa.ret_cargo !== undefined && physRet) { retCargo = fa.ret_cargo; retCargoEst = false; }
-      if (fa.service !== null) { service = fa.service; svcActual = true; sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.act++; sum.svcChk.actTL = r2(sum.svcChk.actTL + fa.service); sum.svcChk.estTL = r2(sum.svcChk.estTL + svcEst0); }
+      const svMax = r2(fee.serviceTy * Math.max(1, pkgs.size) + 0.5); /* paket başı en çok 13,19: üstü hizmet bedeli olamaz (yurtdışı operasyon vb. ayrı fatura; Diğer kesintiler'de sayılıyor) */
+      if (fa.service !== null && fa.service > svMax) { svcOdd = fa.service; }
+      else if (fa.service !== null) { service = fa.service; svcActual = true; sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.act++; sum.svcChk.actTL = r2(sum.svcChk.actTL + fa.service); sum.svcChk.estTL = r2(sum.svcChk.estTL + svcEst0); }
     }
     if (!physRet) retCargo = 0;
     if (ch === 'trendyol' && !svcActual && service) { sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.est++; sum.svcChk.estOnlyTL = r2(sum.svcChk.estOnlyTL + service); }
@@ -2735,7 +2737,7 @@ async function computeProfit(env, from, to, ch0) {
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
-    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, penInfo: penN.join(' + '), svcInfo: ch === 'trendyol' ? (svcActual ? `Trendyol faturası ${r2(service)} TL · tahmin ${svcEst0} TL` : svcN.join(' + ')) : '', retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, commInfo: ch === 'shopify' ? `Meta yardımcısı %${fee.shComm || 0}${ptTxt}` : '', cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, penInfo: penN.join(' + '), svcEst: svcEst0, svcInfo: ch === 'trendyol' ? (svcOdd ? `Tahmin ${svcEst0} TL · Trendyol detayındaki ${r2(svcOdd)} TL hizmet bedeli olamaz (yurtdışı/diğer bedel), Diğer kesintiler'de sayılıyor` : svcActual ? `Trendyol faturası ${r2(service)} TL · tahmin ${svcEst0} TL` : svcN.join(' + ')) : '', retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, commInfo: ch === 'shopify' ? `Meta yardımcısı %${fee.shComm || 0}${ptTxt}` : '', cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
     // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
