@@ -1171,10 +1171,12 @@ async function srCall(env, method, params, val) {
 // Cari koduna ait gönderiler (Sürat en çok 7 günlük aralık verir)
 async function srList(env, cr, days) {
   const sc = await srSchema(env, false), ps = (sc.lists || {}).CariKoduveSifre; if (!ps) return null;
-  const d0 = new Date(Date.now() - (days || 6) * 86400000), d1 = new Date(Date.now() + 86400000);
+  const D = 86400000, tIst = Date.now() + 3 * 3600000, n = Math.max(1, Math.min(6, days || 6)); /* Sürat en çok 1 hafta verir: bugün (İstanbul) dahil n gün + yarın */
+  let d0 = new Date(tIst - (n - 1) * D); const d1 = new Date(tIst + D);
   const fmt = (d, p) => /date/i.test(p.type) ? d.toISOString().slice(0, 10) + 'T00:00:00' : `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${d.getUTCFullYear()}`;
   const call = (pw) => srCall(env, 'CariKoduveSifre', ps, p => /websiparis\w*olsun/i.test(p.name) ? 'true' : /cari|kullanici/i.test(p.name) ? cr.cari : /sifre|password|parola/i.test(p.name) ? pw : /bas|ilk|start|from/i.test(p.name) ? fmt(d0, p) : /bit|son|end|to$/i.test(p.name) ? fmt(d1, p) : null);
-  let t = await call(cr.pass); if (cr.web && cr.web !== cr.pass && /hatal/i.test((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '')) t = await call(cr.web);
+  let t = await call(cr.pass); if (/hafta/i.test((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '')) { d0 = new Date(tIst - 3 * D); t = await call(cr.pass); } /* yine aralık hatası: son 4 gün */
+  if (cr.web && cr.web !== cr.pass && /hatal/i.test((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '')) t = await call(cr.web);
   const rows = srRows(t), mesaj = ((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '').trim();
   return { rows, mesaj, text: rows.length ? '' : srText(t).slice(0, 300) };
 }
