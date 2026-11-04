@@ -44,6 +44,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS ty_po(id TEXT PRIMARY KEY, day TEXT, amount REAL, descr TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS audit_pkg(pkg_id TEXT PRIMARY KEY, order_no TEXT, day TEXT, units INTEGER, revenue REAL, paid REAL, status TEXT, seen_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS audit_pkg_day ON audit_pkg(day)`,
+  `CREATE TABLE IF NOT EXISTS fin_stop(id TEXT PRIMARY KEY, order_no TEXT, amount REAL, date TEXT)`,
   `CREATE TABLE IF NOT EXISTS order_fin(order_no TEXT PRIMARY KEY, revenue REAL, commission REAL, net REAL, cargo REAL, service REAL, updated_at TEXT)`,
   `INSERT OR IGNORE INTO settings(k,v) VALUES('rev','1'),('lock_sync','0'),('auto_accept','1'),('fee_cargo_ty','46.49'),('fee_cargo_t1','46.49'),('fee_cargo_t2','84.49'),('fee_cargo_t3','98.35'),('cargo_desi_mode','0'),('desi_table','[]'),('fee_service_ty','13.19'),('fee_cargo_sh','0'),('stopaj','1')`
 ];
@@ -2058,6 +2059,18 @@ async function syncTrendyolFinance(env, force, deadline) {
     }
     for (const [no, v] of svc) { if (!(v > 0)) continue; const a = get(no); a.service = Math.round(v * 100) / 100; }
   } catch (e) { stat.errors.push('Hizmet bedeli: ' + String(e.message || e).slice(0, 120)); }
+  // E-ticaret stopajı (Trendyol 'Stoppage' kayıtları; iptalleri alacak olarak gelir): kayıt bazında saklanır, siparişe bağlanabilen gerçek stopaj olur
+  stat.stopRows = 0; stat.stopLinked = 0; stat.stopTL = 0;
+  try { const ws = [];
+    for (let page = 0; page < 20; page++) {
+      const r = await ty(env, `finance/che/sellers/${sid}/otherfinancials`, { transactionType: 'Stoppage', startDate: start, endDate: end, page, size: 500, supplierId: sid });
+      await prefetch(r.content || []);
+      for (const x of (r.content || [])) { stat.stopRows++; const no = await orderOf(x); if (no) stat.stopLinked++; const amt = Math.round(((Number(x.debt) || 0) - (Number(x.credit) || 0)) * 100) / 100; stat.stopTL = Math.round((stat.stopTL + amt) * 100) / 100;
+        ws.push(env.DB.prepare('INSERT INTO fin_stop(id, order_no, amount, date) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET order_no=excluded.order_no, amount=excluded.amount').bind(String(x.id || (no + '|' + x.transactionDate + '|' + amt)).slice(0, 120), no, amt, x.transactionDate ? iso(Number(x.transactionDate)) : iso())); }
+      if (page + 1 >= (r.totalPages || 0)) break;
+    }
+    for (let i = 0; i < ws.length; i += 90) await env.DB.batch(ws.slice(i, i + 90));
+  } catch (e) { stat.errors.push('Stopaj: ' + String(e.message || e).slice(0, 120)); }
   // Kargo ve diğer kesinti faturaları
   const done = new Set(JSON.parse(s.cargo_inv_done || '[]')); let cargoInv = 0; const misc = [];
   const fees0 = await loadFees(env); const learned = {}; let partial = false;
@@ -2608,6 +2621,7 @@ async function computeProfit(env, from, to, ch0) {
   }
   const fin = new Map(finR.results.map(x => [x.order_no, x]));
   const cnames = new Map(custR.results.map(x => [x.order_no, x.n || '']));
+  let stopMap = new Map(); try { stopMap = new Map((await env.DB.prepare('SELECT order_no, SUM(amount) a FROM fin_stop WHERE order_no IS NOT NULL GROUP BY order_no').all()).results.map(x => [x.order_no, Number(x.a) || 0])); } catch (e) {}
   // Trendyol'un ceza vb. kesinti faturaları: siparişe bağlı olanlar siparişe, bağlanamayanlar fatura tarihine göre döneme yazılır
   mark('cust'); const miscByOrder = new Map();
   for (const m of miscR.results) { if (isCompensation(m.type)) continue; const a = miscByOrder.get(m.order_no) || { amount: 0, types: [] }; a.amount += m.amount || 0; a.types.push(m.type); miscByOrder.set(m.order_no, a); }
@@ -2734,7 +2748,9 @@ async function computeProfit(env, from, to, ch0) {
     const mo = ch === 'trendyol' ? miscByOrder.get(ord.order_no) : null;
     const penaltyEst = !mo && penalty > 0;
     if (mo) penalty = mo.amount;
-    const stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0);
+    let stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0); const stopEst0 = r2(stopaj); let stopActual = false;
+    if (ch === 'trendyol' && stopMap.has(ord.order_no)) { stopaj = stopMap.get(ord.order_no); stopActual = true; } /* Trendyol'un kestiği gerçek stopaj */
+    if (ch === 'trendyol') { const SC = sum.stopChk = sum.stopChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; if (stopActual) { SC.act++; SC.actTL = r2(SC.actTL + stopaj); SC.estTL = r2(SC.estTL + stopEst0); } else if (stopaj) { SC.est++; SC.estOnlyTL = r2(SC.estOnlyTL + stopaj); } }
     const cost = undel ? 0 : rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
     // Paketleme: gönderilen her sipariş için sabit + gönderilen her ürün adedi için (iade dönse de düşmez)
     const shipped = units + retUnits; const pack = shipped > 0 ? (ch === 'shopify' ? (fee.packOrderSh || 0) + (fee.packUnitSh || 0) * shipped : (fee.packOrder || 0) + (fee.packUnit || 0) * shipped) : 0; // Shopify ayrı paketleme ücreti
@@ -2743,7 +2759,7 @@ async function computeProfit(env, from, to, ch0) {
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
-    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, penInfo: penN.join(' + '), svcEst: svcEst0, svcInfo: ch === 'trendyol' ? (svcOdd ? `Tahmin ${svcEst0} TL · Trendyol detayındaki ${r2(svcOdd)} TL hizmet bedeli olamaz (yurtdışı/diğer bedel), Diğer kesintiler'de sayılıyor` : svcActual ? `Trendyol faturası ${r2(service)} TL · tahmin ${svcEst0} TL` : svcN.join(' + ')) : '', retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, commInfo: ch === 'shopify' ? `Meta yardımcısı %${fee.shComm || 0}${ptTxt}` : '', cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, penInfo: penN.join(' + '), stopActual, stopInfo: ch === 'trendyol' ? (stopActual ? `Trendyol stopajı ${r2(stopaj)} TL · hesap ${stopEst0} TL` : `Hesap: KDV hariç satış × %${fee.stopaj}`) : '', svcEst: svcEst0, svcInfo: ch === 'trendyol' ? (svcOdd ? `Tahmin ${svcEst0} TL · Trendyol detayındaki ${r2(svcOdd)} TL hizmet bedeli olamaz (yurtdışı/diğer bedel), Diğer kesintiler'de sayılıyor` : svcActual ? `Trendyol faturası ${r2(service)} TL · tahmin ${svcEst0} TL` : svcN.join(' + ')) : '', retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, commInfo: ch === 'shopify' ? `Meta yardımcısı %${fee.shComm || 0}${ptTxt}` : '', cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
     // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
