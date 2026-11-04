@@ -2735,7 +2735,7 @@ async function computeProfit(env, from, to, ch0) {
     const physRet = retUnits - rows.reduce((a, x) => a + (x.kq || 0), 0); // ürün müşteride kaldıysa dönüş kargosu yok
     let retCargoEst = physRet > 0 && !undelivered;
     /* Mutabakat: Trendyol'un gerçek tutarı geldiğinde bizim tahminle karşılaştırılır (sum.rec; farklıysa sipariş rc'de) */
-    const rc = {}, REC = (key, act, est) => { const R = (sum.rec = sum.rec || {}), x = (R[key] = R[key] || { n: 0, act: 0, est: 0, diffN: 0, estN: 0 }); x.n++; x.act = r2(x.act + act); x.est = r2(x.est + est); if (Math.abs(act - est) >= 0.01) { x.diffN++; rc[key] = [r2(act), r2(est)]; } };
+    const rc = {}, REC = (key, act, est) => { const R = (sum.rec = sum.rec || {}), x = (R[key] = R[key] || { n: 0, act: 0, est: 0, diffN: 0, estN: 0 }); x.n++; x.act = r2(x.act + act); x.est = r2(x.est + est); if (Math.abs(act - est) >= 0.5) { x.diffN++; rc[key] = [r2(act), r2(est)]; } };
     const RECEST = (key) => { const R = (sum.rec = sum.rec || {}), x = (R[key] = R[key] || { n: 0, act: 0, est: 0, diffN: 0, estN: 0 }); x.estN++; };
     const commEst0 = commission, revEst0 = revenue, cargoEst0 = cargo, retEst0 = retCargo;
     if (ch === 'trendyol') { let gotRev = false, gotCargo = false, gotRet = false;
@@ -2750,7 +2750,7 @@ async function computeProfit(env, from, to, ch0) {
       if (fa.ret_cargo !== null && fa.ret_cargo !== undefined && physRet) { retCargo = fa.ret_cargo; retCargoEst = false; }
       const svMax = r2(fee.serviceTy * Math.max(1, pkgs.size) + 0.5); /* paket başı en çok 13,19: üstü hizmet bedeli olamaz (yurtdışı operasyon vb. ayrı fatura; Diğer kesintiler'de sayılıyor) */
       if (fa.service !== null && fa.service > svMax) { svcOdd = fa.service; }
-      else if (fa.service !== null) { if (Math.abs(fa.service - svcEst0) >= 0.01) rc.svc = [r2(fa.service), svcEst0]; service = fa.service; svcActual = true; sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.act++; sum.svcChk.actTL = r2(sum.svcChk.actTL + fa.service); sum.svcChk.estTL = r2(sum.svcChk.estTL + svcEst0); }
+      else if (fa.service !== null) { if (Math.abs(fa.service - svcEst0) >= 0.5) rc.svc = [r2(fa.service), svcEst0]; service = fa.service; svcActual = true; sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.act++; sum.svcChk.actTL = r2(sum.svcChk.actTL + fa.service); sum.svcChk.estTL = r2(sum.svcChk.estTL + svcEst0); }
     }
     if (!physRet) retCargo = 0;
     if (ch === 'trendyol' && !svcActual && service) { sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.est++; sum.svcChk.estOnlyTL = r2(sum.svcChk.estOnlyTL + service); }
@@ -2764,7 +2764,7 @@ async function computeProfit(env, from, to, ch0) {
     if (mo) penalty = mo.amount;
     let stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0); const stopEst0 = r2(stopaj); let stopActual = false;
     if (ch === 'trendyol' && stopMap.has(ord.order_no)) { stopaj = stopMap.get(ord.order_no); stopActual = true; } /* Trendyol'un kestiği gerçek stopaj */
-    if (ch === 'trendyol') { const SC = sum.stopChk = sum.stopChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; if (stopActual) { if (Math.abs(stopaj - stopEst0) >= 0.01) rc.stop = [r2(stopaj), stopEst0]; SC.act++; SC.actTL = r2(SC.actTL + stopaj); SC.estTL = r2(SC.estTL + stopEst0); } else if (stopaj) { SC.est++; SC.estOnlyTL = r2(SC.estOnlyTL + stopaj); } }
+    if (ch === 'trendyol') { const SC = sum.stopChk = sum.stopChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; if (stopActual) { if (Math.abs(stopaj - stopEst0) >= 0.5) rc.stop = [r2(stopaj), stopEst0]; SC.act++; SC.actTL = r2(SC.actTL + stopaj); SC.estTL = r2(SC.estTL + stopEst0); } else if (stopaj) { SC.est++; SC.estOnlyTL = r2(SC.estOnlyTL + stopaj); } }
     const cost = undel ? 0 : rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
     // Paketleme: gönderilen her sipariş için sabit + gönderilen her ürün adedi için (iade dönse de düşmez)
     const shipped = units + retUnits; const pack = shipped > 0 ? (ch === 'shopify' ? (fee.packOrderSh || 0) + (fee.packUnitSh || 0) * shipped : (fee.packOrder || 0) + (fee.packUnit || 0) * shipped) : 0; // Shopify ayrı paketleme ücreti
