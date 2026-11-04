@@ -3628,7 +3628,10 @@ function viewProfit(){
   return h;
 }
 function detailsCard(){
-  return `<div class="card" style="margin-top:18px"><h3 style="margin:0">Trendyol fatura detayları</h3>
+  const dAt = S.settings && S.settings.finDetAt, dDays = dAt ? Math.floor((Date.now() - Date.parse(dAt)) / 86400000) : null;
+  const dLine = `<p class="small" style="margin:0;${dAt === '' || dDays > 12 ? 'color:var(--warn,#d97706);font-weight:600' : ''}">Son detay yüklemesi: ${dAt ? `<b>${esc(fmtDate(dAt))}</b> (${dDays === 0 ? 'bugün' : fmtN(dDays) + ' gün önce'})${dDays > 12 ? ' · yükleme zamanı geldi (her ayın 1, 10 ve 20\'si)' : ''}` : '<b>henüz yüklenmedi</b>'}</p>
+    <p class="muted small" style="margin:0">Tahmini cezalar: iadeden (tedarik edememede siparişten) 15 gün sonra hâlâ faturada yoksa Trendyol kesmedi sayılır ve düşer.</p>`;
+  return `<div class="card" style="margin-top:18px"><h3 style="margin:0">Trendyol fatura detayları</h3>${dLine}
     <p class="muted small" style="margin:0">Trendyol'da bir faturanın <b>"Detay indir"</b> Excel'ini buraya yükle; sipariş bazında gerçek tutar kâra yazılır. Desteklenenler: <b>Platform Hizmet Bedeli</b> (Bugün Kargoda gönderilerde 5,99 TL, diğerlerinde 13,19 TL) ve <b>ceza faturaları</b> (Eksik Ürün, Yanlış Ürün, Kusurlu Ürün, Tedarik Edememe…). Kargo faturaları zaten otomatik okunuyor. Aynı dosyayı tekrar yüklemek çift saymaz.</p>
     <div class="row"><label class="btn" style="cursor:pointer">Detay dosyası yükle<input type="file" id="det-file" accept=".xlsx,.xls,.csv" hidden multiple></label></div></div>`;
 }
