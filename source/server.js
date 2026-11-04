@@ -507,7 +507,7 @@ async function tySettleSync(env, maxWin = 2) {
         .bind(String(x.id || x.paymentOrderId || [x.transactionDate, x.debt, x.credit].join('|')), trDay(Number(x.transactionDate) || now), r2(Math.abs((Number(x.debt) || 0) - (Number(x.credit) || 0))), String(x.description || x.transactionType || '').slice(0, 120), iso())); }
       if (page + 1 >= (r.totalPages || 0)) break; } } catch (e) { await setSetting(env, 'ty_po_err', iso() + ' · ' + String(e.message || e).slice(0, 160)); }
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
-    cur = to >= now ? now - 15 * D : to + 1; if (to >= now) break; }
+    cur = to >= now ? now - 50 * D : to + 1; if (to >= now) break; } /* bitince son 50 gün baştan: teslimden ~28-35 gün sonra yapılan ödemenin 'ödeme numarası' eski satırlara da yazılsın */
   await env.DB.batch([setStmt(env, 'ty_settle_cur', String(cur)), setStmt(env, 'ty_settle_at', iso())]);
   let early = null; try { early = await tyEarlyAlloc(env); } catch (e) { await setSetting(env, 'ty_early_err', iso() + ' · ' + String(e.message || e).slice(0, 160)); }
   return { windows: w, rows: n, po, early };
@@ -2512,6 +2512,10 @@ async function desiRefill(env, deadline) {
   await env.DB.batch([setStmt(env, 'desi_ref_pos', String(pos)), setStmt(env, 'desi_ref_pass', String(pass)), setStmt(env, 'desi_ref_n', String(filled)), setStmt(env, 'late_stat', JSON.stringify(lp))]);
   return { days, filled, pass };
 }
+// Trendyol cari ekstresi + hakediş ödemeleri: elle tuşa basmadan da 30 dakikada bir okunur (ödenen siparişlerin 'ödendi' bilgisi gelsin)
+async function settleCron(env) { try { await init(env); if (!tyConfigured(env)) return; const s = await getSettings(env, ['ty_settle_at', 'ty_settle_busy']); const now = Date.now();
+  if (now - (Date.parse(s.ty_settle_at || '') || 0) < 30 * 60000 || now - (Number(s.ty_settle_busy) || 0) < 5 * 60000) return;
+  await setSetting(env, 'ty_settle_busy', String(now)); await tySettleSync(env, 2); await setSetting(env, 'ty_settle_busy', '0'); } catch (e) { try { await env.DB.batch([setStmt(env, 'ty_set_err', iso() + ' · ' + String(e.message || e).slice(0, 200)), setStmt(env, 'ty_settle_busy', '0')]); } catch (x) {} } }
 // Ayrı çalışır (ana senkronu beklemez); üst üste binmesin diye kısa kilit
 async function desiRefillCron(env) { const t0 = Date.now();
   try { await init(env); if (!tyConfigured(env)) return; const busy = Number(await getSetting(env, 'desi_ref_busy')) || 0; if (t0 - busy < 55000) return;
@@ -3921,9 +3925,10 @@ ${catalog}` });
       env.DB.prepare('SELECT day, SUM(amount) amount, COUNT(*) n FROM ty_po WHERE day >= ?1 GROUP BY day ORDER BY day').bind(rs)]);
     const S = new Map(); for (const x of sR.results) { const g = S.get(x.order_no) || { net: 0, sale: null, due: null, ret: 0, po: null }; g.net += x.net || 0; if (x.po) g.po = x.po; if (x.type === 'Sale') { if (x.tx_ms && (!g.sale || x.tx_ms < g.sale)) g.sale = x.tx_ms; if (x.due_ms && (!g.due || x.due_ms > g.due)) g.due = x.due_ms; if (x.period) g.period = x.period; } if (x.type === 'Return') g.ret += x.net || 0; S.set(x.order_no, g); }
     const A = new Map(aR.results.map(x => [x.order_no, x])), PO = new Map(pR.results.map(x => [x.day, x])), out = [];
+    const poNear = (d) => { const t = Date.parse(d + 'T12:00:00Z'); for (let k = -3; k <= 3; k++) if (PO.has(new Date(t + k * 86400000).toISOString().slice(0, 10))) return true; return false; }; /* ödeme günü ±3 gün kayabilir (tatil vb.) */
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} if (!lines.some(l => l.status !== 'cancelled')) continue;
       const g = S.get(r.order_no), a = A.get(r.order_no), deliv = (a && a.d) || (g && g.sale ? trDay(g.sale) : null), rule = tyPayDay(deliv), tyDue = g && g.due ? trDay(g.due) : null, paidPo = !!(g && g.po && tyDue && tyDue <= today), day = paidPo ? tyDue : tyDue ? tyPayout(tyDue) : rule; // Trendyol'un ekstredeki vade tarihi → o haftanın ödeme günü (pazartesi/perşembe); ödendiyse ödendiği gün // ödendiyse Trendyol'un ödediği gün; değilse kural (teslim + 28 gün → ilk salı/perşembe) esas; Trendyol vadesi yalnızca bilgi
-      const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : paidPo ? (tyDue && rule && tyDue < rule ? 'early' : 'paid') : day && day < today ? (PO.has(day) ? 'paid' : 'late') : 'pending'; // ekstre satırında ödeme emri no varsa ödenmiştir
+      const net = g ? r2(g.net) : null, st = !g ? (deliv ? 'nosale' : 'transit') : net <= 0.01 ? 'zero' : paidPo ? (tyDue && rule && tyDue < rule ? 'early' : 'paid') : day && day < today ? (poNear(day) ? 'paid' : 'late') : 'pending'; // ekstre satırında ödeme emri no varsa ödenmiştir
       out.push({ id: r.id, orderNo: r.order_no, date: r.date, deliv, rule, tyDue, day, period: g ? g.period || null : null, po: g ? g.po : null, net, ret: g ? r2(g.ret) : 0, diffDay: rule && tyDue && rule !== tyDue, pkgSt: a ? a.st : '', st }); }
     const sch = new Map(); for (const x of out) if (x.day && x.net > 0 && x.st !== 'transit') { const g = sch.get(x.day) || { day: x.day, net: 0, n: 0 }; g.net = r2(g.net + x.net); g.n++; sch.set(x.day, g); }
     const schedule = [...sch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const p = PO.get(g.day); return { ...g, efee: r2(EI.filter(e => e.matched && e.day === g.day).reduce((a, e) => a + (e.amount || 0), 0)), paid: p ? r2(p.amount) : null, diff: p ? r2(p.amount - g.net) : null, future: g.day >= today }; });
@@ -5057,7 +5062,7 @@ export default {
     }
   },
   // Ana eşitleme her dakika; raporlar 2 dakikada bir ayrı çalışmada (sorgu sınırı ayrı sayılsın, eşitlemeyi yavaşlatmasın)
-  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); ctx.waitUntil(desiRefillCron(env)); }
+  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); ctx.waitUntil(desiRefillCron(env)); ctx.waitUntil(settleCron(env)); }
 };
 
 const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d2235"/><stop offset=".55" stop-color="#0f121c"/><stop offset="1" stop-color="#06070b"/></linearGradient><radialGradient id="g1" cx="860" cy="140" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#6366f1" stop-opacity=".62"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/></radialGradient><radialGradient id="g2" cx="120" cy="980" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient><linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset=".5" stop-color="#818cf8"/><stop offset="1" stop-color="#22d3ee"/></linearGradient><clipPath id="r"><rect width="1024" height="1024" rx="230"/></clipPath></defs><g clip-path="url(#r)"><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#g1)"/><rect width="1024" height="1024" fill="url(#g2)"/><g fill="#fff"><rect x="262" y="236" width="156" height="548" rx="40"/><rect x="262" y="628" width="392" height="156" rx="40"/></g><circle cx="742" cy="706" r="78" fill="url(#ac)"/></g></svg>`;
