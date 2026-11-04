@@ -191,6 +191,8 @@ async function init0(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_fail1'`).first())) { // kargo adı gizli (***) teslim edilemeyenler %0: günler yeniden hesaplansın
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_fail1','1')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_svc1'`).first())) { // hizmet bedeli: kargoya veriliş günü + Bugün Kargoda etiketi için son 60 gün baştan taransın
+    try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_svc1','1')`), env.DB.prepare(`DELETE FROM settings WHERE k IN ('desi_ref_pos','desi_ref_pass','desi_ref_n','desi_ref_wait','late_stat')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_late1'`).first())) { // geç kargolanma (Tablo 2) + 10 desi kuralı: son 60 gün baştan taransın, günler yeniden hesaplansın
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_late1','1')`), env.DB.prepare(`DELETE FROM settings WHERE k IN ('desi_ref_pos','desi_ref_pass','desi_ref_n','desi_ref_wait','late_stat')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
   }
@@ -617,7 +619,7 @@ function resolveLine(l, bmap) {
 /* orders: [{orderNo, date, lines:[{key, sku, barcode, name, image, qty, status:'active'|'cancelled'|'returned'}]}] */
 function cleanFin(fin, price, qty) {
   const nn = (v) => v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
-  if (fin && typeof fin === 'object' && Number.isFinite(Number(fin.revenue))) return { revenue: Number(fin.revenue), gross: nn(fin.gross), rate: nn(fin.rate), vat: nn(fin.vat), paid: nn(fin.paid), desi: nn(fin.desi), carrier: fin.carrier ? String(fin.carrier).slice(0, 60) : null, ...(fin.und ? { und: true } : {}), ...(fin.uns ? { uns: true } : {}), ...(fin.fast ? { fast: true } : {}), ...(fin.desi0 && !(Number(fin.desi) > 0) ? { desi0: true } : {}), ...(fin.late ? { late: true } : {}) };
+  if (fin && typeof fin === 'object' && Number.isFinite(Number(fin.revenue))) return { revenue: Number(fin.revenue), gross: nn(fin.gross), rate: nn(fin.rate), vat: nn(fin.vat), paid: nn(fin.paid), desi: nn(fin.desi), carrier: fin.carrier ? String(fin.carrier).slice(0, 60) : null, ...(fin.und ? { und: true } : {}), ...(fin.uns ? { uns: true } : {}), ...(fin.fast ? { fast: true } : {}), ...(fin.desi0 && !(Number(fin.desi) > 0) ? { desi0: true } : {}), ...(fin.late ? { late: true } : {}), ...(/^\d{4}-\d\d-\d\d$/.test(String(fin.ship || '')) ? { ship: String(fin.ship) } : {}) };
   const p = numOrNull(price);
   return p !== null && p >= 0 ? { revenue: Math.round(p * qty * 100) / 100, rate: null, vat: null } : null;
 }
@@ -858,7 +860,7 @@ function tyPackagesToOrders(pkgs, shift) {
     lines: (p.lines || []).map(l => ({
       key: `${p.shipmentPackageId || p.id}|${l.lineId ?? l.id ?? l.barcode}`,
       sku: l.stockCode || l.merchantSku || '', barcode: l.barcode || '', ext: l.barcode || '', name: l.productName || '', qty: l.quantity,
-      fin: Object.assign(tyLineFin(l) || {}, /sameday|bugun|bugün/i.test(String(p.fastDeliveryType || '')) ? { fast: true } : {}, { desi: Number(p.cargoDeci ?? p.deci ?? p.desi) > 0 ? Number(p.cargoDeci ?? p.deci ?? p.desi) : null, ...(tyDesi0(p) ? { desi0: true } : {}), ...(tyLate(p) === true ? { late: true } : {}), carrier: p.cargoProviderName || null }, /undeliver/i.test(String(p.shipmentPackageStatus || p.status || '')) ? { und: true } : {}, /unsupplied/i.test(String(p.shipmentPackageStatus || p.status || '')) ? { uns: true } : {}),
+      fin: Object.assign(tyLineFin(l) || {}, /sameday|bugun|bugün/i.test(String(p.fastDeliveryType || '')) ? { fast: true } : {}, { desi: Number(p.cargoDeci ?? p.deci ?? p.desi) > 0 ? Number(p.cargoDeci ?? p.deci ?? p.desi) : null, ...(tyDesi0(p) ? { desi0: true } : {}), ...(tyLate(p) === true ? { late: true } : {}), ...(tyShipDay(p) ? { ship: tyShipDay(p) } : {}), carrier: p.cargoProviderName || null }, /undeliver/i.test(String(p.shipmentPackageStatus || p.status || '')) ? { und: true } : {}, /unsupplied/i.test(String(p.shipmentPackageStatus || p.status || '')) ? { uns: true } : {}),
       status: (TY_CANCELLED.has(p.shipmentPackageStatus || p.status) || /cancel|iptal/i.test(String(l.orderLineItemStatusName || ''))) ? 'cancelled' : 'active'
     }))
   }));
@@ -2462,6 +2464,10 @@ const tyLate = (p) => { const dl = Number(p.agreedDeliveryDate || p.extendedAgre
   const sh = (p.packageHistories || []).filter(h => /^shipped$/i.test(String(h.status || ''))).map(h => Number(h.createdDate)).filter(x => x > 0).sort((a, b) => a - b)[0];
   if (sh) return sh > dl + 60000; return null; };
 // Trendyol pakette desiyi açıkça 0 yazdı mı (alan var ve 0; boş / hiç yoksa değil)
+/* Paketin ilk 'Shipped' (kargoya verildi) günü, İstanbul tarihiyle 'YYYY-MM-DD'. Trendyol zamanları sipariş tarihiyle aynı biçimde mi (yerel saat) diye 'Created' kaydıyla bakılır */
+const tyShipDay = (p) => { const H = p.packageHistories || [], t = (re) => H.filter(h => re.test(String(h.status || ''))).map(h => Number(h.createdDate)).filter(x => x > 0).sort((a, b) => a - b)[0];
+  const sh = t(/^shipped$/i); if (!sh) return null; const cr = t(/^created$/i), od = Number(p.orderDate) || 0;
+  const off = cr && od && Math.abs(cr + TY_TZ - od) < 1800000 ? TY_TZ : 0; return new Date(sh + off).toISOString().slice(0, 10); };
 const tyDesi0 = (p) => { const r = p.cargoDeci ?? p.deci ?? p.desi; return r !== undefined && r !== null && String(r).trim() !== '' && Number(r) === 0; };
 // Eksik desileri Trendyol'dan tamamla: geçmiş günleri gün gün yeniden okur (paketin güncel hali desiyi içerir), boş desileri doldurur.
 // İlk tur son 60 gün; sonra son 21 gün sürekli döner (Trendyol desiyi paketten sonra yazabildiği için).
@@ -2473,11 +2479,11 @@ async function desiRefill(env, deadline) {
   while (Date.now() < deadline && days < 3) {
     const end = pos + TY_TZ + 60000, start = pos - 86400000 + TY_TZ - 60000; let pkgs = [];
     try { pkgs = await fetchOrderPackages(env, start, end); } catch (e) { break; }
-    const dm = new Map(); for (const p of pkgs) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const lt = tyLate(p); if (Number(p.agreedDeliveryDate) > 0) lateSt.dl++; if (lt !== null) lateSt.known++; if (lt === true) lateSt.late++; if (d > 0 || tyDesi0(p) || lt === true) dm.set(String(p.shipmentPackageId || p.id), { d: d > 0 ? d : tyDesi0(p) ? 0 : null, no: String(p.orderNumber), carrier: p.cargoProviderName || null, late: lt === true }); }
+    const dm = new Map(); for (const p of pkgs) { const d = Number(p.cargoDeci ?? p.deci ?? p.desi); const lt = tyLate(p); if (Number(p.agreedDeliveryDate) > 0) lateSt.dl++; if (lt !== null) lateSt.known++; if (lt === true) lateSt.late++; const sd = tyShipDay(p), fst = /sameday|bugun|bugün/i.test(String(p.fastDeliveryType || '')); if (d > 0 || tyDesi0(p) || lt === true || sd || fst) dm.set(String(p.shipmentPackageId || p.id), { d: d > 0 ? d : tyDesi0(p) ? 0 : null, no: String(p.orderNumber), carrier: p.cargoProviderName || null, late: lt === true, ship: sd, fast: fst }); }
     const ids = [...new Set([...dm.values()].map(x => orderId('trendyol', x.no)))];
     if (ids.length) { const rows = await selectIn(env, 'SELECT id, lines, date FROM orders', 'id', ids), st = [];
       for (const o of rows) { let ls = []; try { ls = JSON.parse(o.lines || '[]'); } catch (e) {} let ch = false;
-        for (const l of ls) { const x = dm.get(String(l.key || '').split('|')[0]); if (!x) continue; l.fin = l.fin || {}; if (!(Number(l.fin.desi) > 0) && x.d !== null) { if (x.d > 0) { l.fin.desi = x.d; delete l.fin.desi0; ch = true; } else if (!l.fin.desi0) { l.fin.desi0 = true; ch = true; } } if (x.late && !l.fin.late) { l.fin.late = true; ch = true; } if (!l.fin.carrier && x.carrier) { l.fin.carrier = x.carrier; ch = true; } }
+        for (const l of ls) { const x = dm.get(String(l.key || '').split('|')[0]); if (!x) continue; l.fin = l.fin || {}; if (!(Number(l.fin.desi) > 0) && x.d !== null) { if (x.d > 0) { l.fin.desi = x.d; delete l.fin.desi0; ch = true; } else if (!l.fin.desi0) { l.fin.desi0 = true; ch = true; } } if (x.late && !l.fin.late) { l.fin.late = true; ch = true; } if (x.ship && l.fin.ship !== x.ship) { l.fin.ship = x.ship; ch = true; } if (x.fast && !l.fin.fast) { l.fin.fast = true; ch = true; } if (!l.fin.carrier && x.carrier) { l.fin.carrier = x.carrier; ch = true; } }
         if (ch) { filled++; st.push(env.DB.prepare('UPDATE orders SET lines=?2, updated_at=?3 WHERE id=?1').bind(o.id, JSON.stringify(ls), iso())); } }
       if (st.length) { st.push(env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', ''), REV(env)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); } }
     pos -= 86400000; days++;
@@ -2657,7 +2663,7 @@ async function computeProfit(env, from, to, ch0) {
       rows.push({ l, qty, retQ, dq, kq, mq, full: (unitRev || 0) * l.qty, revenue, commission, stopaj, cost: (unitCost || 0) * (qty + kq + bq), pr });
     }
     const pkgs = new Map();
-    for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: true, L: [] }; const f = x.l.fin || {}; if (x.l.status !== 'cancelled') { g.L.push({ pkey: x.l.pkey, qty: Number(x.l.qty) || 0 }); (g.N = g.N || []).push(`${Number(x.l.qty) || 0} × ${(x.pr && x.pr.name) || x.l.name || x.l.sku || ''}`); } g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; else if (f.desi0) g.desi0 = true; if (f.late) g.late = true; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
+    for (const x of rows) { const pk = String(x.l.key).split('|')[0] || 'x'; const g = pkgs.get(pk) || { amount: 0, desi: null, carrier: null, ret: 0, und: false, defVal: 0, fast: false, ship: null, L: [] }; const f = x.l.fin || {}; if (f.fast) g.fast = true; if (f.ship && (!g.ship || f.ship < g.ship)) g.ship = f.ship; if (x.l.status !== 'cancelled') { g.L.push({ pkey: x.l.pkey, qty: Number(x.l.qty) || 0 }); (g.N = g.N || []).push(`${Number(x.l.qty) || 0} × ${(x.pr && x.pr.name) || x.l.name || x.l.sku || ''}`); } g.amount += (f.paid !== null && f.paid !== undefined ? f.paid : (f.revenue || 0)); g.ret += x.retQ - (x.kq || 0) - (x.mq || 0); if (x.dq && x.l.qty) g.defVal += x.full * x.dq / x.l.qty; if (f.und || undOrders.has(ord.id)) g.und = true; if (f.desi) g.desi = f.desi; else if (f.desi0) g.desi0 = true; if (f.late) g.late = true; if (f.carrier) g.carrier = f.carrier; pkgs.set(pk, g); }
     let cargo = 0, retCargo = 0, penalty = 0, shReal = false, shInc = 0, undel = false, ptFee = 0, ptTxt = '';
     const cargoInfo = [];
     if (ch === 'trendyol') for (const g of pkgs.values()) { if (!g.desi && g.desi0) g.desi = 0.001; /* Trendyol açıkça 0 desi yazdı: gerçek, 0–2 desi fiyatı */ if (!g.desi) { const e = DM ? DM.est(g.L) : { v: 1, how: 'veri yok, 1 sayıldı', m: 'none' }; g.desiEst = e; } const c = tyCargo(fee, g.amount, g.desi || (g.desiEst && g.desiEst.v), g.carrier, g.late);
@@ -2688,9 +2694,13 @@ async function computeProfit(env, from, to, ch0) {
         cargoInfo.push(`Basit Kargo${bk.handler ? ' · ' + bk.handler : ''} · gerçek ücret${bk.cod_fee ? ' (kapıda ödeme bedeli ' + bk.cod_fee + ' TL dahil)' : ''}${cc ? ` + kart komisyonu %4,5 (${cc} TL)` : ''} · ${pm}${incTxt}`); }
       else { cargo = fee.cargoSh; cargoInfo.push(`Basit Kargo kaydı yok · sabit kargo ${fee.cargoSh} TL · ${pm}${incTxt}`); } }
     // Platform hizmet bedeli: sipariş saat <kesim> (15:00) öncesi geldiyse indirimli (Bugün Kargoda), sonrası normal. Fatura detayı gelince gerçeği yazılır.
-    const ordHour = ord.date ? new Date(Date.parse(ord.date) + TY_TZ).getUTCHours() : 23;
-    let service = 0, fastPk = 0;
-    if (ch === 'trendyol') for (const g of pkgs.values()) { const f = g.fast && ordHour < fee.serviceCutoff; service += f ? fee.serviceFast : fee.serviceTy; if (f) fastPk++; }
+    /* Trendyol kuralı: "Bugün Kargoda" etiketli ve sipariş günü kargoya verilen paket indirimli (15.06.2026'dan beri 5,99; öncesi 8,39), diğerleri normal. Henüz kargoya verilmediyse saat kesimine göre tahmin */
+    const oLoc = ord.date ? new Date(Date.parse(ord.date) + TY_TZ) : null, ordHour = oLoc ? oLoc.getUTCHours() : 23, ordDay = oLoc ? oLoc.toISOString().slice(0, 10) : '';
+    let service = 0, fastPk = 0; const svcN = [];
+    if (ch === 'trendyol') for (const g of pkgs.values()) { const f = g.fast && (g.ship ? g.ship === ordDay : ordHour < fee.serviceCutoff), fp = ordDay && ordDay < '2026-06-15' ? 8.39 : fee.serviceFast;
+      service += f ? fp : fee.serviceTy; if (f) fastPk++;
+      svcN.push(!g.fast ? `normal ${fee.serviceTy} TL (Bugün Kargoda değil)` : f ? `indirimli ${fp} TL (Bugün Kargoda${g.ship ? ', aynı gün kargoda' : ', henüz kargoda değil · saat ' + fee.serviceCutoff + ' öncesi'})` : `normal ${fee.serviceTy} TL (Bugün Kargoda ama ${g.ship ? g.ship.slice(8, 10) + '.' + g.ship.slice(5, 7) + ' kargoya verildi' : 'saat ' + fee.serviceCutoff + ' sonrası'})`); }
+    service = r2(service); const svcEst0 = service;
     if (fastPk) sum.fastPkgs = (sum.fastPkgs || 0) + fastPk;
     const est = rows.reduce((a, x) => a + x.revenue, 0);
     let revenue = est + shInc, commission = rows.reduce((a, x) => a + x.commission, 0) + (ch === 'shopify' ? r2((est + shInc) * (fee.shComm || 0) / 100) + ptFee : 0); /* Shopify: Meta yardımcısının komisyonu (ciro × %) */ let actual = shReal, svcActual = false; // Shopify: satış tutarı Shopify'dan, kargo Basit Kargo'dan gerçekse sipariş gerçek sayılır
@@ -2704,9 +2714,10 @@ async function computeProfit(env, from, to, ch0) {
       if (fa.revenue !== null && !retUnits) { revenue = fa.revenue; commission = fa.commission || 0; actual = true; }
       if (fa.cargo !== null) { cargo = fa.cargo; actual = true; }
       if (fa.ret_cargo !== null && fa.ret_cargo !== undefined && physRet) { retCargo = fa.ret_cargo; retCargoEst = false; }
-      if (fa.service !== null) { service = fa.service; svcActual = true; }
+      if (fa.service !== null) { service = fa.service; svcActual = true; sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.act++; sum.svcChk.actTL = r2(sum.svcChk.actTL + fa.service); sum.svcChk.estTL = r2(sum.svcChk.estTL + svcEst0); }
     }
     if (!physRet) retCargo = 0;
+    if (ch === 'trendyol' && !svcActual && service) { sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.est++; sum.svcChk.estOnlyTL = r2(sum.svcChk.estOnlyTL + service); }
     if (ch === 'shopify') { const rr = shRet.get(String(ord.order_no || '').replace(/\D/g, '')); if (rr && rr.cost) { retCargo = r2(retCargo + rr.cost); retCargoEst = false; } }
     if (undel) { revenue = 0; commission = 0; } // teslim edilemeyen: satış yok, komisyon yok
     penalty += unsPenalty;
@@ -2723,7 +2734,7 @@ async function computeProfit(env, from, to, ch0) {
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
     if (penalty) { if (penaltyEst) sum.penaltyEst++; else sum.penaltyActual++; }
     if (rows.some(x => x.dq)) sum.defOrders++;
-    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, commInfo: ch === 'shopify' ? `Meta yardımcısı %${fee.shComm || 0}${ptTxt}` : '', cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
+    byOrder.push({ pkeys: [...new Set(lines.map(l => l.pkey))].slice(0, 5), cname: cnames.get(ord.order_no) || '', q: lines.map(l => { const pr = prods.get(l.pkey); return l.sku + ' ' + (l.name || '') + ' ' + ((pr && pr.barcode) || ''); }).join(' ').slice(0, 400), id: ord.id, orderNo: ord.order_no, channel: ch, date: ord.date, actual, svcActual, svcInfo: ch === 'trendyol' ? (svcActual ? `Trendyol faturası ${r2(service)} TL · tahmin ${svcEst0} TL` : svcN.join(' + ')) : '', retCargoEst, undelivered, penaltyEst, kept: rows.some(x => x.kq), penaltyTypes: mo ? mo.types.slice(0, 4) : null, commInfo: ch === 'shopify' ? `Meta yardımcısı %${fee.shComm || 0}${ptTxt}` : '', cargoInfo: fa && fa.cargo !== null ? 'Trendyol kargo faturası' : cargoInfo.join(', '), ...Object.fromEntries(Object.entries(oRes).map(([k, v]) => [k, R2(v)])) });
     // sipariş kesintilerini ürünlere satış payına göre dağıt
     // Kargo/hizmet gibi sipariş masrafları, iade edilenler dahil tüm sipariş üzerinden paylaştırılır (iade edilen ürün zararı kendisine yazılır)
     const fullTot = rows.reduce((a, x) => a + x.full, 0), qtyTot = rows.reduce((a, x) => a + x.l.qty, 0) || 1;
