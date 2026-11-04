@@ -1218,7 +1218,7 @@ function viewCari(){
   const L = D.list || [], A = D.alerts || [], tlv = (x, k, kt) => x.cur && x.cur !== 'TL' ? (x[kt] || 0) : x[k], tb = L.reduce((t, x) => t + tlv(x, 'bal', 'balTL'), 0), tp = 0;
   const fxL = L.filter(x => x.cur && x.cur !== 'TL'), sum = (f) => A.filter(f).reduce((t, x) => t + tlv(x, 'left', 'leftTL'), 0), late = sum(x => x.st === 'late'), tod = sum(x => x.st === 'today'), wk = sum(x => x.st === 'week');
   h += `<div class="home-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:12px"><div class="kpi"><div class="k">Kalan borç${fxL.length ? ' (TL karşılığı dahil)' : ''}</div><div class="v" style="color:${tb - tp > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(tb - tp)}</div>${fxL.length ? `<div class="small muted">${fxL.map(x => `${esc(x.supplier)}: ${curAmt(x.bal, x.cur)}`).join(' · ')}${D.fx && D.fx.USD ? ` · 1$ = ${D.fx.USD.toLocaleString('tr-TR', {maximumFractionDigits: 4})} TL` : ''}</div>` : ''}</div><div class="kpi"><div class="k">Gecikmiş</div><div class="v" style="color:${late > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(late)}</div></div><div class="kpi"><div class="k">Bugün ödenecek</div><div class="v" style="color:${tod > 0.004 ? 'var(--warn, #b45309)' : 'inherit'}">${tl2(tod)}</div></div><div class="kpi"><div class="k">Önümüzdeki 7 gün</div><div class="v">${tl2(wk)}</div></div></div>`;
-  { const cards = srCariCard() + ptCariCard(); h += cariWeekCard(D) + cards; } // Trendyol hakediş mutabakatı kaldırıldı
+  { const cards = tyNetCard() + srCariCard() + ptCariCard(); h += cariWeekCard(D) + cards; } // Trendyol: yalnız 'bugün ayrılsam alacağım' kartı
   h += `<div class="row" style="justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn" data-act="cr-all">📊 Cari raporu (tümü)</button><button class="btn" data-act="cari-addnew">+ Cari ekle</button><label class="btn" style="cursor:pointer">📤 Excel'den cari yükle<input type="file" id="cari-xls" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button><button class="btn ghost" data-act="cari-imps">${C.imps ? 'Yüklemeleri kapat' : '↩︎ Yüklemeler / geri al'}</button></div>`;
   if (C.imps) h += cariImpsHtml(C.imps);
   if (C.open === '__add') h += cariNewForm();
@@ -1235,6 +1235,21 @@ function viewCari(){
 }
 // PayTR: online Shopify siparişleri — beklenen tutar, PayTR'nin işlediği, komisyon, net ve hesaba yattığı gün
 // Trendyol hakediş mutabakatı: teslimden 28 gün sonraki ilk salı/perşembe; Trendyol'un yazdığı vade ve yapılan ödemelerle karşılaştırılır
+// Sade Trendyol kartı: bugün ayrılsam alacağım + döküm
+function tyNetCard(){
+  const C = cS(); if (!C.ty && !C.tyLoading) { C.tyLoading = true; api('/api/tycari/recon', {}).then(d => { C.ty = d; C.tyLoading = false; if (S.tab === 'cari') render(); }).catch(e => { C.tyLoading = false; C.ty = {err: errText(e)}; }); }
+  const d = C.ty; if (!d) return `<div class="card" style="padding:12px;margin-bottom:12px"><span class="pill p-brass">Trendyol</span> <span class="small muted">hesaplanıyor…</span></div>`;
+  if (d.err) return `<div class="card" style="padding:12px;margin-bottom:12px"><span class="pill p-brass">Trendyol</span> <span class="small" style="color:var(--bad)">${esc(d.err)}</span></div>`;
+  const N = d.netAlacak || {}; if (N.err) return `<div class="card" style="padding:12px;margin-bottom:12px"><span class="pill p-brass">Trendyol</span> <span class="small" style="color:var(--bad)">${esc(N.err)}</span></div>`;
+  const ln = (l, v, neg) => `<div class="spread"><span>${l}</span><span class="num">${neg ? '−' : ''}${tl2(v || 0)}</span></div>`;
+  return `<div class="card" style="gap:8px;padding:12px;margin-bottom:12px;border-color:var(--accent)"><div class="spread" style="gap:10px;align-items:flex-start"><div style="min-width:0"><div style="font-weight:700"><span class="pill p-brass">Trendyol</span> alacağım</div>
+      <div class="small muted">Parası henüz yatmamış ${fmtN(N.n || 0)} sipariş${N.nUndel ? ` · ${fmtN(N.nUndel)} tanesi henüz teslim edilmedi` : ''}</div></div>
+    <div style="text-align:right"><div class="small muted">Bugün ayrılsam alacağım</div><div style="font-weight:700;font-size:17px;color:var(--good)">${tl2(N.all || 0)}</div></div></div>
+    <div class="small" style="display:grid;gap:2px;border-top:1px solid var(--line);padding-top:6px">
+      ${ln('Satış', N.rev)}${ln('Komisyon', N.comm, 1)}${ln('Kargo', N.cargo, 1)}${N.ret ? ln('İade kargosu', N.ret, 1) : ''}${ln('Hizmet bedeli', N.svc, 1)}${ln('Stopaj', N.stop, 1)}${N.pen ? ln('Ceza', N.pen, 1) : ''}
+      <div class="spread" style="border-top:1px solid var(--line);padding-top:2px"><b>Eline geçecek</b><b class="num">${tl2(N.all || 0)}</b></div>
+      <div class="muted">1 Ekim'den sonraki siparişler. Kesintinin faturası geldiyse gerçek tutar, gelmediyse tahmin. Reklam ve erken ödeme gibi siparişe bağlı olmayan kesintiler dahil değil.</div></div></div>`;
+}
 function tyCariCard(){
   const C = cS(); if (!C.ty && !C.tyLoading) { C.tyLoading = true; api('/api/tycari/recon', {}).then(d => { C.ty = d; C.tyLoading = false; if (S.tab === 'cari') render(); }).catch(e => { C.tyLoading = false; C.ty = {err: errText(e)}; }); }
   const d = C.ty; if (!d) return ''; if (d.err) return `<div class="card" style="padding:12px;margin-bottom:12px"><span class="pill p-brass">Trendyol</span> <span class="small" style="color:var(--bad)">${esc(d.err)}</span></div>`;
