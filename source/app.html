@@ -3778,7 +3778,7 @@ function recCard(){
     <p class="muted small" style="margin:0">Trendyol'un gerçek rakamı gelen siparişlerde Trendyol'un kestiği ile bizim hesap karşılaştırılır. ✅ tutuyor; ⚠️ yanında fark yazar ("+" Trendyol daha fazla kesmiş). Farklı satıra dokununca o siparişler açılır.</p>
     <div>${items.map(row).join('')}</div>
     ${pi >= 1 ? `<p class="small" style="margin:0;${pg >= 100 ? 'color:var(--warn,#d97706)' : ''}">${pg >= 100 ? '⚠️' : 'ℹ️'} Ceza faturaları: Trendyol bu dönem <b>${fmtTL(pi)}</b> kesti, siparişlere yazılan <b>${fmtTL(pl)}</b>${pg >= 100 ? ` → <b>${fmtTL(pg)}</b> siparişe dağıtılmamış; o faturaların detay Excel'ini yükle.` : ' → tutuyor ✅'} <span class="muted">(Fatura tarihi ile sipariş tarihi aynı aya düşmeyebilir; küçük fark normal.)</span></p>` : ''}
-    <p class="small" style="margin:0">💳 Ödemeler: ${!pay ? 'yükleniyor…' : pay.err ? esc(pay.err) : pC.late ? `<b style="color:var(--bad)">${fmtN(pC.late)} siparişin ödemesi gecikti (${fmtTL(pT.late)})</b>` : '<b style="color:var(--good)">gecikmiş ödeme yok ✅</b>'}${pT ? ` · vadesi gelmemiş alacak ${fmtTL(pT.pending)}` : ''}</p></div>`;
+    <p class="small" style="margin:0">💳 Ödemeler: ${!pay ? 'yükleniyor…' : pay.err ? esc(pay.err) : pC.late ? `<b style="color:var(--bad)">${fmtN(pC.late)} siparişin ödemesi gecikti (${fmtTL(pT.late)})</b>` : '<b style="color:var(--good)">gecikmiş ödeme yok ✅</b>'}${pay && pay.netAlacak && !pay.netAlacak.err ? ` · net alacağım <b>${fmtTL(pay.netAlacak.all)}</b> <span class="muted">(30 günde ${fmtTL(pay.netAlacak.soon)} · sonra ${fmtTL(pay.netAlacak.later)} · teslim bekleyen ${fmtTL(pay.netAlacak.undel)})</span>` : pT ? ` · vadesi gelmemiş alacak ${fmtTL(pT.pending)}` : ''}</p></div>`;
 }
 function viewAudit(){
   const P = profS();
