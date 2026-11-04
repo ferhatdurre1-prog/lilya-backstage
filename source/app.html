@@ -3765,13 +3765,15 @@ function recCard(){
   const items = [['rev', 'Ciro (Trendyol ekstresi)', 'revenue', R.rev], ['comm', 'Komisyon', 'commission', R.comm], ['cargo', 'Kargo', 'cargo', R.cargo], ['ret', 'İade kargosu', 'retCargo', R.ret],
     ['svc', 'Hizmet bedeli', 'service', sv ? {n: sv.act, act: sv.actTL, est: sv.estTL, diffN: cnt('svc'), estN: sv.est} : null], ['pen', 'Ceza', 'penalty', R.pen], ['stop', 'Stopaj', 'stopaj', st ? {n: st.act, act: st.actTL, est: st.estTL, diffN: cnt('stop'), estN: st.est} : null]];
   const row = ([k, l, bd, x]) => { x = x || {n: 0, act: 0, est: 0, diffN: 0, estN: 0}; const d = (x.act || 0) - (x.est || 0), ok = Math.abs(d) < 1;
-    const stt = !x.n ? '<span class="pill p-mute">veri yok</span>' : ok ? '<span class="pill p-good">✅ tutuyor</span>' : `<span class="pill p-warn">⚠️ ${fmtN(x.diffN)} sipariş farklı</span>`;
-    return `<tr ${x.diffN ? `data-act="rec-open" data-id="${k}|${bd}" style="cursor:pointer"` : ''}><td><b>${esc(l)}</b><div class="small muted">${fmtN(x.n)} sipariş Trendyol'dan${x.estN ? ` · ${fmtN(x.estN)} sipariş hâlâ tahmin` : ''}</div></td><td class="r num">${x.n ? fmtTL(x.act) : '—'}</td><td class="r num">${x.n ? fmtTL(x.est) : '—'}</td><td class="r num" style="${!ok && x.n ? 'color:var(--bad);font-weight:700' : ''}">${x.n ? (ok ? '—' : (d > 0 ? '+' : '') + fmtTL(d)) : ''}</td><td>${stt}</td></tr>`; };
-  const pi = D.summary.penInvoices || 0, pay = P.recPay, pT = pay && pay.tot, pC = pay && pay.counts;
-  return `<div class="card" style="gap:8px;margin-bottom:12px"><h3 style="margin:0">🧾 Mutabakat özeti</h3>
-    <p class="muted small" style="margin:0">Trendyol'un gerçek tutarı gelen siparişlerde Trendyol'un kestiği ile bizim hesapladığımız karşılaştırılır. "+" Trendyol daha fazla demek. Farklı satıra dokununca o siparişler açılır.</p>
-    <div class="tbl-wrap"><table class="t"><thead><tr><th>Kalem</th><th class="r">Trendyol</th><th class="r">Bizim hesap</th><th class="r">Fark</th><th>Durum</th></tr></thead><tbody>${items.map(row).join('')}</tbody></table></div>
-    ${pi >= 1 ? `<p class="small" style="margin:0;color:var(--warn,#d97706)">⚠️ Siparişe bağlanamayan ceza faturaları: <b>${fmtTL(pi)}</b>. Bu cezaların detay Excel'i yüklenmemiş olabilir (Ayarlar → Detay dosyası yükle).</p>` : ''}
+    const stt = !x.n ? '<span class="pill p-mute">veri yok</span>' : ok ? '<span class="pill p-good">✅ tutuyor</span>' : `<span class="pill p-warn">⚠️ ${(d > 0 ? '+' : '') + fmtTL(d)}</span>`;
+    return `<div ${x.diffN ? `data-act="rec-open" data-id="${k}|${bd}" style="cursor:pointer;` : 'style="'}border-top:1px solid var(--line);padding:8px 0;display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div style="min-width:0"><b>${esc(l)}</b>
+      <div class="small muted">${x.n ? `Trendyol ${fmtTL(x.act)} · bizim hesap ${fmtTL(x.est)}${x.diffN ? ` · <b>${fmtN(x.diffN)} sipariş farklı ›</b>` : ''}` : 'Trendyol rakamı henüz gelmedi'}</div>
+      <div class="small muted">${fmtN(x.n)} sipariş Trendyol'dan${x.estN ? ` · ${fmtN(x.estN)} sipariş hâlâ tahmin` : ''}</div></div><div style="flex:none">${stt}</div></div>`; };
+  const pi = D.summary.penInvoices || 0, pl = (R.pen && R.pen.act) || 0, pg = Math.round((pi - pl) * 100) / 100, pay = P.recPay, pT = pay && pay.tot, pC = pay && pay.counts;
+  return `<div class="card" style="gap:6px;margin-bottom:12px"><h3 style="margin:0">🧾 Mutabakat özeti</h3>
+    <p class="muted small" style="margin:0">Trendyol'un gerçek rakamı gelen siparişlerde Trendyol'un kestiği ile bizim hesap karşılaştırılır. ✅ tutuyor; ⚠️ yanında fark yazar ("+" Trendyol daha fazla kesmiş). Farklı satıra dokununca o siparişler açılır.</p>
+    <div>${items.map(row).join('')}</div>
+    ${pi >= 1 ? `<p class="small" style="margin:0;${pg >= 100 ? 'color:var(--warn,#d97706)' : ''}">${pg >= 100 ? '⚠️' : 'ℹ️'} Ceza faturaları: Trendyol bu dönem <b>${fmtTL(pi)}</b> kesti, siparişlere yazılan <b>${fmtTL(pl)}</b>${pg >= 100 ? ` → <b>${fmtTL(pg)}</b> siparişe dağıtılmamış; o faturaların detay Excel'ini yükle.` : ' → tutuyor ✅'} <span class="muted">(Fatura tarihi ile sipariş tarihi aynı aya düşmeyebilir; küçük fark normal.)</span></p>` : ''}
     <p class="small" style="margin:0">💳 Ödemeler: ${!pay ? 'yükleniyor…' : pay.err ? esc(pay.err) : pC.late ? `<b style="color:var(--bad)">${fmtN(pC.late)} siparişin ödemesi gecikti (${fmtTL(pT.late)})</b>` : '<b style="color:var(--good)">gecikmiş ödeme yok ✅</b>'}${pT ? ` · vadesi gelmemiş alacak ${fmtTL(pT.pending)}` : ''}</p></div>`;
 }
 function viewAudit(){
