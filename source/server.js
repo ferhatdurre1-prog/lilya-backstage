@@ -192,6 +192,7 @@ async function init0(env) {
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_fail1'`).first())) { // kargo adı gizli (***) teslim edilemeyenler %0: günler yeniden hesaplansın
     try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_fail1','1')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {}
   }
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_waste1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_waste1','1')`), env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', '')]); } catch (e) {} } // kusurlu/ziyan gideri geçmiş günlere de yansısın
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_tazmin1'`).first())) { // Tazmin iadeleri: müşteride kaldı say, yanlışlıkla eklenen stoğu bir kez geri al
     try { await env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_tazmin1','1')`).run(); const { results: T } = await env.DB.prepare(`SELECT id, order_no, pkey, qty, status FROM returns WHERE (reason LIKE '%azmin%' OR note LIKE '%azmin%') AND COALESCE(kept,0) <> 1`).all(); const st = [];
       for (const ex of T) { st.push(env.DB.prepare(`UPDATE returns SET kept=1, status='accepted' WHERE id=?1`).bind(ex.id));
