@@ -2583,7 +2583,7 @@ async function computeProfit(env, from, to, ch0) {
   const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR, scR, ptR, srtR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day, desi, desi_m FROM products`),
-    env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, CASE WHEN COALESCE(reason,'') <> '' THEN reason ELSE note END AS note, kept, inspect, insp_ok, decided_at, created_at FROM returns /* iade sebebi ayrı alandan (not alanı 'Başlangıç öncesi…' olabilir) */ WHERE order_id<>'' AND status<>'rejected'`),
+    env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, CASE WHEN COALESCE(reason,'') <> '' THEN reason ELSE note END AS note, amount, kept, inspect, insp_ok, decided_at, created_at FROM returns /* iade sebebi ayrı alandan (not alanı 'Başlangıç öncesi…' olabilir) */ WHERE order_id<>'' AND status<>'rejected'`),
     env.DB.prepare(`SELECT * FROM order_fin WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare(`SELECT order_no, json_extract(data,'$.name') n FROM order_cust WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare(`SELECT order_no, type, amount FROM fin_misc WHERE order_no IN (${SUBQ})`).bind(from, to),
@@ -2609,7 +2609,7 @@ async function computeProfit(env, from, to, ch0) {
   if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); expR.results = []; }
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
-  const PEN_TTL = 15 * 86400000, defAt = new Map(), defNote = new Map(), rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
+  const defOrd = new Map(), PEN_TTL = 15 * 86400000, defAt = new Map(), defNote = new Map(), rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
   for (const x of r.results) {
     const k = x.order_id + '|' + x.pkey, counted = x.status === 'accepted' || x.ext_status === 'Accepted';
     const note = String(x.note || '').toLocaleLowerCase('tr-TR');
@@ -2618,6 +2618,7 @@ async function computeProfit(env, from, to, ch0) {
       if (MISSING_RE.test(note)) missQ.set(k, (missQ.get(k) || 0) + (x.qty || 0)); // eksik gönderim: geri kargo yok
       if (x.kept) keptQ.set(k, (keptQ.get(k) || 0) + (x.qty || 0)); // ücret iade edildi, ürün geri gelmedi
       else if (x.inspect === 'done') { const b = Math.max(0, (x.qty || 0) - (Number(x.insp_ok) || 0)); if (b) brokeQ.set(k, (brokeQ.get(k) || 0) + b); } // kırık çıktı: ürün maliyeti zarar
+      if (DEFECT_RE.test(note) && Number(x.amount) > 0) { const d = defOrd.get(x.order_id) || { amt: 0, at: 0, note: '' }; d.amt += Number(x.amount) * (x.qty || 1); d.at = Math.max(d.at, Date.parse(x.decided_at || x.created_at || '') || 0); if (!d.note) d.note = String(x.note || '').replace(/^Trendyol otomatik onayladı[^·]*·\s*/, '').slice(0, 80); defOrd.set(x.order_id, d); } /* ceza: doğrudan iade kaydından (sebep + Trendyol birim fiyatı × adet) */
       if (DEFECT_RE.test(note)) { defQ.set(k, (defQ.get(k) || 0) + (x.qty || 0)); if (!defNote.has(k)) defNote.set(k, String(x.note || '').replace(/\s+/g, ' ').trim().slice(0, 80)); const da = Date.parse(x.decided_at || x.created_at || '') || 0; if (da > (defAt.get(k) || 0)) defAt.set(k, da); }
       // Teslim edilemeyip dönen siparişte dönüş kargosu Trendyol'a aittir
       if (UNDELIVERED_RE.test(note)) undOrders.add(x.order_id);
@@ -2694,8 +2695,8 @@ async function computeProfit(env, from, to, ch0) {
       if (c.tier === 3 && !c.flat && g.L.length) { const de = sum.desiEst[g.desi ? 'real' : (g.desiEst.m || 'none')]; de.n++; de.cost = r2(de.cost + c.cost); if (!g.desi) { de.extra = r2(de.extra + c.cost - tyCargo(fee, g.amount, 1, g.carrier).cost); if ((sum.desiList = sum.desiList || []).length < 300) sum.desiList.push({ id: ord.id, no: ord.order_no, date: ord.date, items: (g.N || []).join(', ').slice(0, 300), desi: c.desi, how: g.desiEst.how, m: g.desiEst.m, cost: c.cost }); } } cargo += c.cost;
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
       if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier);
-      if (g.defVal > 0) penRaw += penaltyFor(g.defVal);
-      if (g.defVal > 0 && !(g.defAt && Date.now() - g.defAt > PEN_TTL)) { const pv = penaltyFor(g.defVal), nt = String(g.defNote || '').toLocaleLowerCase('tr-TR'); penalty += pv; penN.push(`${MISSING_RE.test(nt) ? 'Eksik ürün' : /yanlış ürün|yanlis urun/.test(nt) ? 'Yanlış ürün' : 'Kusurlu ürün'} iadesi${g.defNote ? ` (sebep: ${g.defNote.replace(/^Trendyol otomatik onayladı[^·]*·\s*/, '')})` : ''} · ürün ${r2(g.defVal)} TL → ${pv} TL`); } cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' + (c.late ? ' · Tablo 2 (geç kargolandı)' : '') : c.tier === 2 ? '200–349,99 TL baremi' + (c.late ? ' · Tablo 2 (geç kargolandı)' : '') : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${g.desi0 && g.desi === 0.001 ? '0 desi (Trendyol)' : c.desi + ' desi'}${g.desi ? '' : ' (tahmin: ' + (g.desiEst ? g.desiEst.how : '1 sayıldı') + ')'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
+      if (g.defVal > 0 && !defOrd.has(ord.id)) penRaw += penaltyFor(g.defVal);
+      if (g.defVal > 0 && !defOrd.has(ord.id) && !(g.defAt && Date.now() - g.defAt > PEN_TTL)) { const pv = penaltyFor(g.defVal), nt = String(g.defNote || '').toLocaleLowerCase('tr-TR'); penalty += pv; penN.push(`${MISSING_RE.test(nt) ? 'Eksik ürün' : /yanlış ürün|yanlis urun/.test(nt) ? 'Yanlış ürün' : 'Kusurlu ürün'} iadesi${g.defNote ? ` (sebep: ${g.defNote.replace(/^Trendyol otomatik onayladı[^·]*·\s*/, '')})` : ''} · ürün ${r2(g.defVal)} TL → ${pv} TL`); } cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' + (c.late ? ' · Tablo 2 (geç kargolandı)' : '') : c.tier === 2 ? '200–349,99 TL baremi' + (c.late ? ' · Tablo 2 (geç kargolandı)' : '') : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${g.desi0 && g.desi === 0.001 ? '0 desi (Trendyol)' : c.desi + ' desi'}${g.desi ? '' : ' (tahmin: ' + (g.desiEst ? g.desiEst.how : '1 sayıldı') + ')'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
     else if (ch === 'shopify' && rows.some(x => x.qty > 0 || x.retQ > 0)) {
       // Shopify kuralları: 700 TL altı müşteri 100 TL kargo öder; kapıda nakit +50 TL, kapıda kart +100 TL (müşteriden). Gider: kargo firmasının ücreti
       const no = String(ord.order_no || '').replace(/\D/g, ''), bk = bkMap.get(no), pay = shPay.get(no), post = String(ord.date || '') >= SURAT_DIRECT_FROM && !(bk && bk.fee !== null && bk.fee !== undefined) && !bkMark.has(no); // Basit Kargo ücreti olan sipariş tarihi ne olursa olsun Basit Kargo
@@ -2757,6 +2758,8 @@ async function computeProfit(env, from, to, ch0) {
     if (ch === 'trendyol' && !svcActual && service) { sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.est++; sum.svcChk.estOnlyTL = r2(sum.svcChk.estOnlyTL + service); }
     if (ch === 'shopify') { const rr = shRet.get(String(ord.order_no || '').replace(/\D/g, '')); if (rr && rr.cost) { retCargo = r2(retCargo + rr.cost); retCargoEst = false; } }
     if (undel) { revenue = 0; commission = 0; } // teslim edilemeyen: satış yok, komisyon yok
+    { const D = ch === 'trendyol' ? defOrd.get(ord.id) : null; if (D && D.amt > 0) { const pv = penaltyFor(D.amt), nt = D.note.toLocaleLowerCase('tr-TR'); penRaw += pv;
+      if (!(D.at && Date.now() - D.at > PEN_TTL)) { penalty += pv; penN.push(`${MISSING_RE.test(nt) || /eksik ürün/.test(nt) ? 'Eksik ürün' : /yanlış ürün/.test(nt) ? 'Yanlış ürün' : 'Kusurlu ürün'} iadesi (sebep: ${D.note}) · ürün ${r2(D.amt)} TL → ${pv} TL`); } } }
     penalty += unsPenalty;
     // Gerçek kesinti faturası (ceza, kupon vb.) varsa tahmin yerine o kullanılır
     const mo = ch === 'trendyol' ? miscByOrder.get(ord.order_no) : null;
