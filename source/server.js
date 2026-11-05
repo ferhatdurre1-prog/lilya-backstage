@@ -44,6 +44,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS ty_po(id TEXT PRIMARY KEY, day TEXT, amount REAL, descr TEXT, at TEXT)`,
   `CREATE TABLE IF NOT EXISTS audit_pkg(pkg_id TEXT PRIMARY KEY, order_no TEXT, day TEXT, units INTEGER, revenue REAL, paid REAL, status TEXT, seen_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS audit_pkg_day ON audit_pkg(day)`,
+  `CREATE TABLE IF NOT EXISTS pay_plan(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, cat TEXT, kind TEXT, day INTEGER, amount REAL, min_amt REAL, start_ym TEXT, n_total INTEGER, n_start INTEGER, note TEXT, active INTEGER DEFAULT 1, created_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS pay_inst(id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id INTEGER, ym TEXT, due TEXT, label TEXT, amount REAL, min_amt REAL, paid REAL DEFAULT 0, ptype TEXT, paid_at TEXT, note TEXT, deleted INTEGER DEFAULT 0, UNIQUE(plan_id, ym))`,
   `CREATE TABLE IF NOT EXISTS fin_stop(id TEXT PRIMARY KEY, order_no TEXT, amount REAL, date TEXT)`,
   `CREATE TABLE IF NOT EXISTS order_fin(order_no TEXT PRIMARY KEY, revenue REAL, commission REAL, net REAL, cargo REAL, service REAL, updated_at TEXT)`,
   `INSERT OR IGNORE INTO settings(k,v) VALUES('rev','1'),('lock_sync','0'),('auto_accept','1'),('fee_cargo_ty','46.49'),('fee_cargo_t1','46.49'),('fee_cargo_t2','84.49'),('fee_cargo_t3','98.35'),('cargo_desi_mode','0'),('desi_table','[]'),('fee_service_ty','13.19'),('fee_cargo_sh','0'),('stopaj','1')`
@@ -308,6 +310,82 @@ function cariAmt(v) { if (typeof v === 'number') return r2(v); let t = String(v 
 const cariCur = (c) => ['USD', 'EUR'].includes(String(c || '').toUpperCase()) ? String(c).toUpperCase() : 'TL';
 // Güncel kur (piyasa bandıyla aynı kaynak): 1 USD / 1 EUR kaç TL
 async function fxRates(env) { const r = { TL: 1, USD: null, EUR: null }; try { const m = await marketData(env); for (const x of m.items || []) { if (x.id === 'usd') r.USD = x.price; if (x.id === 'eur') r.EUR = x.price; } } catch (e) {} return r; }
+/* ============ Ödemelerim (bağımsız ödeme takibi: kira, kredi, kredi kartı, taksit) ============ */
+const ymAdd = (ym, n) => { let [y, m] = ym.split('-').map(Number); m += n; while (m > 12) { m -= 12; y++; } while (m < 1) { m += 12; y--; } return `${y}-${String(m).padStart(2, '0')}`; };
+const ymDue = (ym, day) => { const [y, m] = ym.split('-').map(Number), last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return `${ym}-${String(Math.min(Math.max(1, day || 1), last)).padStart(2, '0')}`; };
+const PAY_KINDS = ['fixed', 'loan', 'card', 'once'];
+async function payEnsure(env) {
+  const { results: P } = await env.DB.prepare('SELECT * FROM pay_plan WHERE active=1').all(); const until = ymAdd(trToday().slice(0, 7), 11), st = [];
+  const { results: have } = await env.DB.prepare('SELECT plan_id, ym FROM pay_inst').all(); const H = new Set(have.map(x => x.plan_id + '|' + x.ym));
+  for (const p of P) { const months = [];
+    if (p.kind === 'once') months.push([p.start_ym, '']);
+    else if (p.kind === 'loan') { const n0 = p.n_start || 1, N = p.n_total || n0; for (let i = 0; n0 + i <= N; i++) { const ym = ymAdd(p.start_ym, i); if (ym > until) break; months.push([ym, `${n0 + i}/${N}`]); } }
+    else for (let ym = p.start_ym; ym <= until; ym = ymAdd(ym, 1)) months.push([ym, '']);
+    for (const [ym, label] of months) if (!H.has(p.id + '|' + ym)) st.push(env.DB.prepare('INSERT OR IGNORE INTO pay_inst(plan_id, ym, due, label, amount, min_amt, paid) VALUES(?1,?2,?3,?4,?5,?6,0)').bind(p.id, ym, ymDue(ym, p.day), label, p.kind === 'card' ? null : p.amount, p.kind === 'card' ? null : p.min_amt)); }
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+}
+const payNum = (v) => { if (v === null || v === undefined || v === '') return null; const n = typeof v === 'number' ? v : Number(String(v).replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return Number.isFinite(n) ? r2(n) : null; };
+async function payApi(env, path, body) {
+  const today = trToday(), thisYm = today.slice(0, 7);
+  if (path === '/api/pay/list') {
+    await payEnsure(env);
+    const { results: P } = await env.DB.prepare('SELECT * FROM pay_plan WHERE active=1 OR id IN (SELECT plan_id FROM pay_inst WHERE deleted=0 AND paid>0) ORDER BY name').all();
+    const { results: I } = await env.DB.prepare('SELECT * FROM pay_inst WHERE deleted=0 ORDER BY due, id').all();
+    const pm = new Map(P.map(p => [p.id, p])), wk = ymDue(thisYm, 1) && new Date(Date.parse(today + 'T12:00:00Z') + 7 * 86400000).toISOString().slice(0, 10);
+    const S = { todayN: 0, todayTL: 0, lateN: 0, lateTL: 0, weekN: 0, weekTL: 0, noAmtN: 0 }, items = [];
+    for (const x of I) { const p = pm.get(x.plan_id); if (!p) continue; const amt = Number(x.amount) || 0, mn = Number(x.min_amt) || 0, paid = Number(x.paid) || 0;
+      const done = x.ptype === 'full' || (amt > 0 && paid >= amt - 0.009) || (x.amount !== null && amt === 0 && x.ptype), minDone = x.ptype === 'min' && paid >= mn - 0.009 && mn > 0, open = !done && !minDone, need = r2(Math.max(0, (mn > 0 && !paid ? mn : amt) - paid));
+      const st = done ? 'paid' : minDone ? 'min' : paid > 0 ? 'part' : x.due < today ? 'late' : x.due === today ? 'today' : 'wait';
+      if (open && x.due < today) { S.lateN++; S.lateTL = r2(S.lateTL + need); } else if (open && x.due === today) { S.todayN++; S.todayTL = r2(S.todayTL + need); } else if (open && x.due <= wk) { S.weekN++; S.weekTL = r2(S.weekTL + need); }
+      if (p.kind === 'card' && x.amount === null && x.due <= wk && x.due >= today) S.noAmtN++;
+      items.push({ ...x, name: p.name, cat: p.cat, kind: p.kind, st }); }
+    return json({ ok: true, today, plans: P, items, sum: S });
+  }
+  if (path === '/api/pay/plan') {
+    const id = intOr(body.id, 0), name = String(body.name || '').trim().slice(0, 80); if (!name) return bad('Ödeme adı yaz.');
+    const kind = PAY_KINDS.includes(body.kind) ? body.kind : 'fixed', cat = String(body.cat || '').trim().slice(0, 30), day = Math.min(31, Math.max(1, intOr(body.day, 1))), amount = payNum(body.amount), min = payNum(body.min), note = String(body.note || '').trim().slice(0, 160);
+    const start = /^\d{4}-\d{2}$/.test(body.start_ym || '') ? body.start_ym : thisYm, nTot = kind === 'loan' ? Math.max(1, intOr(body.n_total, 1)) : null, nSt = kind === 'loan' ? Math.min(nTot, Math.max(1, intOr(body.n_start, 1))) : null;
+    if (kind !== 'card' && !(amount > 0)) return bad('Tutar gir.');
+    if (!id) { const r = await env.DB.prepare('INSERT INTO pay_plan(name, cat, kind, day, amount, min_amt, start_ym, n_total, n_start, note, active, created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11) RETURNING id').bind(name, cat, kind, day, amount, min, start, nTot, nSt, note, iso()).first(); const pid = r && r.id;
+      await payEnsure(env); if (kind === 'card' && (amount !== null || min !== null)) await env.DB.prepare('UPDATE pay_inst SET amount=?1, min_amt=?2 WHERE plan_id=?3 AND ym=?4').bind(amount, min, pid, start).run(); if (note && kind !== 'once') {} return json({ ok: true, id: pid }); }
+    const old = await env.DB.prepare('SELECT * FROM pay_plan WHERE id=?1').bind(id).first(); if (!old) return bad('Ödeme bulunamadı.');
+    await env.DB.prepare('UPDATE pay_plan SET name=?1, cat=?2, kind=?3, day=?4, amount=?5, min_amt=?6, n_total=?7, n_start=?8, note=?9, start_ym=?10 WHERE id=?11').bind(name, cat, kind, day, amount, min, nTot, nSt, note, start, id).run();
+    // ileriki ödenmemiş aylar yeni gün/tutara göre güncellenir; taksit sayısı azaldıysa fazlası silinir
+    const { results: F } = await env.DB.prepare('SELECT id, ym FROM pay_inst WHERE plan_id=?1 AND deleted=0 AND COALESCE(paid,0)=0 AND ym >= ?2').bind(id, thisYm).all(); const st = [];
+    for (const f of F) { if (kind === 'once' && f.ym !== start) { st.push(env.DB.prepare('UPDATE pay_inst SET deleted=1 WHERE id=?1').bind(f.id)); continue; }
+      if (kind === 'loan') { const k = (Number(f.ym.slice(0, 4)) - Number(start.slice(0, 4))) * 12 + Number(f.ym.slice(5)) - Number(start.slice(5)); if (nSt + k > nTot || k < 0) { st.push(env.DB.prepare('UPDATE pay_inst SET deleted=1 WHERE id=?1').bind(f.id)); continue; } st.push(env.DB.prepare('UPDATE pay_inst SET label=?1 WHERE id=?2').bind(`${nSt + k}/${nTot}`, f.id)); }
+      st.push(env.DB.prepare(`UPDATE pay_inst SET due=?1${kind === 'card' ? '' : ', amount=?3, min_amt=?4'} WHERE id=?2`).bind(...(kind === 'card' ? [ymDue(f.ym, day), f.id] : [ymDue(f.ym, day), f.id, amount, min]))); }
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); await payEnsure(env); return json({ ok: true, id });
+  }
+  if (path === '/api/pay/plandel') { const id = intOr(body.id, 0); await env.DB.batch([env.DB.prepare('UPDATE pay_plan SET active=0 WHERE id=?1').bind(id), env.DB.prepare('UPDATE pay_inst SET deleted=1 WHERE plan_id=?1 AND COALESCE(paid,0)=0' + (body.all ? '' : ' AND ym >= ?2')).bind(...(body.all ? [id] : [id, thisYm]))]); return json({ ok: true }); }
+  if (path === '/api/pay/inst') { const id = intOr(body.id, 0), x = await env.DB.prepare('SELECT * FROM pay_inst WHERE id=?1').bind(id).first(); if (!x) return bad('Kayıt bulunamadı.');
+    const due = /^\d{4}-\d{2}-\d{2}$/.test(body.due || '') ? body.due : x.due, amount = 'amount' in body ? payNum(body.amount) : x.amount, min = 'min' in body ? payNum(body.min) : x.min_amt, note = 'note' in body ? String(body.note || '').trim().slice(0, 160) : x.note;
+    await env.DB.prepare('UPDATE pay_inst SET due=?1, amount=?2, min_amt=?3, note=?4 WHERE id=?5').bind(due, amount, min, note, id).run(); return json({ ok: true }); }
+  if (path === '/api/pay/pay') { const id = intOr(body.id, 0), x = await env.DB.prepare('SELECT * FROM pay_inst WHERE id=?1').bind(id).first(); if (!x) return bad('Kayıt bulunamadı.'); const t = body.type;
+    if (t === 'undo') { await env.DB.prepare('UPDATE pay_inst SET paid=0, ptype=NULL, paid_at=NULL WHERE id=?1').bind(id).run(); return json({ ok: true }); }
+    const amt = Number(x.amount) || 0, mn = Number(x.min_amt) || 0, v = t === 'full' ? amt : t === 'min' ? mn : payNum(body.amount);
+    if (t === 'min' && !(mn > 0)) return bad('Asgari tutar girilmemiş.'); if (t === 'part' && !(v > 0)) return bad('Ödenen tutarı yaz.'); if (t === 'full' && x.amount === null) return bad('Önce tutarı gir.');
+    const paid = t === 'part' ? r2((Number(x.paid) || 0) + v) : v, pt = t === 'part' ? (amt > 0 && paid >= amt - 0.009 ? 'full' : mn > 0 && paid >= mn - 0.009 ? 'min' : 'part') : t;
+    await env.DB.prepare('UPDATE pay_inst SET paid=?1, ptype=?2, paid_at=?3 WHERE id=?4').bind(paid, pt, today, id).run(); return json({ ok: true }); }
+  if (path === '/api/pay/instdel') { await env.DB.prepare('UPDATE pay_inst SET deleted=1 WHERE id=?1').bind(intOr(body.id, 0)).run(); return json({ ok: true }); }
+  if (path === '/api/pay/import') {
+    // Excel satırları: ad, kategori, son ödeme tarihi, asgari, tutar, ödenen, açıklama → ödeme türü tahmin edilir
+    const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 300), { results: ex } = await env.DB.prepare('SELECT LOWER(TRIM(name)) n FROM pay_plan WHERE active=1').all(), have = new Set(ex.map(x => x.n)); let added = 0, skipped = [], once = [];
+    for (const r of rows) { const name = String(r.name || '').trim().replace(/\s+/g, ' ').slice(0, 80); if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(r.date || '')) continue; if (have.has(name.toLocaleLowerCase('tr-TR')) || have.has(name.toLowerCase())) { skipped.push(name); continue; }
+      const catU = String(r.cat || '').toLocaleUpperCase('tr-TR').trim(), note0 = String(r.note || '').trim(), nm = /(\d{1,3})\s*\/\s*(\d{1,3})/.exec(note0), amount = payNum(r.amount), min = payNum(r.min), paid = payNum(r.paid) || 0;
+      const kind = nm && +nm[1] <= +nm[2] ? 'loan' : /K\.?\s*KART|KRED[İI] KART/.test(catU) ? 'card' : /K[İI]RA|AİDAT|AIDAT|ABONE|FATURA/.test(catU) ? 'fixed' : 'once';
+      const cat = /K\.?\s*KART/.test(catU) ? 'Kredi kartı' : /KRED/.test(catU) ? 'Kredi' : /K[İI]RA/.test(catU) ? 'Kira' : /TAKS/.test(catU) ? 'Taksit' : catU ? catU.charAt(0) + catU.slice(1).toLocaleLowerCase('tr-TR') : 'Diğer';
+      const isFull = /TAM\s*ÖDEND/i.test(note0), isMin = /M[İI]N\.?\s*ÖDEND|ASGAR[İI]\s*ÖDEND/i.test(note0), note = note0.replace(/TAM\s*ÖDENDİ|M[İI]N\.?\s*ÖDENDİ|ASGAR[İI]\s*ÖDENDİ/gi, '').replace(/\d{1,3}\s*\/\s*\d{1,3}\s*TAKS[İI]T/i, '').trim();
+      const ym = r.date.slice(0, 7), day = Number(r.date.slice(8, 10)), plAmt = kind === 'fixed' && min > 0 ? min : amount;
+      const res = await env.DB.prepare('INSERT INTO pay_plan(name, cat, kind, day, amount, min_amt, start_ym, n_total, n_start, note, active, created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11) RETURNING id').bind(name, cat, kind, day, kind === 'card' ? null : plAmt, kind === 'card' || kind === 'fixed' ? null : (min && min !== amount ? min : null), ym, kind === 'loan' ? +nm[2] : null, kind === 'loan' ? +nm[1] : null, kind === 'fixed' ? '' : note, iso()).first();
+      const pid = res && res.id; await payEnsure(env);
+      const ptype = isFull ? 'full' : isMin ? 'min' : paid > 0 ? (amount > 0 && paid >= amount ? 'full' : min > 0 && paid >= min ? 'min' : 'part') : null, pv = isFull ? (amount || paid) : isMin ? (paid || min) : paid;
+      await env.DB.prepare('UPDATE pay_inst SET amount=?1, min_amt=?2, note=?3, paid=?4, ptype=?5, paid_at=?6, due=?7 WHERE plan_id=?8 AND ym=?9').bind(amount, min && min !== amount ? min : (kind === 'card' ? min : null), note, pv || 0, ptype, ptype ? today : null, r.date, pid, ym).run();
+      have.add(name.toLocaleLowerCase('tr-TR')); added++; if (kind === 'once') once.push(name); }
+    return json({ ok: true, added, skipped, once });
+  }
+  return bad('Bilinmeyen işlem.', 404);
+}
 async function cariListResp(env) {
     // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç; ödeme şekline göre vadesi gelenler uyarı olarak döner
     const all = await cariLoad(env), today = trToday(), list = [], alerts = [], dues = [], hist = [], fx = all.some(c => c.cur !== 'TL') ? await fxRates(env) : { TL: 1 };
@@ -3580,6 +3658,7 @@ ${catalog}` });
   }
   if (path === '/api/cari/currency') { const sup = String(body.supplier || '').trim(); if (!sup) return bad('Firma seç.'); const c = cariCur(body.currency);
     await env.DB.prepare('UPDATE suppliers SET currency=?2 WHERE name=?1').bind(sup, c === 'TL' ? null : c).run(); return json({ ok: true, currency: c }); }
+  if (path.startsWith('/api/pay/')) return await payApi(env, path, body);
   if (path === '/api/cari/iade') {
     // Tedarikçiye iade faturası: cariye alacak, kâra gelir (fatura tarihinde); stok değişmez
     const sup = String(body.supplier || '').trim().slice(0, 120); if (!sup) return bad('Firma seç.');

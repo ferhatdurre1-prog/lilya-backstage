@@ -173,7 +173,7 @@ input,textarea,select,option,.mono,.sheet[data-type="product"] .sheet-h h2,.shee
 @keyframes pspin{to{transform:rotate(360deg)}} /* bilgisayarda alt çubuğun iki yanındaki büyük kısayollar */
 @media (max-width:720px){
   .tabs{display:none}
-  .bnav{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
+  .bnav{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;position:fixed;left:14px;right:14px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px}
   .bnav button{border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11.5px;font-weight:600;color:var(--ink-3);padding:7px 0;cursor:pointer;position:relative;border-radius:16px}
   .bnav button svg{width:22px;height:22px}
   .bnav button[aria-current="page"]{color:var(--accent);background:var(--accent-soft)}
@@ -409,7 +409,7 @@ body:not([data-tab="home"]) #ticker,body:not([data-tab="home"]) #wx{display:none
 #hdr-actions{margin-left:auto}
 .tabs{display:none} /* üst sekmeler yok: bölümler soldaki ☰ menüsünden */
 /* alt çubuk (telefondaki gibi): ortada, sabit */
-.bnav{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100% - 48px));bottom:14px;z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px;box-sizing:border-box}
+.bnav{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;position:fixed;left:50%;transform:translateX(-50%);width:min(620px,calc(100% - 48px));bottom:14px;z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(16,40,30,.18);padding:6px;box-sizing:border-box}
 .bnav button{border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;font-weight:600;color:var(--ink-3);padding:7px 0;cursor:pointer;position:relative;border-radius:16px}
 .bnav button:hover{background:var(--surface-2)}
 .bnav button svg{width:22px;height:22px}
@@ -510,11 +510,12 @@ const ICONS = {
   addr:'<path d="M12 21s-7-6.2-7-11.5A7 7 0 0119 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   questions:'<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1.1-4.6A8 8 0 1121 12z"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.5-1.5 1-1.5 2"/><path d="M12 16.5h.01"/>',
   cari:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  pay:'<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 9.5h19M6.5 15h4"/>',
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
-const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
-const NAV_MAIN = ['stock','value','orders','profit']; // alt çubukta görünenler; diğerleri sol menüde
-const TAB_SHORT = {questions:'Soru', addr:'Adres', buy:'Sipariş ver', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket'};
+const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['pay','Ödemelerim'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
+const NAV_MAIN = ['stock','value','orders','pay','profit']; // alt çubukta görünenler; diğerleri sol menüde
+const TAB_SHORT = {questions:'Soru', addr:'Adres', buy:'Sipariş ver', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket', pay:'Ödemeler'};
 
 /* ============ Durum ============ */
 const S = {
@@ -833,14 +834,15 @@ function render(){
   if (S.authed === false) { $('#view').innerHTML = viewLogin(); setTimeout(() => { const i = $('#lg-pass'); if (i) i.focus(); }, 30); return; }
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
   const pending = retActionCount();
-  const counts = {returns: pending};
+  const PS0 = S.pay && S.pay.data && S.pay.data.sum; if (logged && S.authed) payMaybeLoad();
+  const counts = {returns: pending, pay: PS0 ? PS0.lateN + PS0.todayN : 0};
   const NAV = NAV_MAIN.map(id => TABS.find(t => t[0] === id)).filter(Boolean);
   // bilgisayarda bütün bölümler üst sekmede (telefonda alt çubukta 3 ana bölüm + sol menü)
   $('#tabs').innerHTML = TABS.filter(([id]) => id !== 'home').map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
-  const bn = banners(); v.innerHTML = (S.tab === 'home' && bn ? `<div class="h-ban">${bn}</div>` : bn) + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr, buy:viewBuy, cari:viewCari}[S.tab])();
+  const bn = banners(); v.innerHTML = (S.tab === 'home' && bn ? `<div class="h-ban">${bn}</div>` : bn) + ({home:viewHome, stock:viewStock, orders:viewOrders, returns:viewReturns, value:viewValue, profit:viewProfit, moves:viewMoves, reports:viewReports, questions:viewQuestions, addr:viewAddr, buy:viewBuy, cari:viewCari, pay:viewPay}[S.tab])();
   enhanceTables(v); if (S.tab === 'cari') wkSync(); renderAlerts();
   if (aid) { const el = document.getElementById(aid); if (el && v.contains(el) && el !== document.activeElement) { el.focus(); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch(e){} } }
   renderSync();
@@ -858,7 +860,7 @@ function renderDrawer(){
     ${item('home', 'Ana ekran')}
     ${grp('Satış')}${item('orders', 'Siparişler')}${item('addr', 'Adres düzeltme')}${item('returns', 'İadeler', 'returns', pending)}${item('questions', 'Sorular', 'questions', (S.sync.trendyol || {}).qnaWaiting || 0)}
     ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
-    ${grp('Para')}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
+    ${grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
     ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
     ${grp('Ayarlar')}<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
     <div class="small muted" style="padding:14px 16px 6px">Sürüm: __BUILD_TIME__</div>
@@ -1214,6 +1216,69 @@ function cariDueAlert(){ const C = S.cari, D = C && C.data; if (!D || !D.list) r
   const late = D.list.reduce((t, x) => t + (fx(x) ? x.overdueTL || 0 : x.overdue || 0), 0), today = D.list.reduce((t, x) => t + (fx(x) ? x.dueTodayTL || 0 : x.dueToday || 0), 0);
   const fxTxt = D.list.filter(x => fx(x) && x.overdue + x.dueToday > 0.004).map(x => `${x.supplier} ${curAmt(x.overdue + x.dueToday, x.cur)}`).join(', ');
   return D.list.some(x => x.overdue + x.dueToday > 0.004) ? {late, today, fxTxt, n: D.list.filter(x => x.overdue + x.dueToday > 0.004).length} : null; }
+/* ============ Ödemelerim (bağımsız; hiçbir hesaba girmez) ============ */
+const PAY_KIND = {fixed: 'Sabit aylık', loan: 'Taksitli kredi', card: 'Kredi kartı', once: 'Tek seferlik'};
+const PAY_ST = {paid: ['Ödendi', 'p-good'], min: ['Asgari ödendi', 'p-good'], part: ['Kısmi ödendi', 'p-warn'], late: ['Gecikti', 'p-bad'], today: ['Bugün', 'p-warn'], wait: ['Bekliyor', 'p-mute']};
+const TR_MONTHS = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+const ymName = (ym) => `${TR_MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
+function payS(){ if (!S.pay) S.pay = {data: null, loading: false, at: 0, ym: todayTR().slice(0, 7), cat: 'all', err: ''}; return S.pay; }
+function payMaybeLoad(force){ const P = payS(); if (P.loading || (!force && P.data && Date.now() - P.at < 300000)) return; P.loading = true;
+  api('/api/pay/list', {}).then(d => { P.data = d; P.err = ''; P.at = Date.now(); P.loading = false; render(); }).catch(e => { P.loading = false; P.at = Date.now(); P.err = errText(e); if (S.tab === 'pay') render(); }); }
+function payHomeCard(){ const P = payS(), D = P.data; if (!D) return ''; const s = D.sum; if (!s.lateN && !s.todayN && !s.weekN && !s.noAmtN) return '';
+  const ln = [s.lateN ? `<b style="color:var(--bad)">🔴 Geciken ${fmtN(s.lateN)} ödeme · ${fmtTL(s.lateTL)}</b>` : '', s.todayN ? `<b style="color:var(--warn,#d97706)">🟠 Bugün ${fmtN(s.todayN)} ödeme · ${fmtTL(s.todayTL)}</b>` : '', s.weekN ? `Bu hafta ${fmtN(s.weekN)} ödeme · ${fmtTL(s.weekTL)}` : '', s.noAmtN ? `<span class="muted">${fmtN(s.noAmtN)} kredi kartının ekstre tutarı girilmedi</span>` : ''].filter(Boolean);
+  return `<div class="card" data-act="tab" data-id="pay" role="button" style="cursor:pointer;gap:4px;margin-bottom:12px;padding:12px;border-color:${s.lateN ? 'var(--bad)' : 'var(--line)'}"><div class="spread"><b>💳 Ödemelerim</b><span class="small muted">aç ›</span></div>${ln.map(x => `<div class="small">${x}</div>`).join('')}</div>`; }
+function payNeed(x){ const a = Number(x.amount) || 0, m = Number(x.min_amt) || 0, p = Number(x.paid) || 0; return Math.max(0, a - p); }
+function viewPay(){
+  const P = payS(); payMaybeLoad(); const D = P.data, today = todayTR();
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Ödemelerim</h2><p class="lead small">Kira, kredi, kredi kartı ve taksitlerin. Sadece takip ve hatırlatma içindir; kâra, carilere ya da başka bir hesaba girmez.</p></div>`;
+  if (!D) return h + (P.err ? `<div class="banner bad"><div>Ödemeler yüklenemedi: ${esc(P.err)}</div><button class="btn sm" data-act="pay-reload">Tekrar dene</button></div>` : loading());
+  const all = D.items || [], s = D.sum, yms = [...new Set(all.map(x => x.ym))].sort(), cats = [...new Set(all.map(x => x.cat || 'Diğer'))].sort();
+  if (!yms.includes(P.ym) && P.ym !== 'year') P.ym = yms.find(y => y >= today.slice(0, 7)) || yms[yms.length - 1] || today.slice(0, 7);
+  const kpi = (k, v, c) => `<div class="kpi"><div class="k">${k}</div><div class="v" style="font-size:18px;${c ? 'color:' + c : ''}">${v}</div></div>`;
+  h += `<div class="home-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:12px">${kpi('Geciken', s.lateN ? `${fmtN(s.lateN)} · ${fmtTL(s.lateTL)}` : '—', s.lateN ? 'var(--bad)' : '')}${kpi('Bugün', s.todayN ? `${fmtN(s.todayN)} · ${fmtTL(s.todayTL)}` : '—', s.todayN ? 'var(--warn,#d97706)' : '')}${kpi('Önümüzdeki 7 gün', s.weekN ? `${fmtN(s.weekN)} · ${fmtTL(s.weekTL)}` : '—')}</div>`;
+  h += `<div class="row" style="justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn primary" data-act="pay-new">+ Ödeme ekle</button><label class="btn" style="cursor:pointer">📤 Excel'den aktar<input type="file" id="pay-file" accept=".xlsx,.xls" hidden></label></div>`;
+  if (!all.length) return h + `<div class="panel empty"><h4>Henüz ödeme yok</h4><p><b>+ Ödeme ekle</b> ile gir ya da ödeme takip Excel'ini <b>Excel'den aktar</b> ile yükle.</p></div>`;
+  h += `<div class="chips" style="margin-bottom:8px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px">${yms.map(ym => { const L = all.filter(x => x.ym === ym), open = L.filter(x => ['late', 'today', 'wait', 'part'].includes(x.st)).length, late = L.some(x => x.st === 'late'); return `<button class="chip" data-act="pay-ym" data-id="${ym}" aria-pressed="${P.ym === ym}" style="white-space:nowrap;flex:none">${ymName(ym)}${open ? ` <span class="pill ${late ? 'p-bad' : 'p-mute'}" style="margin-left:4px">${open}</span>` : ''}</button>`; }).join('')}<button class="chip" data-act="pay-ym" data-id="year" aria-pressed="${P.ym === 'year'}" style="white-space:nowrap;flex:none">📊 Yıllık özet</button></div>`;
+  if (P.ym === 'year') { let T = 0, Pd = 0; const rows = yms.map(ym => { const L = all.filter(x => x.ym === ym), t = L.reduce((a, x) => a + (Number(x.amount) || 0), 0), p = L.reduce((a, x) => a + (Number(x.paid) || 0), 0), na = L.filter(x => x.amount === null).length; T += t; Pd += p; return `<tr data-act="pay-ym" data-id="${ym}" style="cursor:pointer"><td>${ymName(ym)}</td><td class="r num">${fmtN(L.length)}</td><td class="r num">${fmtTL(t)}${na ? ` <span class="pill p-warn">${na} tutarsız</span>` : ''}</td><td class="r num">${fmtTL(p)}</td><td class="r num"><b>${fmtTL(Math.max(0, t - p))}</b></td></tr>`; }).join('');
+    return h + `<div class="tbl-wrap"><table class="t"><thead><tr><th>Ay</th><th class="r">Ödeme</th><th class="r">Toplam</th><th class="r">Ödenen</th><th class="r">Kalan</th></tr></thead><tbody>${rows}<tr><td><b>Genel toplam</b></td><td></td><td class="r num"><b>${fmtTL(T)}</b></td><td class="r num"><b>${fmtTL(Pd)}</b></td><td class="r num"><b>${fmtTL(Math.max(0, T - Pd))}</b></td></tr></tbody></table></div><p class="small muted">Kredi kartlarının ileriki ayları ekstre tutarı girilene kadar toplama katılmaz ("tutarsız").</p>`; }
+  const L0 = all.filter(x => x.ym === P.ym), L = L0.filter(x => P.cat === 'all' || (x.cat || 'Diğer') === P.cat);
+  const tt = L0.reduce((a, x) => a + (Number(x.amount) || 0), 0), tp = L0.reduce((a, x) => a + (Number(x.paid) || 0), 0);
+  h += `<div class="spread" style="margin:6px 0 8px;flex-wrap:wrap;gap:8px"><div class="chips">${['all', ...cats].map(c => `<button class="chip" data-act="pay-cat" data-id="${esc(c)}" aria-pressed="${P.cat === c}">${c === 'all' ? 'Tümü' : esc(c)}</button>`).join('')}</div><div class="small">${ymName(P.ym)}: toplam <b>${fmtTL(tt)}</b> · ödenen <b style="color:var(--good)">${fmtTL(tp)}</b> · kalan <b style="color:var(--bad)">${fmtTL(Math.max(0, tt - tp))}</b></div></div>`;
+  const days = (d) => Math.round((Date.parse(d + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 86400000);
+  h += `<div class="list">${L.map(x => { const [stl, stc] = PAY_ST[x.st] || ['', 'p-mute'], dd = days(x.due), open = ['late', 'today', 'wait', 'part'].includes(x.st), noAmt = x.amount === null;
+    const when = x.st === 'late' ? `${-dd} gün gecikti` : x.st === 'today' ? 'bugün' : open && dd <= 7 ? `${dd} gün kaldı` : '';
+    return `<div class="card" style="gap:6px;padding:12px;margin-bottom:8px;${x.st === 'late' ? 'border-color:var(--bad)' : x.st === 'today' ? 'border-color:var(--warn,#d97706)' : ''}">
+      <div class="spread" style="gap:10px;align-items:flex-start"><div style="min-width:0"><b>${esc(x.name)}</b> ${x.label ? `<span class="pill p-mute">${esc(x.label)}</span>` : ''}<div class="small muted">${esc(x.cat || '')}${PAY_KIND[x.kind] && PAY_KIND[x.kind] !== x.cat ? ' · ' + PAY_KIND[x.kind] : ''} · son ödeme <b>${esc(cDay(x.due))}</b>${when ? ` · <b style="color:${x.st === 'late' ? 'var(--bad)' : 'inherit'}">${when}</b>` : ''}</div>${x.note ? `<div class="small">📝 ${esc(x.note)}</div>` : ''}</div>
+        <div style="text-align:right;flex:none"><span class="pill ${stc}">${stl}</span><div class="num" style="font-weight:700;font-size:16px;margin-top:4px">${noAmt ? '<span class="small" style="color:var(--warn,#d97706)">tutar girilmedi</span>' : fmtTL(x.amount)}</div>${x.min_amt && Number(x.min_amt) !== Number(x.amount) ? `<div class="small muted">asgari ${fmtTL(x.min_amt)}</div>` : ''}${Number(x.paid) > 0 ? `<div class="small" style="color:var(--good)">ödenen ${fmtTL(x.paid)}</div>` : ''}</div></div>
+      ${noAmt ? `<div class="row" style="gap:6px;flex-wrap:wrap;align-items:center"><input class="input num" id="pa-amt-${x.id}" inputmode="decimal" placeholder="Ekstre tutarı" style="max-width:150px"><input class="input num" id="pa-min-${x.id}" inputmode="decimal" placeholder="Asgari tutar" style="max-width:150px"><button class="btn sm primary" data-act="pay-setamt" data-id="${x.id}">Kaydet</button></div>` : ''}
+      <div class="row" style="gap:6px;flex-wrap:wrap">${open && !noAmt ? `<button class="btn sm primary" data-act="pay-full" data-id="${x.id}">✓ Tam ödendi</button>${x.min_amt && Number(x.min_amt) < Number(x.amount) && x.st !== 'part' ? `<button class="btn sm" data-act="pay-min" data-id="${x.id}">Asgari ödendi</button>` : ''}<button class="btn sm" data-act="pay-part" data-id="${x.id}">Kısmi ödeme</button>` : ''}${x.st === 'min' ? `<button class="btn sm" data-act="pay-part" data-id="${x.id}">Ek ödeme</button>` : ''}${Number(x.paid) > 0 || x.ptype ? `<button class="btn sm ghost" data-act="pay-undo" data-id="${x.id}">Ödemeyi geri al</button>` : ''}<button class="btn sm ghost" data-act="pay-edit" data-id="${x.id}">Düzenle</button></div></div>`; }).join('') || '<div class="panel empty"><h4>Bu ayda ödeme yok</h4></div>'}</div>`;
+  return h;
+}
+function sheetPayEdit(){
+  const P = payS(), D = P.data || {items: [], plans: []}, x = S.sheet.iid ? D.items.find(i => String(i.id) === String(S.sheet.iid)) : null, pl = x ? D.plans.find(p => p.id === x.plan_id) : null, isNew = !x;
+  const v = (k, d = '') => esc(String(pl && pl[k] !== null && pl[k] !== undefined ? pl[k] : d)), n2 = (n) => n === null || n === undefined || n === '' ? '' : String(n).replace('.', ',');
+  const kind = (pl && pl.kind) || 'fixed', cats = ['Kira', 'Kredi', 'Kredi kartı', 'Taksit', 'Fatura', 'Muhasebe', 'Vergi / SGK', 'Diğer'];
+  return {title: isNew ? 'Ödeme ekle' : esc(pl.name), sub: isNew ? '' : `<span class="muted">${ymName(x.ym)} · ${PAY_KIND[kind]}</span>`, body: `
+    ${isNew ? '' : `<form id="f-payinst" class="card" style="gap:8px;margin-bottom:12px"><b class="small">Bu ay (${ymName(x.ym)})</b>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px"><label class="f" style="margin:0"><span>Son ödeme tarihi</span><input class="input" type="date" id="pi-due" value="${esc(x.due)}"></label><label class="f" style="margin:0"><span>Tutar</span><input class="input num" id="pi-amt" inputmode="decimal" value="${esc(n2(x.amount))}"></label><label class="f" style="margin:0"><span>Asgari tutar</span><input class="input num" id="pi-min" inputmode="decimal" value="${esc(n2(x.min_amt))}"></label></div>
+      <label class="f" style="margin:0"><span>Not</span><input class="input" id="pi-note" value="${esc(x.note || '')}" placeholder="ör. bu ay 5 bin fazla verilecek"></label>
+      <div class="row" style="justify-content:space-between"><button type="button" class="btn sm ghost" data-act="pay-instdel" data-id="${x.id}">Bu ayı sil</button><button class="btn primary" type="submit">Bu ayı kaydet</button></div></form>`}
+    <form id="f-payplan" class="card" style="gap:8px"><b class="small">${isNew ? 'Yeni ödeme' : 'Ödeme ayarları (ileriki ayları da değiştirir)'}</b>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">
+        <label class="f" style="margin:0"><span>Ödeme / Kurum</span><input class="input" id="pp-name" value="${v('name')}" required placeholder="ör. Garanti kredi"></label>
+        <label class="f" style="margin:0"><span>Kategori</span><input class="input" id="pp-cat" list="pp-cats" value="${v('cat')}" placeholder="Kira, Kredi…"><datalist id="pp-cats">${cats.map(c => `<option value="${c}">`).join('')}</datalist></label>
+        <label class="f" style="margin:0"><span>Tür</span><select class="input" id="pp-kind">${Object.entries(PAY_KIND).map(([k, l]) => `<option value="${k}" ${kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f" style="margin:0"><span>Ayın kaçında (son ödeme günü)</span><input class="input num" id="pp-day" type="number" min="1" max="31" value="${v('day', todayTR().slice(8, 10).replace(/^0/, ''))}"></label>
+        <label class="f" style="margin:0"><span>Başlangıç ayı</span><input class="input" id="pp-start" type="month" value="${v('start_ym', todayTR().slice(0, 7))}"></label>
+        <label class="f" style="margin:0"><span>Tutar <span class="muted">(kredi kartında boş bırakılabilir)</span></span><input class="input num" id="pp-amt" inputmode="decimal" value="${esc(n2(pl ? pl.amount : ''))}"></label>
+        <label class="f" style="margin:0"><span>Asgari tutar <span class="muted">(isteğe bağlı)</span></span><input class="input num" id="pp-min" inputmode="decimal" value="${esc(n2(pl ? pl.min_amt : ''))}"></label>
+        <label class="f" style="margin:0"><span>Taksit: kaçıncıdan başlıyor</span><input class="input num" id="pp-nst" type="number" min="1" value="${v('n_start', 1)}"></label>
+        <label class="f" style="margin:0"><span>Taksit: toplam kaç</span><input class="input num" id="pp-ntot" type="number" min="1" value="${v('n_total', 12)}"></label>
+      </div>
+      <label class="f" style="margin:0"><span>Açıklama</span><input class="input" id="pp-note" value="${v('note')}"></label>
+      <p class="small muted" style="margin:0">Sabit aylık: her ay aynı gün aynı tutar · Taksitli kredi: kalan taksitler kendiliğinden açılır · Kredi kartı: her ay aynı gün, tutarı ekstre gelince girersin · Tek seferlik: sadece başlangıç ayında.</p>
+      <div class="row" style="justify-content:space-between">${isNew ? '<span></span>' : `<button type="button" class="btn sm ghost" data-act="pay-plandel" data-id="${pl.id}" style="color:var(--bad)">Ödemeyi kaldır</button>`}<button class="btn primary" type="submit">${isNew ? 'Ekle' : 'Ayarları kaydet'}</button></div></form>`};
+}
 function viewCari(){
   const C = cS(); loadCari(); const D = C.data;
   let h = `<div style="margin:2px 0 14px"><h2 class="sec">Cariler</h2><p class="lead small">Tedarikçi hesapları. Alış listelerinde <b>Cariye işle</b> dediğin faturalar borç, buradan girdiğin ödemeler alacak olarak yazılır. Her firmaya çalışma şeklini (vade) girersen ödeme günleri burada uyarılır.</p></div>`;
@@ -1989,7 +2054,7 @@ function repChart(rows, gran){
 function viewHome(){
   homeMaybeLoad();
   const H = S.home && S.home.data;
-  let h = '';
+  let h = payHomeCard();
   if (H) {
     const D = H.days, T = D[D.length - 1], Y = D[D.length - 2] || {rev:0, prof:0}, M = H.month, YS = H.ySame || null;
     if (H.stale || H.day !== todayTR()) h += `<p class="small muted" style="margin:0 0 8px">⏳ Son kayıtlı özet gösteriliyor${H.day !== todayTR() ? ' (' + esc(cDay(H.day)) + ')' : ''} · güncelleniyor…</p>`;
@@ -4578,7 +4643,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -4627,6 +4692,15 @@ document.addEventListener('input', e => { const t = e.target, N = S.addr && S.ad
   if (t.id === 'no-q') { N.q = t.value; clearTimeout(noTimer); const q = t.value.trim(); if (q.length < 2) { N.res = []; const box = $('#no-res'); if (box) box.hidden = true; return; }
     noTimer = setTimeout(() => api('/api/shorder/products', {q}).then(d => { if (S.addr.no !== N || N.q.trim() !== q) return; N.res = d.items || []; const box = $('#no-res'); if (box) { box.innerHTML = noResHtml(N); box.hidden = false; } }).catch(() => {}), 250); } });
 /* Ürün desi Excel'i: "Desi (manuel)" sütunu ürün kodu / stok kodu / barkodla eşleşir */
+document.addEventListener('change', async e => { const t = e.target; if (!t || t.id !== 'pay-file' || !t.files || !t.files[0]) return; const file = t.files[0]; t.value = '';
+  try { const wb = XLSX.read(await file.arrayBuffer(), {type: 'array', cellDates: true}), rows = [], ymd = (d) => d instanceof Date ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : (/^(\d{1,2})[./](\d{1,2})[./](\d{4})/.exec(String(d || '')) || []).length ? String(d).replace(/^(\d{1,2})[./](\d{1,2})[./](\d{4}).*/, (m, a, b, c) => `${c}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`) : '';
+    for (const sn of wb.SheetNames) { const A = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header: 1, raw: true, defval: null}), hi = A.findIndex(r => r && r.some(c => /ödeme\s*\/\s*kurum/i.test(String(c || '')))); if (hi < 0) continue;
+      const H = A[hi].map(c => String(c || '').toLocaleLowerCase('tr-TR').trim()), col = (re) => H.findIndex(h => re.test(h)), cN = col(/kurum/), cK = col(/kategori/), cD = col(/tarih/), cM = col(/min|asgari/), cT = H.findIndex((h, i) => /^tutar/.test(h) && i !== cM), cP = col(/ödenen/), cA = col(/açıklama/);
+      for (const r of A.slice(hi + 1)) { if (!r || !r[cN] || /toplam/i.test(String(r[cN]))) continue; const d = ymd(r[cD]); if (!d) continue; rows.push({name: String(r[cN]), cat: cK >= 0 ? r[cK] : '', date: d, min: cM >= 0 ? r[cM] : null, amount: cT >= 0 ? r[cT] : null, paid: cP >= 0 ? r[cP] : null, note: cA >= 0 ? (r[cA] || '') : ''}); } }
+    if (!rows.length) { toast('Dosyada ödeme satırı bulunamadı (başlıkta "Ödeme / Kurum" sütunu olmalı).', true); return; }
+    if (!(await confirmBox(`${fmtN(rows.length)} ödeme satırı bulundu. Aktarılsın mı? (Aynı isimde zaten olanlar atlanır.)`, 'Aktar'))) return;
+    await run(async () => { const r = await api('/api/pay/import', {rows}); payMaybeLoad(true); toast(`${fmtN(r.added)} ödeme aktarıldı.${(r.skipped || []).length ? ` ${r.skipped.length} tanesi zaten vardı.` : ''}${(r.once || []).length ? ` Tek seferlik eklenenler: ${r.once.join(', ')} — her ay tekrarlıyorsa Düzenle'den türünü "Sabit aylık" yap.` : ''}`); }); }
+  catch (err) { toast('Excel okunamadı: ' + errText(err), true); } });
 document.addEventListener('change', async e => { const t = e.target; if (!t || t.id !== 'desi-file' || !t.files || !t.files[0]) return; const file = t.files[0]; t.value = '';
   await run(async () => { if (typeof XLSX === 'undefined') throw new Error('Excel okuyucu yüklenemedi. Sayfayı yenileyip tekrar dene.');
     const wb = XLSX.read(await file.arrayBuffer(), {type: 'array'}), rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval: ''});
@@ -4760,6 +4834,16 @@ document.addEventListener('click', async e => {
     case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'ia-koli-form': { const I = ciS(id), all = [...S.products.values()]; await iadeKoliPdf({sup: id, date: I.date, note: I.note, items: I.rows.map(r => { const sku = String(r.p || '').split(' · ')[0].trim(), p = all.find(q => q.sku === sku); return {sku: p ? p.sku : sku, name: p ? p.name : String(r.p || '').trim(), qty: iaNum(r.qty)}; })}); break; }
+    case 'pay-reload': payMaybeLoad(true); break;
+    case 'pay-ym': { payS().ym = id; render(); break; }
+    case 'pay-cat': { payS().cat = id; render(); break; }
+    case 'pay-new': openSheet('payedit', {iid: ''}); break;
+    case 'pay-edit': openSheet('payedit', {iid: id}); break;
+    case 'pay-full': case 'pay-min': case 'pay-undo': { const t = act.slice(4); if (t === 'undo' && !(await confirmBox('Bu ödeme işareti geri alınsın mı?', 'Geri al'))) break; await run(async () => { await api('/api/pay/pay', {id, type: t}); payS().at = 0; payMaybeLoad(true); toast(t === 'undo' ? 'Geri alındı.' : 'Ödendi olarak işaretlendi.'); }); break; }
+    case 'pay-part': { const v = prompt('Ödenen tutar (TL):'); if (v === null) break; await run(async () => { await api('/api/pay/pay', {id, type: 'part', amount: v}); payMaybeLoad(true); toast('Ödeme kaydedildi.'); }); break; }
+    case 'pay-setamt': { const a = ($('#pa-amt-' + id) || {}).value || '', m = ($('#pa-min-' + id) || {}).value || ''; if (!a.trim()) { toast('Ekstre tutarını yaz.', true); break; } await run(async () => { await api('/api/pay/inst', {id, amount: a, min: m}); payMaybeLoad(true); toast('Tutar kaydedildi.'); }); break; }
+    case 'pay-instdel': { if (!(await confirmBox('Bu aydaki ödeme kaydı silinsin mi? (Diğer aylar kalır.)', 'Sil', true))) break; await run(async () => { await api('/api/pay/instdel', {id}); closeSheetForce(); payMaybeLoad(true); }); break; }
+    case 'pay-plandel': { if (!(await confirmBox('Bu ödeme kaldırılsın mı? Bu aydan sonraki ödenmemiş ayları silinir; geçmiş ödemeler kalır.', 'Kaldır', true))) break; await run(async () => { await api('/api/pay/plandel', {id}); closeSheetForce(); payMaybeLoad(true); toast('Ödeme kaldırıldı.'); }); break; }
     case 'cari-retry': { const C = cS(); C.data = null; C.err = ''; loadCari(true); render(); break; }
     case 'ia-fis': { const C = cS(), Dt = C.det, r = Dt && (Dt.rows || []).find(x => String(x.id) === String(id)); if (!r) break; await iadeFisPdf({sup: Dt.supplier, date: r.date, note: r.inote || '', items: r.items || []}); break; }
     case 'ia-koli': { const C = cS(), Dt = C.det, r = Dt && (Dt.rows || []).find(x => String(x.id) === String(id)); if (!r) break; await iadeKoliPdf({sup: Dt.supplier, date: r.date, note: r.inote || '', items: r.items || []}); break; }
@@ -5216,6 +5300,10 @@ document.addEventListener('click', async e => {
 document.addEventListener('submit', async e => {
   e.preventDefault();
   const id = e.target.id;
+  if (id === 'f-payplan' || id === 'f-payinst') { const sh = S.sheet || {}, D = payS().data || {items: []}, x = sh.iid ? D.items.find(i => String(i.id) === String(sh.iid)) : null, val = (k) => (($('#' + k) || {}).value || '').trim();
+    if (id === 'f-payinst') { await run(async () => { await api('/api/pay/inst', {id: x.id, due: val('pi-due'), amount: val('pi-amt'), min: val('pi-min'), note: val('pi-note')}); payMaybeLoad(true); toast('Kaydedildi.'); closeSheetForce(); }); return; }
+    const kind = val('pp-kind'), start = val('pp-start');
+    await run(async () => { await api('/api/pay/plan', {id: x ? x.plan_id : 0, name: val('pp-name'), cat: val('pp-cat'), kind, day: val('pp-day'), start_ym: start, amount: val('pp-amt'), min: val('pp-min'), n_start: val('pp-nst'), n_total: val('pp-ntot'), note: val('pp-note')}); const P = payS(); if (!x) P.ym = start || P.ym; payMaybeLoad(true); toast(x ? 'Ayarlar kaydedildi.' : 'Ödeme eklendi.'); closeSheetForce(); }); return; }
   if (e.target.classList && e.target.classList.contains('srman')) { const gid = e.target.dataset.gid, A = aS(); A.busy['sr' + gid] = 'track'; render();
     try { const r = (await api('/api/surat/track', {gid, number: (($('#sr-man') || {}).value || A.srmVal || '').trim()})).r; srApply(gid, r); A.srm = null; A.srmVal = ''; toast(r.fulfilled ? `Takip no ${r.tracking} Shopify'a işlendi; müşteriye bildirim gitti.` : `Takip no kaydedildi${r.err ? ' · Shopify: ' + r.err : ''}`, !!r.err); } catch(err) { toast(errText(err), true); }
     delete A.busy['sr' + gid]; render(); return; }
