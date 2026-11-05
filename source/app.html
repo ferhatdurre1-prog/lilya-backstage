@@ -1561,7 +1561,7 @@ function cariDetail(x){
   if (io.length) h += `<div class="small" style="font-weight:600;margin-top:4px;color:var(--good)">Tahsilat planı (${esc(x.supplier)} sana ödeyecek)</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Vade</th><th>Açıklama</th><th class="r">Tutar</th><th class="r">Kalan</th></tr></thead><tbody>${io.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.due))}${r.st === 'late' ? ' <span class="pill p-bad">gecikti</span>' : ''}</td><td style="overflow-wrap:anywhere">${esc(r.label)}</td><td class="r">${curAmt(r.amount, x.cur)}</td><td class="r"><b style="color:var(--good)">${curAmt(r.left, x.cur)}</b></td></tr>`).join('')}</tbody></table></div>`;
   // ekstre
   if (!Dt.rows.length) h += '<p class="muted small" style="margin:0">Hareket yok.</p>';
-  else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? curAmt(r.amount, x.cur) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? curAmt(r.amount, x.cur) : ''}</td><td class="r"><b>${curAmt(r.bal, x.cur)}</b></td><td class="r">${r.iade ? `<button class="btn sm" data-act="ia-koli" data-id="${esc(String(r.id))}" title="İade kolisi fişi (100×150)">🏷 Koli fişi</button> ` : ''}${r.mov ? `<button class="btn sm" data-act="cari-movdel" data-id="${esc(String(r.id))}" title="Hareketi sil">Sil</button>` : r.kind === 'pay' || r.recv ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="${r.recv ? 'Tahsilatı sil' : 'Ödemeyi sil'}">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+  else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? curAmt(r.amount, x.cur) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? curAmt(r.amount, x.cur) : ''}</td><td class="r"><b>${curAmt(r.bal, x.cur)}</b></td><td class="r">${r.iade ? `<button class="btn sm" data-act="ia-fis" data-id="${esc(String(r.id))}" title="İade fişi (A4, fiyatlı)">📄 İade fişi</button> <button class="btn sm" data-act="ia-koli" data-id="${esc(String(r.id))}" title="İade kolisi fişi (100×150)">🏷 Koli fişi</button> ` : ''}${r.mov ? `<button class="btn sm" data-act="cari-movdel" data-id="${esc(String(r.id))}" title="Hareketi sil">Sil</button>` : r.kind === 'pay' || r.recv ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="${r.recv ? 'Tahsilatı sil' : 'Ödemeyi sil'}">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
   return h;
 }
 // Elle cari aç: firma + devir bakiye (önceki borç)
@@ -1707,6 +1707,36 @@ async function iadeKoliPdf(f){
     y = y0 + Math.max(PH, ty - y0) + 4; y = Math.max(y, y0 + rowH - 8); c.fillRect(M, y, W - 2 * M, 1); y += 6; }
   foot();
   await deliverPdf(doc.output(), `iade-koli-${String(f.sup || '').replace(/\W+/g, '-').slice(0, 30)}-${f.date || todayTR()}.pdf`, page);
+}
+// İade fişi (A4): firma, tarih, ürünler (foto · kod · ad · adet · birim · toplam), genel toplam
+async function iadeFisPdf(f){
+  const PA = [...S.products.values()], pOf = (x) => (x.pkey && S.products.get(x.pkey)) || PA.find(q => q.sku && q.sku === x.sku) || null;
+  const items = (f.items || []).filter(x => x.sku || x.name).map(x => { const p = pOf(x); return {code: x.sku || '', name: x.name || '', qty: Number(x.qty) || 0, unit: Number(x.unit) || 0, total: Number(x.total) || 0, image: p && p.image || ''}; }).sort(lhCmp);
+  if (!items.length) { toast('Fişte ürün yok.', true); return; }
+  const urls = [...new Set(items.map(x => x.image).filter(u => u && !LBL_IMGS.has(u)))];
+  await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
+  const mm = (v) => v * 8, PW = mm(210), PH = mm(297), M = mm(15), doc = new MiniPdf(210, 297), money = (v) => fmtN2(v) + ' TL';
+  const cols = [['', mm(16)], ['Stok kodu', mm(30)], ['Ürün', 0], ['Adet', mm(16)], ['Birim fiyat', mm(28)], ['Toplam', mm(30)]]; const fixed = cols.reduce((a, c) => a + c[1], 0); cols[2][1] = PW - 2 * M - fixed;
+  const X = []; { let x = M; for (const c of cols) { X.push(x); x += c[1]; } }
+  const wrap = (c, t, w) => { const out = []; let line = ''; for (const wd of String(t).split(/\s+/)) { const tr = line ? line + ' ' + wd : wd; if (c.measureText(tr).width > w && line) { out.push(line); line = wd; } else line = tr; } if (line) out.push(line); return out; };
+  let c, y, pg = 0; const tq = items.reduce((a, x) => a + x.qty, 0), tt = items.reduce((a, x) => a + x.total, 0);
+  const thead = () => { c.setFill('#eeeeee'); c.fillBox(M, y, PW - 2 * M, mm(8)); c.setFill('#000000'); c.font = '700 ' + mm(3) + 'px Helvetica'; cols.forEach(([l], i) => { if (!l) return; const r = i >= 3; c.fillText(l, r ? X[i] + cols[i][1] - mm(1.5) - c.measureText(l).width : X[i] + mm(1.5), y + mm(2.3)); }); y += mm(9); };
+  const page = () => { c = doc.addPage(); pg++; y = M; c.font = '700 ' + mm(8) + 'px Helvetica'; c.fillText('İADE FİŞİ', M, y); c.font = mm(3.4) + 'px Helvetica'; const dt = 'Tarih: ' + String(f.date || '').split('-').reverse().join('.'); c.fillText(dt, PW - M - c.measureText(dt).width, y + mm(2));
+    y += mm(12); c.font = '700 ' + mm(5) + 'px Helvetica'; c.fillText(f.sup || '', M, y); y += mm(7); c.font = mm(3.4) + 'px Helvetica'; c.fillText('Gönderen: Lilya Home', M, y); y += mm(5.5);
+    if (f.note && pg === 1) { for (const l of wrap(c, 'Açıklama: ' + f.note, PW - 2 * M).slice(0, 3)) { c.fillText(l, M, y); y += mm(5); } } y += mm(3); thead(); };
+  page();
+  for (const it of items) { c.font = mm(3.2) + 'px Helvetica'; const nl = wrap(c, it.name, cols[2][1] - mm(3)).slice(0, 3), rh = Math.max(mm(15), nl.length * mm(4.4) + mm(4));
+    if (y + rh > PH - M - mm(30)) { page(); }
+    const img = it.image && LBL_IMGS.get(it.image); if (img) { try { c.drawJpeg(img, X[0] + mm(1), y + mm(1), mm(13), mm(13)); } catch (e) {} }
+    const mid = y + rh / 2 - mm(2); c.font = '700 ' + mm(3.2) + 'px Helvetica'; c.fillText(it.code, X[1] + mm(1.5), mid);
+    c.font = mm(3.2) + 'px Helvetica'; let ly = y + (rh - nl.length * mm(4.4)) / 2; for (const l of nl) { c.fillText(l, X[2] + mm(1.5), ly); ly += mm(4.4); }
+    const R = (i, t, b) => { c.font = (b ? '700 ' : '') + mm(3.2) + 'px Helvetica'; c.fillText(t, X[i] + cols[i][1] - mm(1.5) - c.measureText(t).width, mid); };
+    R(3, fmtN(it.qty), true); R(4, it.unit ? money(it.unit) : '—'); R(5, money(it.total), true);
+    y += rh; c.setFill('#cccccc'); c.fillBox(M, y, PW - 2 * M, 2); c.setFill('#000000'); y += mm(1); }
+  y += mm(4); c.fillBox(M, y, PW - 2 * M, 4); y += mm(4);
+  c.font = mm(3.8) + 'px Helvetica'; c.fillText(`${fmtN(items.length)} kalem · Toplam ${fmtN(tq)} adet`, M, y + mm(1));
+  c.font = '700 ' + mm(5.5) + 'px Helvetica'; const g = 'GENEL TOPLAM: ' + money(tt); c.fillText(g, PW - M - c.measureText(g).width, y);
+  await deliverPdf(doc.output(), `iade-fisi-${String(f.sup || '').replace(/\W+/g, '-').slice(0, 30)}-${f.date || todayTR()}.pdf`, pg);
 }
 function cariPayForm(sup, sups, cur){
   const C = cS(), pre = C.pre && C.pre.sup === sup ? C.pre.amt : '';
@@ -4726,6 +4756,7 @@ document.addEventListener('click', async e => {
     case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'ia-koli-form': { const I = ciS(id), all = [...S.products.values()]; await iadeKoliPdf({sup: id, date: I.date, note: I.note, items: I.rows.map(r => { const sku = String(r.p || '').split(' · ')[0].trim(), p = all.find(q => q.sku === sku); return {sku: p ? p.sku : sku, name: p ? p.name : String(r.p || '').trim(), qty: iaNum(r.qty)}; })}); break; }
+    case 'ia-fis': { const C = cS(), Dt = C.det, r = Dt && (Dt.rows || []).find(x => String(x.id) === String(id)); if (!r) break; await iadeFisPdf({sup: Dt.supplier, date: r.date, note: r.inote || '', items: r.items || []}); break; }
     case 'ia-koli': { const C = cS(), Dt = C.det, r = Dt && (Dt.rows || []).find(x => String(x.id) === String(id)); if (!r) break; await iadeKoliPdf({sup: Dt.supplier, date: r.date, note: r.inote || '', items: r.items || []}); break; }
     case 'ia-add': { const I = cS().ia; if (I) { I.rows.push({p: '', qty: '1', unit: '', total: ''}); render(); } break; }
     case 'ia-del': { const I = cS().ia; if (I) { I.rows.splice(Number(id), 1); render(); } break; }
