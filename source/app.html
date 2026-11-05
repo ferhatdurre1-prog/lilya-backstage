@@ -3630,7 +3630,7 @@ async function runCosts(){
 }
 
 /* ============ Kâr analizi ============ */
-const PERIODS = [['today','Bugün'],['yesterday','Dün'],['month','Bu ay'],['d30','Son 30 gün'],['custom','Tarih seç']];
+const PERIODS = [['today','Bugün'],['yesterday','Dün'],['d7','Son 7 gün'],['month','Bu ay'],['d30','Son 30 gün'],['custom','Tarih seç']];
 function periodRange(id, cf, ct){
   /* Gün sınırları her zaman İstanbul saatiyle 00:00 (telefon başka ülkede olsa da) */
   const ad = (s, n) => { const x = new Date(s + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -3669,7 +3669,10 @@ function viewProfit(){
   let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti − ceza ve kesintiler. İadesi onaylanan ürünler siparişin verildiği günden düşülür.</p></div></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
   <div class="filters" style="margin-top:8px"><div class="chips">${[['','Tüm kanallar'],['trendyol','Trendyol'],['shopify','Shopify']].map(([id,l]) => `<button class="chip" data-act="pch" data-id="${id}" aria-pressed="${(P.ch||'')===id}">${l}</button>`).join('')}</div>${P.ch ? '<span class="small muted">Kanal seçiliyken elle girilen genel giderler ve günlük sabit giderler düşülmez.</span>' : ''}</div>
-  ${P.period==='custom' ? `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
+  ${P.period==='custom' ? (() => { const td = todayTR(), rs = ((S.settings && S.settings.reportStart) || '2026-10-01').slice(0, 7), MN = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'], ms = [], ys = new Set();
+      for (let y = Number(rs.slice(0, 4)), m = Number(rs.slice(5, 7)); `${y}-${String(m).padStart(2, '0')}` <= td.slice(0, 7); m === 12 ? (y++, m = 1) : m++) { ms.push([y, m]); ys.add(y); }
+      const last = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate(), mk = (y, m) => [`${y}-${String(m).padStart(2, '0')}-01`, `${y}-${String(m).padStart(2, '0')}-${last(y, m)}`];
+      return `<div class="chips" style="margin-bottom:8px">${ms.map(([y, m]) => { const [a, b] = mk(y, m); return `<button class="chip" data-act="prq" data-id="${a}|${b}" aria-pressed="${P.cf === a && P.ct === b}">${MN[m - 1]} ${y}</button>`; }).join('')}${[...ys].map(y => { const a = `${y}-01-01`, b = `${y}-12-31`; return `<button class="chip" data-act="prq" data-id="${a}|${b}" aria-pressed="${P.cf === a && P.ct === b}">${y} (tüm yıl)</button>`; }).join('')}</div>`; })() + `<form id="f-period" class="row" style="margin-bottom:12px"><input class="input" type="date" id="pf-from" value="${esc(P.cf)}" style="max-width:170px" aria-label="Başlangıç"><span class="muted">–</span><input class="input" type="date" id="pf-to" value="${esc(P.ct)}" style="max-width:170px" aria-label="Bitiş"><button class="btn" type="submit">Göster</button></form>` : ''}`;
   // Ana ekrandaki kısayoldan açılınca yalnızca o bölüm (gider/gelir ya da zarar edenler) görünür
   const FT = {expenses: 'Gider / gelir', losers: 'Zarar eden ürünler'}[P.focus];
   const fh = FT ? `<div class="spread" style="gap:8px"><h2 class="sec" style="margin:0">${FT}</h2><button class="btn sm" data-act="focus-exit">← Ana sayfa</button></div>${P.focus === 'losers' ? `<div class="filters" style="margin-top:10px"><div class="chips">${PERIODS.filter(([id]) => id !== 'custom').map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>` : '<div style="height:10px"></div>'}` : '';
@@ -4989,6 +4992,7 @@ document.addEventListener('click', async e => {
     case 'imp-reset': S.imp = null; renderSheet(false); break;
     case 'imp-run': await runImport(); break;
     case 'export-value': await exportValue(); break;
+    case 'prq': { const P = profS(), [a, b] = String(id).split('|'); P.cf = a; P.ct = b; P.opage = 1; P.data = null; P.key = ''; render(); break; }
     case 'period': { const P = profS(); P.period = id; P.opage = 1; try { localStorage.setItem('lb-period', id); } catch(e){} P.data = null; P.key = ''; render(); break; }
     case 'bd': openSheet('breakdown', {id}); break;
     case 'exp-del': if (await confirmBox('Bu kayıt silinsin mi?', 'Sil', true)) await run(async () => { await api('/api/expenses/delete', {id}); if (S.expEdit && String(S.expEdit.id) === String(id)) S.expEdit = null; profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); if (S.sheet && S.sheet.type === 'breakdown') closeSheet(); toast('Kayıt silindi.'); }); break;
