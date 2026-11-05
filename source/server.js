@@ -2616,7 +2616,7 @@ async function computeProfit(env, from, to, ch0) {
   if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); expR.results = []; }
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
-  const defOrd = new Map(), PEN_TTL = 15 * 86400000, defAt = new Map(), defNote = new Map(), rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
+  const defOrd = new Map(), PEN_TTL = 45 * 86400000 /* 45 günde Trendyol faturası gelmezse tahmini ceza düşer */, defAt = new Map(), defNote = new Map(), rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
   /* İade, siparişteki ürünle ürün koduyla eşleşmezse: stok kodu/barkoddan, o da yoksa siparişte tek ürün varsa ona yazılır */
   const OLc = new Map(), oById = new Map(o.results.map(y => [y.id, y])), olines = (id) => { if (OLc.has(id)) return OLc.get(id); const y = oById.get(id); let L = []; try { L = y ? JSON.parse(y.lines || '[]') : []; } catch (e) {} L = L.filter(l => l.status !== 'cancelled'); OLc.set(id, L); return L; };
   for (const x of r.results) { if (!oById.has(x.order_id)) continue; const L = olines(x.order_id); if (!L.length || L.some(l => l.pkey === x.pkey)) continue;
@@ -2841,6 +2841,14 @@ async function computeProfit(env, from, to, ch0) {
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   for (const bp of byProduct.values()) if (!prods.has(bp.key)) bp.orphan = true; // ürün silinmiş: satış hiçbir ürüne bağlı değil
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
+  /* Beklenen iade karşılığı: son 30 günün iadesi henüz gelmemiş Trendyol siparişlerine, olgun (30+ gün) siparişlerdeki iade oranıyla tahmini iade zararı. Kâra eklenmez, ayrıca gösterilir. */
+  if (!ch0 || ch0 === 'trendyol') try { const D = 86400000, now = Date.now(), rs = (await reportStart(env)) || '2026-10-01', mFrom = iso(dayStartTR(rs)), mTo = iso(now - 30 * D);
+    let rate = null, basis = 0, prov = 0, provN = 0;
+    if (mTo > mFrom) { const a = await env.DB.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN id IN (SELECT order_id FROM returns WHERE channel='trendyol' AND (status='accepted' OR ext_status='Accepted')) THEN 1 ELSE 0 END) r FROM orders WHERE channel='trendyol' AND status<>'cancelled' AND date >= ?1 AND date < ?2`).bind(mFrom, mTo).first(); basis = Number(a && a.n) || 0; if (basis >= 100) rate = (Number(a.r) || 0) / basis; }
+    if (rate !== null) { const RO = byOrder.filter(x => x.channel === 'trendyol' && x.retUnits > 0), extra = RO.length ? RO.reduce((t, x) => t + (x.retCargo || 0) + (x.penalty || 0), 0) / RO.length : 150, lim = iso(now - 30 * D);
+      for (const x of byOrder) { if (x.channel !== 'trendyol' || x.retUnits || !(x.revenue > 0) || String(x.date || '') < lim) continue; const keep = (x.revenue || 0) - (x.commission || 0) - (x.stopaj || 0) - (x.cost || 0); prov += rate * (Math.max(0, keep) + extra); provN++; }
+      sum.retProv = { rate: R2(rate * 100), basis, n: provN, amount: R2(prov), extra: R2(extra), final: R2(sum.profit - prov) }; } else sum.retProv = { basis, insufficient: true };
+  } catch (e) {}
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
   mark('cpu'); PERF_LAST = { ...TM, orders: o.results.length };
   return { channel: ch0 || '', from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, recurring, missingCostSkus: [...missingCostSkus].slice(0, 30) };
