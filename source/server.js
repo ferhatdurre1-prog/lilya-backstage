@@ -2589,7 +2589,7 @@ async function computeProfit(env, from, to, ch0) {
   const [fee, [o, p, r, finR, custR, miscR, miscAllR, adR, adAnyR, expR, bkR, spR, scR, ptR, srtR]] = await Promise.all([loadFees(env), env.DB.batch([
     env.DB.prepare('SELECT * FROM orders WHERE date >= ?1 AND date < ?2 ORDER BY date DESC').bind(from, to),
     env.DB.prepare(`SELECT key, sku, name, image, CASE WHEN EXISTS(SELECT 1 FROM bundles b WHERE b.pkey=products.key) THEN (SELECT CASE WHEN SUM(cp.cost IS NULL) > 0 THEN NULL ELSE SUM(cp.cost * b.n) END FROM bundles b JOIN products cp ON cp.key=b.comp WHERE b.pkey=products.key) ELSE cost END cost, barcode, same_day, desi, desi_m FROM products`),
-    env.DB.prepare(`SELECT order_id, pkey, status, ext_status, qty, CASE WHEN COALESCE(reason,'') <> '' THEN reason ELSE note END AS note, amount, kept, inspect, insp_ok, decided_at, created_at FROM returns /* iade sebebi ayrı alandan (not alanı 'Başlangıç öncesi…' olabilir) */ WHERE order_id<>'' AND status<>'rejected'`),
+    env.DB.prepare(`SELECT order_id, pkey, sku, status, ext_status, qty, CASE WHEN COALESCE(reason,'') <> '' THEN reason ELSE note END AS note, amount, kept, inspect, insp_ok, decided_at, created_at FROM returns /* iade sebebi ayrı alandan (not alanı 'Başlangıç öncesi…' olabilir) */ WHERE order_id<>'' AND status<>'rejected'`),
     env.DB.prepare(`SELECT * FROM order_fin WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare(`SELECT order_no, json_extract(data,'$.name') n FROM order_cust WHERE order_no IN (${SUBQ})`).bind(from, to),
     env.DB.prepare(`SELECT order_no, type, amount FROM fin_misc WHERE order_no IN (${SUBQ})`).bind(from, to),
@@ -2616,6 +2616,10 @@ async function computeProfit(env, from, to, ch0) {
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const defOrd = new Map(), PEN_TTL = 15 * 86400000, defAt = new Map(), defNote = new Map(), rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
+  /* İade, siparişteki ürünle ürün koduyla eşleşmezse: stok kodu/barkoddan, o da yoksa siparişte tek ürün varsa ona yazılır */
+  const OLc = new Map(), oById = new Map(o.results.map(y => [y.id, y])), olines = (id) => { if (OLc.has(id)) return OLc.get(id); const y = oById.get(id); let L = []; try { L = y ? JSON.parse(y.lines || '[]') : []; } catch (e) {} L = L.filter(l => l.status !== 'cancelled'); OLc.set(id, L); return L; };
+  for (const x of r.results) { if (!oById.has(x.order_id)) continue; const L = olines(x.order_id); if (!L.length || L.some(l => l.pkey === x.pkey)) continue;
+    const sk = String(x.sku || '').trim(), bySku = sk && L.find(l => l.sku === sk || l.barcode === sk), pk = [...new Set(L.map(l => l.pkey))]; if (bySku) x.pkey = bySku.pkey; else if (pk.length === 1) x.pkey = pk[0]; }
   for (const x of r.results) {
     const k = x.order_id + '|' + x.pkey, counted = x.status === 'accepted' || x.ext_status === 'Accepted';
     const note = String(x.note || '').toLocaleLowerCase('tr-TR');
