@@ -2658,7 +2658,7 @@ async function computeProfit(env, from, to, ch0) {
     // Tedarik edememe (satıcı iptali): gönderideki iptal edilen ürünlerin net tutarına göre ceza tahmini
     const unsPk = new Map();
     for (const l of allLines) if (l.status === 'cancelled' && l.fin && l.fin.uns) { const pk = String(l.key).split('|')[0]; unsPk.set(pk, (unsPk.get(pk) || 0) + (Number(l.fin.revenue) || 0)); }
-    const ordOld = ord.date && Date.now() - Date.parse(ord.date) > PEN_TTL; let unsPenalty = 0; const penN = []; if (!ordOld) for (const v of unsPk.values()) { /* 15 günde Trendyol faturası gelmediyse ceza kesilmedi sayılır */ unsPenalty += penaltyFor(v); penN.push(`Tedarik edememe (iptal) · ürün ${r2(v)} TL → ${penaltyFor(v)} TL`); }
+    const ordOld = ord.date && Date.now() - Date.parse(ord.date) > PEN_TTL; let unsPenalty = 0, penRaw = 0; const penN = []; for (const v of unsPk.values()) penRaw += penaltyFor(v); /* penRaw: 15 gün kuralı uygulanmamış tahmin (yalnız mutabakat karşılaştırması için) */ if (!ordOld) for (const v of unsPk.values()) { /* 15 günde Trendyol faturası gelmediyse ceza kesilmedi sayılır */ unsPenalty += penaltyFor(v); penN.push(`Tedarik edememe (iptal) · ürün ${r2(v)} TL → ${penaltyFor(v)} TL`); }
     if (unsPenalty) sum.unsOrders = (sum.unsOrders || 0) + 1;
     if (!lines.length) {
       if (!unsPenalty) continue;
@@ -2694,6 +2694,7 @@ async function computeProfit(env, from, to, ch0) {
       if (c.tier === 3 && !c.flat && g.L.length) { const de = sum.desiEst[g.desi ? 'real' : (g.desiEst.m || 'none')]; de.n++; de.cost = r2(de.cost + c.cost); if (!g.desi) { de.extra = r2(de.extra + c.cost - tyCargo(fee, g.amount, 1, g.carrier).cost); if ((sum.desiList = sum.desiList || []).length < 300) sum.desiList.push({ id: ord.id, no: ord.order_no, date: ord.date, items: (g.N || []).join(', ').slice(0, 300), desi: c.desi, how: g.desiEst.how, m: g.desiEst.m, cost: c.cost }); } } cargo += c.cost;
       // İade paketleri barem desteğinden yararlanmaz: dönüş kargosu desi fiyatından; teslim edilemeyende yalnızca taşıyıcının başarısız teslimat ek bedeli (desi fiyatının yüzdesi, barem değil)
       if (g.ret) retCargo += g.und ? Math.round(tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier) * failPct(g.carrier) * 100) / 100 : tyDesiPrice(fee, g.desi || (g.desiEst && g.desiEst.v), g.carrier);
+      if (g.defVal > 0) penRaw += penaltyFor(g.defVal);
       if (g.defVal > 0 && !(g.defAt && Date.now() - g.defAt > PEN_TTL)) { const pv = penaltyFor(g.defVal), nt = String(g.defNote || '').toLocaleLowerCase('tr-TR'); penalty += pv; penN.push(`${MISSING_RE.test(nt) ? 'Eksik ürün' : /yanlış ürün|yanlis urun/.test(nt) ? 'Yanlış ürün' : 'Kusurlu ürün'} iadesi${g.defNote ? ` (sebep: ${g.defNote.replace(/^Trendyol otomatik onayladı[^·]*·\s*/, '')})` : ''} · ürün ${r2(g.defVal)} TL → ${pv} TL`); } cargoInfo.push(c.tier === 1 ? '0–199,99 TL baremi' + (c.late ? ' · Tablo 2 (geç kargolandı)' : '') : c.tier === 2 ? '200–349,99 TL baremi' + (c.late ? ' · Tablo 2 (geç kargolandı)' : '') : c.flat ? '350 TL üzeri sabit' : `${CARRIER_NAMES[c.carrier]} · ${g.desi0 && g.desi === 0.001 ? '0 desi (Trendyol)' : c.desi + ' desi'}${g.desi ? '' : ' (tahmin: ' + (g.desiEst ? g.desiEst.how : '1 sayıldı') + ')'}`); if (c.tier === 3 && !c.flat) { sum.desiOrders++; if (!g.desi) sum.desiMissing++; if (c.noTable) sum.noDesiTable = true; } }
     else if (ch === 'shopify' && rows.some(x => x.qty > 0 || x.retQ > 0)) {
       // Shopify kuralları: 700 TL altı müşteri 100 TL kargo öder; kapıda nakit +50 TL, kapıda kart +100 TL (müşteriden). Gider: kargo firmasının ücreti
@@ -2760,7 +2761,7 @@ async function computeProfit(env, from, to, ch0) {
     // Gerçek kesinti faturası (ceza, kupon vb.) varsa tahmin yerine o kullanılır
     const mo = ch === 'trendyol' ? miscByOrder.get(ord.order_no) : null;
     const penaltyEst = !mo && penalty > 0;
-    if (ch === 'trendyol') { if (mo) REC('pen', mo.amount, penalty); else if (penalty) RECEST('pen'); }
+    if (ch === 'trendyol') { if (mo) REC('pen', mo.amount, penRaw); else if (penalty) RECEST('pen'); }
     if (mo) penalty = mo.amount;
     let stopaj = actual && est ? rows.reduce((a, x) => a + x.stopaj, 0) * (revenue / est) : rows.reduce((a, x) => a + x.stopaj, 0); const stopEst0 = r2(stopaj); let stopActual = false;
     if (ch === 'trendyol' && stopMap.has(ord.order_no)) { stopaj = stopMap.get(ord.order_no); stopActual = true; } /* Trendyol'un kestiği gerçek stopaj */
