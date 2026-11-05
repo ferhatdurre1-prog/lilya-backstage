@@ -1132,6 +1132,9 @@ function drawSuratLabel(sh, W, H, mk){
 }
 function srSize(v){ try { if (v) { localStorage.setItem('lb_srsize', v); return v; } const x = localStorage.getItem('lb_srsize'); if (x === '100x150' || x === '100x200') return x; } catch(e) {} return '100x200'; }
 const srSizeChips = () => { const z = srSize(); return `<span class="small muted" style="display:inline-flex;gap:4px;align-items:center">Etiket: ${['100x200', '100x150'].map(v => `<button class="chip" type="button" data-act="sr-size" data-id="${v}" aria-pressed="${z === v}">${v.replace('x', '×')}</button>`).join('')}</span>`; };
+// LH kodu sırası: sayıya göre (LH9 < LH26 < LH67); kodu olmayan en sona
+const lhNum = (c) => { const m = /(?:LH|L[İI]LYAHOME)\D*(\d+)/i.exec(String(c || '')) || /(\d+)/.exec(String(c || '')); return m ? Number(m[1]) : Infinity; };
+const lhCmp = (a, b) => lhNum(a.code) - lhNum(b.code) || String(a.code || '').localeCompare(String(b.code || ''), 'tr');
 async function suratPrint(list){
   const sz = srSize(), w = 100, h = sz === '100x150' ? 150 : 200, per = h === 150 ? 6 : 8; // Sürat etiketi: 100×200 → 8, 100×150 → 6 ürün satırı; fazlası ek sayfada
   await run(async () => {
@@ -1144,7 +1147,7 @@ async function suratPrint(list){
       const p = { orderNo: sh.order_no, date: sh.at, tracking: sh.tracking || sh.ref, codeLabel: sh.tracking ? 'Sürat takip no: ' : 'Sürat barkodu: ', per,
         to: { name: a.name || '', addr: [a.adres, a.zip].filter(Boolean).join(' · '), city: `${a.ilce || ''} / ${a.il || ''}`.toLocaleUpperCase('tr-TR'), phone: tel },
         cod: a.codTip ? codTxt(a.codTip, a.cod).toLocaleUpperCase('tr-TR') : '',
-        lines: (sh.lines || []).map(l => ({ name: l.name, code: l.code, factor: l.factor, qty: l.qty, unit: l.unit, image: l.image })),
+        lines: (sh.lines || []).map(l => ({ name: l.name, code: l.code, factor: l.factor, qty: l.qty, unit: l.unit, image: l.image })).sort(lhCmp), /* LH koduna göre küçükten büyüğe */
         total: (sh.lines || []).reduce((t, l) => t + (Number(l.unit) || 0) * (Number(l.qty) || 0), 0) };
       for (let i = 0; i < Math.max(1, sh.adet || 1); i++) drawLabelPages(p, w, h, '', mk); } // her koliye bir etiket
     await deliverPdf(doc.output(), `surat-etiket-${list.length === 1 ? list[0].ref : list.length + '-gonderi'}-${todayTR()}.pdf`, list.reduce((t, x) => t + Math.max(1, x.adet || 1), 0));
