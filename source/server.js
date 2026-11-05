@@ -2851,7 +2851,7 @@ async function computeProfit(env, from, to, ch0) {
   } catch (e) {}
   round(sum); sum.margin = sum.revenue ? R2(sum.profit / sum.revenue * 100) : null;
   mark('cpu'); PERF_LAST = { ...TM, orders: o.results.length };
-  return { channel: ch0 || '', from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, recurring, missingCostSkus: [...missingCostSkus].slice(0, 30) };
+  return { channel: ch0 || '', from, to, fees: fee, summary: sum, report: rep, otherFees, expenses, ads: adRows.map(x => ({ day: x.day, channel: x.channel, amount: R2(x.amount || 0), source: x.source })), products, orders: byOrder, recurring, missingCostSkus: [...missingCostSkus].slice(0, 300) };
 }
 
 async function computePricing(env) {
