@@ -315,7 +315,7 @@ const ymAdd = (ym, n) => { let [y, m] = ym.split('-').map(Number); m += n; while
 const ymDue = (ym, day) => { const [y, m] = ym.split('-').map(Number), last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return `${ym}-${String(Math.min(Math.max(1, day || 1), last)).padStart(2, '0')}`; };
 const PAY_KINDS = ['fixed', 'loan', 'card', 'once'], PAY_MIN_YM = '2026-09'; /* bu aydan önceki aylar hiç oluşturulmaz / gösterilmez */
 async function payEnsure(env) {
-  const { results: P } = await env.DB.prepare('SELECT * FROM pay_plan WHERE active=1').all(); const until = ymAdd(trToday().slice(0, 7), 11), st = [];
+  const { results: P } = await env.DB.prepare('SELECT * FROM pay_plan WHERE active=1').all(); const until = ymAdd(trToday().slice(0, 7), 1), st = []; /* gelecekten yalnız bir sonraki ay; ay ilerledikçe yenisi açılır */
   const { results: have } = await env.DB.prepare('SELECT plan_id, ym FROM pay_inst').all(); const H = new Set(have.map(x => x.plan_id + '|' + x.ym));
   for (const p of P) { const months = [];
     if (p.kind === 'once') months.push([p.start_ym, '']);
@@ -331,7 +331,7 @@ async function payApi(env, path, body) {
     await payEnsure(env);
     const { results: P } = await env.DB.prepare('SELECT * FROM pay_plan WHERE active=1 OR id IN (SELECT plan_id FROM pay_inst WHERE deleted=0 AND paid>0) ORDER BY name').all();
     await env.DB.prepare('UPDATE pay_inst SET deleted=1 WHERE deleted=0 AND ym < ?1').bind(PAY_MIN_YM).run();
-    const { results: I } = await env.DB.prepare('SELECT * FROM pay_inst WHERE deleted=0 AND ym >= ?1 ORDER BY due, id').bind(PAY_MIN_YM).all();
+    const { results: I } = await env.DB.prepare('SELECT * FROM pay_inst WHERE deleted=0 AND ym >= ?1 AND ym <= ?2 ORDER BY due, id').bind(PAY_MIN_YM, ymAdd(thisYm, 1)).all();
     const pm = new Map(P.map(p => [p.id, p])), wk = ymDue(thisYm, 1) && new Date(Date.parse(today + 'T12:00:00Z') + 7 * 86400000).toISOString().slice(0, 10);
     const S = { todayN: 0, todayTL: 0, lateN: 0, lateTL: 0, weekN: 0, weekTL: 0, noAmtN: 0 }, items = [];
     for (const x of I) { const p = pm.get(x.plan_id); if (!p) continue; const amt = Number(x.amount) || 0, mn = Number(x.min_amt) || 0, paid = Number(x.paid) || 0;
