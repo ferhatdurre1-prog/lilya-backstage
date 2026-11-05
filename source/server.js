@@ -313,7 +313,7 @@ async function fxRates(env) { const r = { TL: 1, USD: null, EUR: null }; try { c
 /* ============ Ödemelerim (bağımsız ödeme takibi: kira, kredi, kredi kartı, taksit) ============ */
 const ymAdd = (ym, n) => { let [y, m] = ym.split('-').map(Number); m += n; while (m > 12) { m -= 12; y++; } while (m < 1) { m += 12; y--; } return `${y}-${String(m).padStart(2, '0')}`; };
 const ymDue = (ym, day) => { const [y, m] = ym.split('-').map(Number), last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return `${ym}-${String(Math.min(Math.max(1, day || 1), last)).padStart(2, '0')}`; };
-const PAY_KINDS = ['fixed', 'loan', 'card', 'once'];
+const PAY_KINDS = ['fixed', 'loan', 'card', 'once'], PAY_MIN_YM = '2026-09'; /* bu aydan önceki aylar hiç oluşturulmaz / gösterilmez */
 async function payEnsure(env) {
   const { results: P } = await env.DB.prepare('SELECT * FROM pay_plan WHERE active=1').all(); const until = ymAdd(trToday().slice(0, 7), 11), st = [];
   const { results: have } = await env.DB.prepare('SELECT plan_id, ym FROM pay_inst').all(); const H = new Set(have.map(x => x.plan_id + '|' + x.ym));
@@ -321,7 +321,7 @@ async function payEnsure(env) {
     if (p.kind === 'once') months.push([p.start_ym, '']);
     else if (p.kind === 'loan') { const n0 = p.n_start || 1, N = p.n_total || n0; for (let i = 0; n0 + i <= N; i++) { const ym = ymAdd(p.start_ym, i); if (ym > until) break; months.push([ym, `${n0 + i}/${N}`]); } }
     else for (let ym = p.start_ym; ym <= until; ym = ymAdd(ym, 1)) months.push([ym, '']);
-    for (const [ym, label] of months) if (!H.has(p.id + '|' + ym)) st.push(env.DB.prepare('INSERT OR IGNORE INTO pay_inst(plan_id, ym, due, label, amount, min_amt, paid) VALUES(?1,?2,?3,?4,?5,?6,0)').bind(p.id, ym, ymDue(ym, p.day), label, p.kind === 'card' ? null : p.amount, p.kind === 'card' ? null : p.min_amt)); }
+    for (const [ym, label] of months) if (ym >= PAY_MIN_YM && !H.has(p.id + '|' + ym)) st.push(env.DB.prepare('INSERT OR IGNORE INTO pay_inst(plan_id, ym, due, label, amount, min_amt, paid) VALUES(?1,?2,?3,?4,?5,?6,0)').bind(p.id, ym, ymDue(ym, p.day), label, p.kind === 'card' ? null : p.amount, p.kind === 'card' ? null : p.min_amt)); }
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
 }
 const payNum = (v) => { if (v === null || v === undefined || v === '') return null; const n = typeof v === 'number' ? v : Number(String(v).replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return Number.isFinite(n) ? r2(n) : null; };
@@ -330,7 +330,8 @@ async function payApi(env, path, body) {
   if (path === '/api/pay/list') {
     await payEnsure(env);
     const { results: P } = await env.DB.prepare('SELECT * FROM pay_plan WHERE active=1 OR id IN (SELECT plan_id FROM pay_inst WHERE deleted=0 AND paid>0) ORDER BY name').all();
-    const { results: I } = await env.DB.prepare('SELECT * FROM pay_inst WHERE deleted=0 ORDER BY due, id').all();
+    await env.DB.prepare('UPDATE pay_inst SET deleted=1 WHERE deleted=0 AND ym < ?1').bind(PAY_MIN_YM).run();
+    const { results: I } = await env.DB.prepare('SELECT * FROM pay_inst WHERE deleted=0 AND ym >= ?1 ORDER BY due, id').bind(PAY_MIN_YM).all();
     const pm = new Map(P.map(p => [p.id, p])), wk = ymDue(thisYm, 1) && new Date(Date.parse(today + 'T12:00:00Z') + 7 * 86400000).toISOString().slice(0, 10);
     const S = { todayN: 0, todayTL: 0, lateN: 0, lateTL: 0, weekN: 0, weekTL: 0, noAmtN: 0 }, items = [];
     for (const x of I) { const p = pm.get(x.plan_id); if (!p) continue; const amt = Number(x.amount) || 0, mn = Number(x.min_amt) || 0, paid = Number(x.paid) || 0;
