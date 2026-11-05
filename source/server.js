@@ -2833,7 +2833,10 @@ async function computeProfit(env, from, to, ch0) {
   } catch (e) {}
   sum.expenses = expenses.filter(x => x.kind === 'gider').reduce((a, x) => a + x.amount, 0);
   sum.extraIncome = R2(expenses.filter(x => x.kind === 'gelir').reduce((a, x) => a + x.amount, 0));
-  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses; sum.profit += sum.compensation + sum.extraIncome;
+  /* Kusurlu / ziyan: 'Kusurlu ürün düş' ile stoktan düşülenlerin alış maliyeti, düşüldüğü gün gider (geri alınanlar düşülür) */
+  sum.waste = 0; sum.wasteList = []; if (!ch0) try { const { results: W } = await env.DB.prepare(`SELECT t, pkey, sku, name, delta, note FROM moves WHERE t >= ?1 AND t < ?2 AND ((note LIKE 'Kusurlu/ziyan%' AND delta < 0) OR (note LIKE 'Kusurlu düşümü geri alındı%' AND delta > 0)) ORDER BY t DESC LIMIT 2000`).bind(from, to).all();
+    for (const m of W) { const pr = prods.get(m.pkey), uc = pr && pr.cost !== null && pr.cost !== undefined ? Number(pr.cost) : 0, v = R2(-m.delta * uc); sum.waste += v; if (sum.wasteList.length < 300) sum.wasteList.push({ t: m.t, name: (pr && pr.name) || m.name || m.sku || '', qty: -m.delta, unit: uc, amount: v, note: String(m.note || '').replace(/^Kusurlu\/ziyan · /, '').slice(0, 120), noCost: !uc }); } sum.waste = R2(sum.waste); } catch (e) {}
+  sum.compensation = R2(Math.abs(compensation)); sum.profit -= sum.otherFees + sum.ads + sum.expenses + sum.waste; sum.profit += sum.compensation + sum.extraIncome;
   const round = (o) => { for (const k in o) if (typeof o[k] === 'number' && !Number.isInteger(o[k])) o[k] = R2(o[k]); return o; };
   for (const bp of byProduct.values()) if (!prods.has(bp.key)) bp.orphan = true; // ürün silinmiş: satış hiçbir ürüne bağlı değil
   const products = [...byProduct.values()].map(round).map(x => ({ ...x, margin: x.revenue ? R2(x.profit / x.revenue * 100) : null }));
