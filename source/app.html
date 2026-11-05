@@ -1204,7 +1204,7 @@ const cDay = (d) => /^\d{4}-\d{2}-\d{2}/.test(d || '') ? `${d.slice(8,10)}.${d.s
 const WDAYS = ['', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
 function cS(){ if (!S.cari) S.cari = {data: null, loading: false, at: 0, open: '', det: null, detLoading: false, pre: null, tk: null, terms: false}; return S.cari; }
 function loadCari(force){ const C = cS(); if (C.loading || (C.data && !force && Date.now() - C.at < 600000)) return; C.loading = true;
-  api('/api/cari/list', {}).then(d => { C.data = d; C.at = Date.now(); C.loading = false; render(); }).catch(e => { C.loading = false; C.at = Date.now(); if (!C.data) C.data = {list: [], alerts: [], suppliers: []}; if (S.tab === 'cari') toast(errText(e), true); }); }
+  api('/api/cari/list', {}).then(d => { C.data = d; C.err = ''; C.at = Date.now(); C.loading = false; render(); }).catch(e => { C.loading = false; C.err = errText(e); if (!C.data || C.data.failed) { C.data = {list: [], alerts: [], suppliers: [], failed: true}; C.at = 0; } if (S.tab === 'cari') render(); }); }
 function loadCariDet(sup){ const C = cS(); C.detLoading = true; C.det = null;
   api('/api/cari/get', {supplier: sup}).then(d => { if (C.open === sup) { C.det = d; C.detLoading = false; if (S.tab === 'cari') render(); } }).catch(e => { C.detLoading = false; toast(errText(e), true); }); }
 function termsText(t){ if (!t) return 'Peşin'; return t.kind === 'days' ? `${t.n} ${t.unit} vade` : t.kind === 'split' ? `${t.parts} taksit · ${t.every} günde bir${t.first !== t.every ? ` · ilki ${t.first}. gün` : ''}` : t.kind === 'month' ? `Her ayın ${t.mday}'i${t.gap ? ` (faturadan en az ${t.gap} gün sonra)` : ''}` : t.kind === 'pct' ? `Her ${WDAYS[t.wday]} kalan borcun %${t.pct}'${t.pct === 25 ? 'i (dörtte biri)' : 'i'}` : 'Peşin (vade yok)'; }
@@ -1227,6 +1227,7 @@ function viewCari(){
   if (C.open === '__add') h += cariNewForm();
   if (C.imp) h += cariImpHtml(C.imp);
   if (C.open === '__new') h += cariPayForm('', D.suppliers || []);
+  if (D.failed) return h + `<div class="banner bad"><div><b>Cariler yüklenemedi.</b> Kayıtların silinmedi; liste sunucudan gelmedi.<div class="small mono" style="margin-top:4px">${esc(C.err || '')}</div></div><button class="btn sm" data-act="cari-retry">Tekrar dene</button></div>`;
   if (!L.length) return h + `<div class="panel empty"><h4>Henüz cari kaydı yok</h4><p>Stoklar → <b>Alış listeleri</b>'nde bir faturayı açıp <b>Cariye işle</b> de; tedarikçi burada borcuyla görünür.</p></div>`;
   for (const x of L) { const op = C.open === x.supplier, nx = x.next;
     const pill = x.overdue > 0.004 ? `<span class="pill p-bad">Gecikmiş ${curAmt(x.overdue, x.cur)}</span>` : x.dueToday > 0.004 ? `<span class="pill p-warn">Bugün ${curAmt(x.dueToday, x.cur)}</span>` : nx ? `<span class="pill ${nx.st === 'week' ? 'p-brass' : 'p-mute'}">Sonraki ${esc(cDay(nx.due))} · ${curAmt(nx.amount, x.cur)}</span>` : '';
@@ -4756,6 +4757,7 @@ document.addEventListener('click', async e => {
     case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
     case 'ia-koli-form': { const I = ciS(id), all = [...S.products.values()]; await iadeKoliPdf({sup: id, date: I.date, note: I.note, items: I.rows.map(r => { const sku = String(r.p || '').split(' · ')[0].trim(), p = all.find(q => q.sku === sku); return {sku: p ? p.sku : sku, name: p ? p.name : String(r.p || '').trim(), qty: iaNum(r.qty)}; })}); break; }
+    case 'cari-retry': { const C = cS(); C.data = null; C.err = ''; loadCari(true); render(); break; }
     case 'ia-fis': { const C = cS(), Dt = C.det, r = Dt && (Dt.rows || []).find(x => String(x.id) === String(id)); if (!r) break; await iadeFisPdf({sup: Dt.supplier, date: r.date, note: r.inote || '', items: r.items || []}); break; }
     case 'ia-koli': { const C = cS(), Dt = C.det, r = Dt && (Dt.rows || []).find(x => String(x.id) === String(id)); if (!r) break; await iadeKoliPdf({sup: Dt.supplier, date: r.date, note: r.inote || '', items: r.items || []}); break; }
     case 'ia-add': { const I = cS().ia; if (I) { I.rows.push({p: '', qty: '1', unit: '', total: ''}); render(); } break; }

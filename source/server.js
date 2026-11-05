@@ -308,6 +308,21 @@ function cariAmt(v) { if (typeof v === 'number') return r2(v); let t = String(v 
 const cariCur = (c) => ['USD', 'EUR'].includes(String(c || '').toUpperCase()) ? String(c).toUpperCase() : 'TL';
 // Güncel kur (piyasa bandıyla aynı kaynak): 1 USD / 1 EUR kaç TL
 async function fxRates(env) { const r = { TL: 1, USD: null, EUR: null }; try { const m = await marketData(env); for (const x of m.items || []) { if (x.id === 'usd') r.USD = x.price; if (x.id === 'eur') r.EUR = x.price; } } catch (e) {} return r; }
+async function cariListResp(env) {
+    // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç; ödeme şekline göre vadesi gelenler uyarı olarak döner
+    const all = await cariLoad(env), today = trToday(), list = [], alerts = [], dues = [], hist = [], fx = all.some(c => c.cur !== 'TL') ? await fxRates(env) : { TL: 1 };
+    for (const c of all) { const sc = cariSchedule(c, today), rate = fx[c.cur] || null, T = (v) => rate ? r2(v * rate) : null;
+      for (const x of [...sc.items, ...sc.inc]) { x.cur = c.cur; x.leftTL = T(x.left); x.amountTL = T(x.amount); }
+      list.push({ cur: c.cur, rate, balTL: T(c.bal), overdueTL: T(sc.overdue), dueTodayTL: T(sc.today), dueWeekTL: T(sc.week), supplier: c.supplier, terms: c.terms, buys: c.buys.length, buy: c.buy, pays: c.pays.length, paid: c.paid, bal: c.bal, last: c.last, next: sc.next, overdue: sc.overdue, dueToday: sc.today, dueWeek: sc.week });
+      for (const x of sc.items) { if (x.left > 0.004 && x.due <= addDayStr(today, 7)) alerts.push({ supplier: c.supplier, ...x }); if (x.left > 0.004 && x.due <= addDayStr(today, 100)) dues.push({ supplier: c.supplier, due: x.due, left: x.left, cur: c.cur, leftTL: x.leftTL, label: x.label }); }
+      for (const x of sc.inc) if (x.left > 0.004 && x.due <= addDayStr(today, 100)) dues.push({ supplier: c.supplier, due: x.due, left: x.left, cur: c.cur, leftTL: x.leftTL, label: x.label, dir: 'in' });
+      // Geçmiş haftalar için: son 8 haftanın vadeleri (ödenmiş olanlar dahil)
+      for (const x of [...sc.items, ...sc.inc]) if (x.due < today && x.due >= addDayStr(today, -63)) hist.push({ supplier: c.supplier, due: x.due, amount: x.amount, left: x.left, cur: c.cur, amountTL: x.amountTL, dir: x.dir || 'out' }); }
+    list.sort((a, b) => (b.overdue + b.dueToday > 0.004) - (a.overdue + a.dueToday > 0.004) || b.bal - a.bal || a.supplier.localeCompare(b.supplier, 'tr'));
+    alerts.sort((a, b) => a.due.localeCompare(b.due) || b.left - a.left);
+    const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name);
+    return json({ ok: true, today, list, alerts, dues, hist, suppliers: sups, fx });
+}
 async function cariLoad(env, only) {
   const w = only ? ' AND supplier=?1 COLLATE NOCASE' : '', B = (st) => only ? st.bind(only) : st;
   const pur = (await B(env.DB.prepare(`SELECT id, supplier, doc_no, doc_date, t, total, units FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted'${w}`)).all()).results;
@@ -3513,21 +3528,7 @@ ${catalog}` });
     await env.DB.batch([env.DB.prepare('UPDATE products SET cost=NULL, cost_date=NULL, updated_at=?1 WHERE cost IS NOT NULL').bind(at), REV(env)]);
     return json({ ok: true, n: results.length, at });
   }
-  if (path === '/api/cari/list') {
-    // CARİLER: tedarikçi başına cariye işlenmiş alışlar (borç) − ödemeler = kalan borç; ödeme şekline göre vadesi gelenler uyarı olarak döner
-    const all = await cariLoad(env), today = trToday(), list = [], alerts = [], dues = [], hist = [], fx = all.some(c => c.cur !== 'TL') ? await fxRates(env) : { TL: 1 };
-    for (const c of all) { const sc = cariSchedule(c, today), rate = fx[c.cur] || null, T = (v) => rate ? r2(v * rate) : null;
-      for (const x of [...sc.items, ...sc.inc]) { x.cur = c.cur; x.leftTL = T(x.left); x.amountTL = T(x.amount); }
-      list.push({ cur: c.cur, rate, balTL: T(c.bal), overdueTL: T(sc.overdue), dueTodayTL: T(sc.today), dueWeekTL: T(sc.week), supplier: c.supplier, terms: c.terms, buys: c.buys.length, buy: c.buy, pays: c.pays.length, paid: c.paid, bal: c.bal, last: c.last, next: sc.next, overdue: sc.overdue, dueToday: sc.today, dueWeek: sc.week });
-      for (const x of sc.items) { if (x.left > 0.004 && x.due <= addDayStr(today, 7)) alerts.push({ supplier: c.supplier, ...x }); if (x.left > 0.004 && x.due <= addDayStr(today, 100)) dues.push({ supplier: c.supplier, due: x.due, left: x.left, cur: c.cur, leftTL: x.leftTL, label: x.label }); }
-      for (const x of sc.inc) if (x.left > 0.004 && x.due <= addDayStr(today, 100)) dues.push({ supplier: c.supplier, due: x.due, left: x.left, cur: c.cur, leftTL: x.leftTL, label: x.label, dir: 'in' });
-      // Geçmiş haftalar için: son 8 haftanın vadeleri (ödenmiş olanlar dahil)
-      for (const x of [...sc.items, ...sc.inc]) if (x.due < today && x.due >= addDayStr(today, -63)) hist.push({ supplier: c.supplier, due: x.due, amount: x.amount, left: x.left, cur: c.cur, amountTL: x.amountTL, dir: x.dir || 'out' }); }
-    list.sort((a, b) => (b.overdue + b.dueToday > 0.004) - (a.overdue + a.dueToday > 0.004) || b.bal - a.bal || a.supplier.localeCompare(b.supplier, 'tr'));
-    alerts.sort((a, b) => a.due.localeCompare(b.due) || b.left - a.left);
-    const sups = (await env.DB.prepare('SELECT name FROM suppliers ORDER BY name').all()).results.map(x => x.name);
-    return json({ ok: true, today, list, alerts, dues, hist, suppliers: sups, fx });
-  }
+  if (path === '/api/cari/list') { try { return await cariListResp(env); } catch (e) { return bad('Cari listesi hesaplanamadı: ' + String(e && e.stack || e).slice(0, 300), 500); } }
   if (path === '/api/cari/get') {
     const sup = String(body.supplier || '').trim(); if (!sup) return bad('Tedarikçi seç.');
     const c = (await cariLoad(env, sup))[0] || { supplier: sup, terms: cariTerms(null), buys: [], pays: [], recvs: [], buy: 0, paid: 0, bal: 0 };
