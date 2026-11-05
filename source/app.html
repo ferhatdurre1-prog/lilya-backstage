@@ -1561,7 +1561,7 @@ function cariDetail(x){
   if (io.length) h += `<div class="small" style="font-weight:600;margin-top:4px;color:var(--good)">Tahsilat planı (${esc(x.supplier)} sana ödeyecek)</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Vade</th><th>Açıklama</th><th class="r">Tutar</th><th class="r">Kalan</th></tr></thead><tbody>${io.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.due))}${r.st === 'late' ? ' <span class="pill p-bad">gecikti</span>' : ''}</td><td style="overflow-wrap:anywhere">${esc(r.label)}</td><td class="r">${curAmt(r.amount, x.cur)}</td><td class="r"><b style="color:var(--good)">${curAmt(r.left, x.cur)}</b></td></tr>`).join('')}</tbody></table></div>`;
   // ekstre
   if (!Dt.rows.length) h += '<p class="muted small" style="margin:0">Hareket yok.</p>';
-  else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? curAmt(r.amount, x.cur) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? curAmt(r.amount, x.cur) : ''}</td><td class="r"><b>${curAmt(r.bal, x.cur)}</b></td><td class="r">${r.mov ? `<button class="btn sm" data-act="cari-movdel" data-id="${esc(String(r.id))}" title="Hareketi sil">Sil</button>` : r.kind === 'pay' || r.recv ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="${r.recv ? 'Tahsilatı sil' : 'Ödemeyi sil'}">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+  else h += `<div class="small" style="font-weight:600;margin-top:4px">Ekstre</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Tarih</th><th>Açıklama</th><th class="r">Borç</th><th class="r">Ödeme</th><th class="r">Bakiye</th><th></th></tr></thead><tbody>${Dt.rows.map(r => `<tr><td style="white-space:nowrap">${esc(cDay(r.date))}</td><td style="overflow-wrap:anywhere">${esc(r.text)}</td><td class="r">${r.kind === 'buy' ? curAmt(r.amount, x.cur) : ''}</td><td class="r" style="color:var(--good)">${r.kind === 'pay' ? curAmt(r.amount, x.cur) : ''}</td><td class="r"><b>${curAmt(r.bal, x.cur)}</b></td><td class="r">${r.iade ? `<button class="btn sm" data-act="ia-koli" data-id="${esc(String(r.id))}" title="İade kolisi fişi (100×150)">🏷 Koli fişi</button> ` : ''}${r.mov ? `<button class="btn sm" data-act="cari-movdel" data-id="${esc(String(r.id))}" title="Hareketi sil">Sil</button>` : r.kind === 'pay' || r.recv ? `<button class="btn sm" data-act="cari-paydel" data-id="${r.id}" title="${r.recv ? 'Tahsilatı sil' : 'Ödemeyi sil'}">Sil</button>` : `<button class="btn sm" data-act="purl-open" title="Alış listelerinde aç">Aç</button>`}</td></tr>`).join('')}</tbody></table></div>`;
   return h;
 }
 // Elle cari aç: firma + devir bakiye (önceki borç)
@@ -1672,7 +1672,28 @@ function cariIadeForm(sup){
       <td class="r"><input class="input num" data-ia="unit" data-i="${i}" value="${esc(r.unit)}" inputmode="decimal" placeholder="0,00" style="width:100px;text-align:right"></td>
       <td class="r"><input class="input num" data-ia="total" data-i="${i}" value="${esc(r.total)}" inputmode="decimal" placeholder="${esc(fmtN2(iaNum(r.qty) * iaNum(r.unit)))}" style="width:110px;text-align:right"></td>
       <td>${I.rows.length > 1 ? `<button class="btn sm ghost" data-act="ia-del" data-id="${i}">✕</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
-    <div class="spread"><button class="btn sm" data-act="ia-add">+ Satır ekle</button><span class="small">Toplam: <b id="ia-tot">${fmtTL(tot)}</b> <button class="btn sm primary" data-act="ia-save" data-id="${esc(sup)}">İade faturasını kaydet</button></span></div></div>`;
+    <div class="spread"><button class="btn sm" data-act="ia-add">+ Satır ekle</button><span class="small">Toplam: <b id="ia-tot">${fmtTL(tot)}</b> <button class="btn sm" data-act="ia-koli-form" data-id="${esc(sup)}">🏷 Koli fişi yazdır</button> <button class="btn sm primary" data-act="ia-save" data-id="${esc(sup)}">İade faturasını kaydet</button></span></div></div>`;
+}
+// İade kolisi fişi: 100×150 mm, tutar yok; ürünler LH koduna göre, toplam adet
+async function iadeKoliPdf(f){
+  const items = (f.items || []).filter(x => x.sku || x.name).map(x => ({code: x.sku || '', name: x.name || '', qty: Number(x.qty) || 0})).sort(lhCmp);
+  if (!items.length) { toast('Fişe yazılacak ürün yok.', true); return; }
+  const W = 800, H = 1200, M = 40, doc = new MiniPdf(100, 150), tq = items.reduce((a, x) => a + x.qty, 0);
+  const wrap = (c, t, w) => { const out = []; let line = ''; for (const wd of String(t).split(/\s+/)) { const tr = line ? line + ' ' + wd : wd; if (c.measureText(tr).width > w && line) { out.push(line); line = wd; } else line = tr; } if (line) out.push(line); return out; };
+  let c = null, y = 0, page = 0;
+  const head = () => { c = doc.addPage(); page++; y = M; c.font = '700 64px Helvetica'; c.fillText('İADE KOLİSİ', M, y); y += 80;
+    c.font = '700 44px Helvetica'; for (const l of wrap(c, f.sup || '', W - 2 * M).slice(0, 2)) { c.fillText(l, M, y); y += 52; }
+    c.font = '30px Helvetica'; c.fillText(`Tarih: ${String(f.date || '').split('-').reverse().join('.')}${page > 1 ? ' · devam (' + page + ')' : ''}`, M, y); y += 40;
+    if (f.note && page === 1) { for (const l of wrap(c, 'Not: ' + f.note, W - 2 * M).slice(0, 2)) { c.fillText(l, M, y); y += 36; } }
+    c.fillRect(M, y, W - 2 * M, 4); y += 18; c.font = '700 26px Helvetica'; c.fillText('ÜRÜN', M, y); c.fillText('ADET', W - M - c.measureText('ADET').width, y); y += 34; c.fillRect(M, y, W - 2 * M, 2); y += 14; };
+  const foot = () => { const fy = H - M - 120; c.fillRect(M, fy, W - 2 * M, 4); c.font = '700 48px Helvetica'; c.fillText(`Toplam: ${tq} adet`, M, fy + 20); c.font = '30px Helvetica'; c.fillText(`${items.length} kalem · Gönderen: Lilya Home`, M, fy + 80); };
+  head();
+  for (const it of items) { c.font = '28px Helvetica'; const nl = wrap(c, it.name, W - 2 * M - 140).slice(0, 2), need = 40 + nl.length * 32 + 16;
+    if (y + need > H - M - 140) { foot(); head(); }
+    c.font = '700 34px Helvetica'; c.fillText(it.code, M, y); c.font = '700 48px Helvetica'; const q = String(it.qty); c.fillText(q, W - M - c.measureText(q).width, y); y += 40;
+    c.font = '28px Helvetica'; for (const l of nl) { c.fillText(l, M, y); y += 32; } y += 6; c.fillRect(M, y, W - 2 * M, 1); y += 10; }
+  foot();
+  await deliverPdf(doc.output(), `iade-koli-${String(f.sup || '').replace(/\W+/g, '-').slice(0, 30)}-${f.date || todayTR()}.pdf`, page);
 }
 function cariPayForm(sup, sups, cur){
   const C = cS(), pre = C.pre && C.pre.sup === sup ? C.pre.amt : '';
@@ -4691,6 +4712,8 @@ document.addEventListener('click', async e => {
     case 'srcari-open': { const C = cS(); C.srOpen = !C.srOpen; render(); break; }
     case 'srmov-del': if (!(await confirmBox('Bu hareket silinsin mi?', 'Sil', true))) break; await run(async () => { await api('/api/srcari/del', {id: Number(id)}); cS().sr = null; render(); }); break;
     case 'buy-all': bS().all = id === '1'; render(); break;
+    case 'ia-koli-form': { const I = ciS(id), all = [...S.products.values()]; await iadeKoliPdf({sup: id, date: I.date, note: I.note, items: I.rows.map(r => { const sku = String(r.p || '').split(' · ')[0].trim(), p = all.find(q => q.sku === sku); return {sku: p ? p.sku : sku, name: p ? p.name : String(r.p || '').trim(), qty: iaNum(r.qty)}; })}); break; }
+    case 'ia-koli': { const C = cS(), Dt = C.det, r = Dt && (Dt.rows || []).find(x => String(x.id) === String(id)); if (!r) break; await iadeKoliPdf({sup: Dt.supplier, date: r.date, note: r.inote || '', items: r.items || []}); break; }
     case 'ia-add': { const I = cS().ia; if (I) { I.rows.push({p: '', qty: '1', unit: '', total: ''}); render(); } break; }
     case 'ia-del': { const I = cS().ia; if (I) { I.rows.splice(Number(id), 1); render(); } break; }
     case 'ia-save': { const I = ciS(id), all = [...S.products.values()];

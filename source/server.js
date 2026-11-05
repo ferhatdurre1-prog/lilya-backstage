@@ -312,7 +312,7 @@ async function cariLoad(env, only) {
   const w = only ? ' AND supplier=?1 COLLATE NOCASE' : '', B = (st) => only ? st.bind(only) : st;
   const pur = (await B(env.DB.prepare(`SELECT id, supplier, doc_no, doc_date, t, total, units FROM purchases WHERE cari_at IS NOT NULL AND status<>'deleted'${w}`)).all()).results;
   const pay = (await B(env.DB.prepare(`SELECT id, supplier, date, t, amount, method, note FROM sup_pay WHERE deleted=0${w}`)).all()).results;
-  const mov = (await B(env.DB.prepare(`SELECT id, supplier, date, t, kind, amount, note, src FROM sup_mov WHERE deleted=0${w}`)).all()).results;
+  const mov = (await B(env.DB.prepare(`SELECT id, supplier, date, t, kind, amount, note, src, items FROM sup_mov WHERE deleted=0${w}`)).all()).results;
   const sups = (await env.DB.prepare('SELECT name, terms, manual, currency FROM suppliers').all()).results, K = (x) => String(x || '').toLocaleLowerCase('tr-TR'), sm = new Map(sups.map(x => [K(x.name), x]));
   const m = new Map(), get = (n) => { const k = K(n); if (!m.has(k)) { const s0 = sm.get(k); m.set(k, { supplier: s0 ? s0.name : n, cur: cariCur(s0 && s0.currency), terms: cariTerms(s0 && s0.terms), buys: [], pays: [], recvs: [] }); } return m.get(k); };
   for (const r of pur) get(r.supplier).buys.push({ id: r.id, doc_no: r.doc_no, units: r.units, date: r.doc_date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(r.total) });
@@ -320,7 +320,7 @@ async function cariLoad(env, only) {
   for (const r of pay) { const x = { id: r.id, method: r.method, note: r.note, date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', amount: r2(Math.abs(r.amount)) }; if (Number(r.amount) < 0) get(r.supplier).recvs.push(x); else get(r.supplier).pays.push(x); }
   // Elle girilen hareketler: devir bakiye / borç (+ borç, − alacak) ve alacak (iade, indirim)
   const MK = { open: 'Devir bakiye', debt: 'Borç', credit: 'Alacak', iade: 'İade faturası' };
-  for (const r of mov) { const a = r2(r.amount), x = { id: 'm' + r.id, mov: true, label: r.src === 'xls' && r.note ? r.note : [MK[r.kind] || 'Hareket', r.note].filter(Boolean).join(' · '), date: r.date || String(r.t || '').slice(0, 10), t: r.t || '' };
+  for (const r of mov) { const a = r2(r.amount), x = { id: 'm' + r.id, mov: true, label: r.src === 'xls' && r.note ? r.note : [MK[r.kind] || 'Hareket', r.note].filter(Boolean).join(' · '), date: r.date || String(r.t || '').slice(0, 10), t: r.t || '', ...(r.kind === 'iade' ? { iade: true, note: r.note || '', items: (() => { try { return JSON.parse(r.items || '[]'); } catch (e) { return []; } })() } : {}) };
     if (r.kind === 'credit' || r.kind === 'iade' || a < 0) get(r.supplier).pays.push({ ...x, method: MK[r.kind] || 'Alacak', note: r.note, amount: Math.abs(a) }); else get(r.supplier).buys.push({ ...x, amount: a }); }
   if (!only) for (const s0 of sups) if (s0.manual) get(s0.name);
   return [...m.values()].map(c => { c.buy = r2(c.buys.reduce((a, x) => a + x.amount, 0)); c.recv = r2((c.recvs || []).reduce((a, x) => a + x.amount, 0)); c.paid = r2(c.pays.reduce((a, x) => a + x.amount, 0) - c.recv); c.bal = r2(c.buy - c.paid);
@@ -3535,7 +3535,7 @@ ${catalog}` });
     const cur = c.cur || 'TL', rate = cur === 'TL' ? 1 : (await fxRates(env))[cur] || null;
     const rows = [...c.buys.map(r => ({ kind: 'buy', id: r.id, mov: !!r.mov, date: r.date, t: r.t, amount: r.amount, text: r.mov ? r.label : `Alış #${r.id}${r.doc_no ? ' · ' + r.doc_no : ''} · ${r.units || 0} adet` })),
       ...(c.recvs || []).map(r => ({ kind: 'buy', recv: true, id: r.id, mov: false, date: r.date, t: r.t, amount: r.amount, text: ['Tahsilat', r.method, r.note].filter(Boolean).join(' · ') })),
-      ...c.pays.map(r => ({ kind: 'pay', id: r.id, mov: !!r.mov, date: r.date, t: r.t, amount: r.amount, text: r.mov ? r.label : [r.method || 'Ödeme', r.note].filter(Boolean).join(' · ') }))]
+      ...c.pays.map(r => ({ kind: 'pay', ...(r.iade ? { iade: true, items: r.items, inote: r.note } : {}), id: r.id, mov: !!r.mov, date: r.date, t: r.t, amount: r.amount, text: r.mov ? r.label : [r.method || 'Ödeme', r.note].filter(Boolean).join(' · ') }))]
       .sort((a, b) => a.date.localeCompare(b.date) || a.t.localeCompare(b.t));
     let bal = 0; for (const r of rows) { bal = r2(bal + (r.kind === 'buy' ? r.amount : -r.amount)); r.bal = bal; }
     const today = trToday(), sc = cariSchedule(c, today);
