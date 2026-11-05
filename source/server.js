@@ -2669,7 +2669,7 @@ async function computeProfit(env, from, to, ch0) {
     const lines = allLines.filter(l => l.status !== 'cancelled');
     // Tedarik edememe (satıcı iptali): gönderideki iptal edilen ürünlerin net tutarına göre ceza tahmini
     const unsPk = new Map();
-    for (const l of allLines) if (l.status === 'cancelled' && l.fin && l.fin.uns) { const pk = String(l.key).split('|')[0]; unsPk.set(pk, (unsPk.get(pk) || 0) + (Number(l.fin.revenue) || 0)); }
+    for (const l of allLines) if (l.status === 'cancelled' && l.fin && l.fin.uns) { const pk = String(l.key).split('|')[0]; unsPk.set(pk, (unsPk.get(pk) || 0) + Math.max(Number(l.fin.gross) || 0, Number(l.fin.revenue) || 0)); } /* ceza basamağı Trendyol birim fiyatından (indirimsiz) */
     const ordOld = ord.date && Date.now() - Date.parse(ord.date) > PEN_TTL; let unsPenalty = 0, penRaw = 0; const penN = []; for (const v of unsPk.values()) penRaw += penaltyFor(v); /* penRaw: 15 gün kuralı uygulanmamış tahmin (yalnız mutabakat karşılaştırması için) */ if (!ordOld) for (const v of unsPk.values()) { /* 15 günde Trendyol faturası gelmediyse ceza kesilmedi sayılır */ unsPenalty += penaltyFor(v); penN.push(`Tedarik edememe (iptal) · ürün ${r2(v)} TL → ${penaltyFor(v)} TL`); }
     if (unsPenalty) sum.unsOrders = (sum.unsOrders || 0) + 1;
     if (!lines.length) {
