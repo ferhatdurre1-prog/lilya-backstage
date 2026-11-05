@@ -1676,9 +1676,12 @@ function cariIadeForm(sup){
 }
 // İade kolisi fişi: 100×150 mm, tutar yok; ürünler LH koduna göre, toplam adet
 async function iadeKoliPdf(f){
-  const items = (f.items || []).filter(x => x.sku || x.name).map(x => ({code: x.sku || '', name: x.name || '', qty: Number(x.qty) || 0})).sort(lhCmp);
+  const PA = [...S.products.values()], pOf = (x) => (x.pkey && S.products.get(x.pkey)) || PA.find(q => q.sku && q.sku === x.sku) || null;
+  const items = (f.items || []).filter(x => x.sku || x.name).map(x => { const p = pOf(x); return {code: x.sku || '', name: x.name || '', qty: Number(x.qty) || 0, image: p && p.image || ''}; }).sort(lhCmp);
   if (!items.length) { toast('Fişe yazılacak ürün yok.', true); return; }
-  const W = 800, H = 1200, M = 40, doc = new MiniPdf(100, 150), tq = items.reduce((a, x) => a + x.qty, 0);
+  const urls = [...new Set(items.map(x => x.image).filter(u => u && !LBL_IMGS.has(u)))];
+  await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
+  const W = 800, H = 1200, M = 40, PH = 136, TX = M + PH + 16, doc = new MiniPdf(100, 150), tq = items.reduce((a, x) => a + x.qty, 0);
   const wrap = (c, t, w) => { const out = []; let line = ''; for (const wd of String(t).split(/\s+/)) { const tr = line ? line + ' ' + wd : wd; if (c.measureText(tr).width > w && line) { out.push(line); line = wd; } else line = tr; } if (line) out.push(line); return out; };
   let c = null, y = 0, page = 0;
   const head = () => { c = doc.addPage(); page++; y = M; c.font = '700 64px Helvetica'; c.fillText('İADE KOLİSİ', M, y); y += 80;
@@ -1688,10 +1691,12 @@ async function iadeKoliPdf(f){
     c.fillRect(M, y, W - 2 * M, 4); y += 18; c.font = '700 26px Helvetica'; c.fillText('ÜRÜN', M, y); c.fillText('ADET', W - M - c.measureText('ADET').width, y); y += 34; c.fillRect(M, y, W - 2 * M, 2); y += 14; };
   const foot = () => { const fy = H - M - 120; c.fillRect(M, fy, W - 2 * M, 4); c.font = '700 48px Helvetica'; c.fillText(`Toplam: ${tq} adet`, M, fy + 20); c.font = '30px Helvetica'; c.fillText(`${items.length} kalem · Gönderen: Lilya Home`, M, fy + 80); };
   head();
-  for (const it of items) { c.font = '28px Helvetica'; const nl = wrap(c, it.name, W - 2 * M - 140).slice(0, 2), need = 40 + nl.length * 32 + 16;
+  for (const it of items) { c.font = '28px Helvetica'; const nl = wrap(c, it.name, W - TX - M - 90).slice(0, 3), need = Math.max(PH, 40 + nl.length * 32) + 18;
     if (y + need > H - M - 140) { foot(); head(); }
-    c.font = '700 34px Helvetica'; c.fillText(it.code, M, y); c.font = '700 48px Helvetica'; const q = String(it.qty); c.fillText(q, W - M - c.measureText(q).width, y); y += 40;
-    c.font = '28px Helvetica'; for (const l of nl) { c.fillText(l, M, y); y += 32; } y += 6; c.fillRect(M, y, W - 2 * M, 1); y += 10; }
+    const y0 = y, img = it.image && LBL_IMGS.get(it.image); if (img) { try { c.drawPhoto(img, M, y0, PH, PH); } catch (e) {} } else { c.lineWidth = 2; c.strokeRect(M, y0, PH, PH); }
+    c.font = '700 34px Helvetica'; c.fillText(it.code, TX, y0 + 4); c.font = '700 56px Helvetica'; const q = String(it.qty); c.fillText(q, W - M - c.measureText(q).width, y0 + 30);
+    let ty = y0 + 46; c.font = '28px Helvetica'; for (const l of nl) { c.fillText(l, TX, ty); ty += 32; }
+    y = y0 + Math.max(PH, ty - y0) + 8; c.fillRect(M, y, W - 2 * M, 1); y += 10; }
   foot();
   await deliverPdf(doc.output(), `iade-koli-${String(f.sup || '').replace(/\W+/g, '-').slice(0, 30)}-${f.date || todayTR()}.pdf`, page);
 }
