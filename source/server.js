@@ -1224,6 +1224,8 @@ async function srSendRest(creds, g) {
   const x = await srRest('GonderiyiKargoyaGonder', null, { KullaniciAdi: creds.user || creds.cari, Sifre: creds.pass, Gonderi: G });
   const m = srRestMsg(x);
   if (/^\W*tamam\W*$/i.test(m) || (x.ok && /tamam|ba[şs]ar/i.test(m) && !SR_FAIL.test(m))) return { msg: 'Tamam (yeni servis)', method: 'REST', barcode: '' };
+  /* Aynı barkod Sürat'ta zaten var (bekleyene alınıp Sürat'ta silinemeyen): mevcut kayıt kullanılır */
+  if ((t => /daha [öo]nce/.test(t) && /kaydedil|kay[ıi]tl/.test(t))(m.toLocaleLowerCase('tr'))) return { msg: "Zaten Sürat'ta kayıtlıydı, aynı kayıt kullanıldı", method: 'REST', barcode: '', dup: true };
   throw new Error('Sürat kabul etmedi: ' + (m || 'boş cevap'));
 }
 /* İptal (GonderiSil): evrakı basılmamış gönderiyi Sürat'ta pasif eder */
@@ -4522,7 +4524,7 @@ ${catalog}` });
     await env.DB.batch([env.DB.prepare(`DELETE FROM sr_ship WHERE gid=?1 AND mode='manual'`).bind(gid), env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode,acct) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel', cr.acct || ''), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
     // Sürat barkodu geldiyse takip no hemen Shopify'a işlenir (Trendyol'daki gibi)
     let trk = null; if (res.barcode) { try { trk = await srTrackOne(env, { ref, gid, order_no: o.name, tracking: res.barcode, track_msg: 'Sürat barkodu', fulfilled_at: null }, cr, c); } catch (e) { trk = { err: String(e.message || e) }; } }
-    return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), mode: apiMode ? 'api' : 'excel', tracking: res.barcode || null, fulfilled_at: trk && trk.fulfilled ? iso() : null, fulfill_err: trk && trk.err || null, total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
+    return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), mode: apiMode ? 'api' : 'excel', tracking: res.barcode || null, dup: !!res.dup, fulfilled_at: trk && trk.fulfilled ? iso() : null, fulfill_err: trk && trk.err || null, total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
   }
   if (path === '/api/shaddr/save') {
     const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
