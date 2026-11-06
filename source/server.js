@@ -3110,16 +3110,18 @@ async function computeHome(env) {
   // Ay toplamı Kâr ekranıyla birebir aynı olsun diye kayıtlı günlerden toplanmaz, aynı hesapla canlı alınır
   // Karşılaştırma için: geçen ayın aynı gününe kadarı ve önceki 30 gün
   const pm0 = (() => { const d = new Date(m0d + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); })(), pmEnd = Math.min(dayStartTR(m0d), dayStartTR(pm0) + (t00 - dayStartTR(m0d)));
-  const [T, YS, statsR, pdR, M, YD, M30, PM, P30] = await Promise.all([
+  // Gün içinde değişmeyen kısımlar (dünün tamamı, geçen ay, önceki 30 gün) 30 dakikada bir hesaplanır; her açılışta yalnız bugün / bu ay / son 30 gün / dün bu saate kadar
+  const fxS = await getSettings(env, ['home_fixed', 'home_cache']), fx0 = JSON.parse(fxS.home_fixed || 'null'), fxOk = !!(fx0 && fx0.day === today && t00 - fx0.at < 1800000 && fxS.home_cache); /* bir düzeltme özeti sildiyse (home_cache boş) sabit kısımlar da yeniden hesaplanır */
+  const [T, YS, statsR, pdR, M, M30, YD, PM, P30] = await Promise.all([
     computeProfit(env, iso(t0), iso(t0 + 86400000)),
     computeProfit(env, iso(t0 - 86400000), iso(ySame)),
     env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all(),
     env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all(),
     computeProfit(env, iso(dayStartTR(m0d)), iso(t0 + 86400000)),
-    computeProfit(env, iso(t0 - 86400000), iso(t0)),
     computeProfit(env, iso(dayStartTR(f30)), iso(t0 + 86400000)),
-    computeProfit(env, iso(dayStartTR(pm0)), iso(pmEnd)).catch(() => null),
-    computeProfit(env, iso(dayStartTR(addDay(f30, -30))), iso(dayStartTR(f30))).catch(() => null)]);
+    fxOk ? null : computeProfit(env, iso(t0 - 86400000), iso(t0)),
+    fxOk ? null : computeProfit(env, iso(dayStartTR(pm0)), iso(pmEnd)).catch(() => null),
+    fxOk ? null : computeProfit(env, iso(dayStartTR(addDay(f30, -30))), iso(dayStartTR(f30))).catch(() => null)]);
   const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
   // Kaydı olmayan geçmiş gün varsa canlı hesaplanıp kaydedilir
   let snaps = 0;
@@ -3133,11 +3135,15 @@ async function computeHome(env) {
   const chOf = (P) => { const o = {}; for (const c of ['trendyol', 'shopify']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
       const prof = L.reduce((a, x) => a + (x.profit || 0), 0) - ads - (c === 'trendyol' ? (P.summary.otherFees || 0) - (P.summary.compensation || 0) : 0);
       o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; };
-  const out = { day: today, rev: rev0, at: Date.now(), ch: { today: chOf(T), ys: chOf(YS), yday: chOf(YD), month: chOf(M), d30: chOf(M30), pm: PM ? chOf(PM) : null, p30: P30 ? chOf(P30) : null }, todayN: T.summary.orders, ysN: YS.summary.orders,
-    pm: PM ? { revenue: R2(PM.summary.revenue), profit: R2(PM.summary.profit) } : null, p30: P30 ? { revenue: R2(P30.summary.revenue), profit: R2(P30.summary.profit) } : null, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
+  const fx = fxOk ? fx0 : { day: today, at: t00, ydCh: chOf(YD), pmCh: PM ? chOf(PM) : null, p30Ch: P30 ? chOf(P30) : null,
+    pm: PM ? { revenue: R2(PM.summary.revenue), profit: R2(PM.summary.profit) } : null, p30: P30 ? { revenue: R2(P30.summary.revenue), profit: R2(P30.summary.profit) } : null,
+    yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null } };
+  if (!fxOk) await setSetting(env, 'home_fixed', JSON.stringify(fx));
+  const out = { day: today, rev: rev0, at: Date.now(), ch: { today: chOf(T), ys: chOf(YS), yday: fx.ydCh, month: chOf(M), d30: chOf(M30), pm: fx.pmCh, p30: fx.p30Ch }, todayN: T.summary.orders, ysN: YS.summary.orders,
+    pm: fx.pm, p30: fx.p30, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
     month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
     // Kâr ekranındaki "Dün" ve "Son 30 gün" ile birebir aynı hesap
-    yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null },
+    yday: fx.yday,
     last30: { revenue: R2(M30.summary.revenue), profit: R2(M30.summary.profit), margin: M30.summary.revenue ? R2(M30.summary.profit / M30.summary.revenue * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
   const js = JSON.stringify(out); await env.DB.batch([setStmt(env, 'home_cache', js), setStmt(env, 'home_last', js), setStmt(env, 'home_err', '')]);
   return out;

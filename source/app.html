@@ -2192,11 +2192,14 @@ async function loadHome(force){
       S.home = S.home && S.home.data ? {...S.home, at: Date.now() - 55000} : {rev, at: Date.now(), pending: true, perr: data.err || ''};
       S.homeLoading = false; setTimeout(() => { if (S.tab === 'home') homeMaybeLoad(); }, 4000); if (S.tab === 'home') render(); return;
     }
+    /* sayılar aynıysa ekran yeniden çizilmez (titreme olmasın) */
+    const sig = (d) => { if (!d) return ''; const {at, ms, refreshing, stale, rev: _r, ...x} = d; return JSON.stringify(x) + (stale || d.day !== todayTR() ? 's' : refreshing ? 'r' : ''); };
+    var same = !!(S.home && S.home.data && sig(S.home.data) === sig(data));
     S.home = {rev, at: Date.now(), data};
     if (data.stale || data.refreshing) setTimeout(() => { if (S.tab === 'home') homeMaybeLoad(); }, 4000); /* eski özet gösteriliyor, yenisi hazırlanınca yerine geçer */
     if (!data.stale) try { localStorage.setItem('lb_home', JSON.stringify({rev, data})); } catch(e) {}
   } catch(e) { S.home = S.home && S.home.data ? {...S.home, at: Date.now()} : {rev, at: Date.now(), err: errText(e)}; }
-  S.homeLoading = false; if (S.tab === 'home') render();
+  S.homeLoading = false; if (S.tab === 'home' && !same) render();
 }
 function banners(){
   let h = '';
@@ -5458,17 +5461,19 @@ startPolling();
     if (y0 === null || !pulling) { y0 = null; return; }
     y0 = null; pulling = false;
     if (dy < TRIG) { hide(); return; }
-    busy = true; el.classList.add('back'); el.style.opacity = '1'; el.style.transform = `translateY(${TRIG - 40}px)`; el.classList.add('go');
+    busy = true; el.classList.add('back'); el.style.opacity = '1'; el.style.transform = 'translateY(4px)'; el.classList.add('go');
     try { if (navigator.vibrate) navigator.vibrate(10); } catch (e) {}
     try {
       const t0 = Date.now();
-      await refresh(true);
-      if (S.tab === 'home') { S.home && (S.home.at = 0); await loadHome(true); }
-      else if (S.tab === 'profit') { profS().key = ''; profS().cache = {}; }
-      else if (S.tab === 'questions') await loadQna(true);
-      else if (S.tab === 'reports') await loadReports(true);
-      render();
-      const w = 600 - (Date.now() - t0); if (w > 0) await new Promise(r => setTimeout(r, w));
+      /* yalnız değişenler istenir; dönen ok en fazla ~2 sn kalır, iş arkada sürer */
+      const job = (async () => { await refresh(false);
+        if (S.tab === 'home') { S.home && (S.home.at = 0); await loadHome(true); }
+        else if (S.tab === 'profit') { profS().key = ''; profS().cache = {}; render(); }
+        else if (S.tab === 'questions') { await loadQna(true); render(); }
+        else if (S.tab === 'reports') { await loadReports(true); render(); } })();
+      const r = await Promise.race([job.then(() => 'ok'), new Promise(r => setTimeout(() => r('slow'), 2000))]);
+      const w = 500 - (Date.now() - t0); if (w > 0) await new Promise(r => setTimeout(r, w));
+      if (r === 'ok') toast('Güncellendi ✓'); else job.catch(e => toast(errText(e), true));
     } catch (e) { toast(errText(e), true); }
     hide(); busy = false;
   });
