@@ -2468,7 +2468,7 @@ async function cronRun(env) {
     if (guard.level < 3 && qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= statsEvery * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
     try { if (guard.level < 3 && Date.now() - t0 < 50000) await desiLearn(envc, 300); } catch (e) {}
     // Ana ekran özeti önceden hazırlanır: gün dönünce ya da bir düzeltme özeti silince (açılışta bekletmesin)
-    if (guard.level < 3 && Date.now() - t0 < 50000) { try { const hs = await getSettings(envc, ['home_cache', 'home_fixed']), fx = JSON.parse(hs.home_fixed || 'null'); if (!homeFixOk(fx, hs.home_cache, trDay(Date.now())) || Date.now() - fx.at > HOME_FIX_TTL) { const j = await homeBg(envc, null); if (j) await j; } } catch (e) {} }
+    if (guard.level < 3 && Date.now() - t0 < 50000) { try { const fx = await homeFixLoad(envc, trDay(Date.now())); if (homeFixNext(fx, Date.now())) { const busy = Number(await getSetting(envc, 'home_busy')) || 0; if (Date.now() - busy > 90000) { await setSetting(envc, 'home_busy', String(Date.now())); try { await homeFixStep(envc, Math.max(0, 45000 - (Date.now() - t0))); } catch (e) { await setSetting(envc, 'home_err', String(e && e.message || e).slice(0, 300)); } finally { await setSetting(envc, 'home_busy', '0'); } } } } catch (e) {} }
     diag.queries = counter.n; diag.wr = counter.w || 0; diag.rd = counter.r || 0;
     try { await flushUsage(env, { req: 1, wr: diag.wr, rd: diag.rd }); } catch (e) {}
     // Cloudflare gerçek kullanım verisi saatte bir (anahtar varsa)
@@ -3096,45 +3096,52 @@ function homeChOf(P) { if (!P) return null; const R2 = (n) => Math.round(n * 100
     o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; }
 function homeAddCh(a, b) { const R2 = (n) => Math.round(n * 100) / 100; if (!a) return b; if (!b) return a; const o = {};
   for (const c of ['trendyol', 'shopify']) { const x = a[c] || {}, y = b[c] || {}, rev = (x.revenue || 0) + (y.revenue || 0), prof = (x.profit || 0) + (y.profit || 0); o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: (x.n || 0) + (y.n || 0) }; } return o; }
-function homeFixOk(fx, hcRaw, today) { return !!(fx && fx.day === today && hcRaw !== ''); }
+// Geçmiş kısım parça parça hesaplanır (her parça tek bir kâr hesabı); bir düzeltme gelince eski değerler gösterilmeye devam eder, parçalar sırayla tazelenir
+const HOME_PARTS = ['mp', 'm30p', 'yd', 'pm', 'p30'];
+function homeFixOk(fx, today) { return !!(fx && fx.day === today && fx.parts && fx.parts.mp && fx.parts.m30p); }
+function homeFixNext(fx, now) { const lim = Math.max(Number(fx.dirtyAt) || 0, now - HOME_FIX_TTL); return HOME_PARTS.find(k => !fx.parts[k] || fx.parts[k].at < lim) || null; }
+async function homeFixLoad(env, today) { const ss = await getSettings(env, ['home_fixed', 'home_cache']); let fx = null; try { fx = JSON.parse(ss.home_fixed || 'null'); } catch (e) {}
+  if (!fx || fx.day !== today || !fx.parts) fx = { day: today, parts: {}, dirtyAt: 0 };
+  // bir düzeltme özeti sildiyse (home_cache boş): geçmiş parçalar yeniden hesaplanacak diye işaretlenir
+  if (ss.home_cache === '') { fx.dirtyAt = Date.now(); await env.DB.batch([setStmt(env, 'home_fixed', JSON.stringify(fx)), setStmt(env, 'home_cache', 'null')]); } /* işaret bir kez konur */
+  return fx; }
 async function homeData(env, ctx, force) {
   const today = trDay(Date.now());
-  const ss = await getSettings(env, ['home_cache', 'rev', 'home_fixed']), cached = JSON.parse(ss.home_cache || 'null'), rev = String(ss.rev || ''), fx = JSON.parse(ss.home_fixed || 'null');
-  if (homeFixOk(fx, ss.home_cache, today)) {
+  const fx = await homeFixLoad(env, today);
+  const ss = await getSettings(env, ['home_cache', 'rev']), cached = JSON.parse(ss.home_cache || 'null'), rev = String(ss.rev || '');
+  if (homeFixOk(fx, today)) {
     // aynı veri sürümünde kısa süre önce hesaplandıysa tekrar hesaplanmaz
     if (!force && cached && cached.day === today && String(cached.rev || '') === rev && cached.fxAt === fx.at && Date.now() - cached.at < 15000) return cached;
     try { return await computeHomeLive(env, fx, rev); } catch (e) { if (cached && cached.day === today) return { ...cached, stale: true }; return { pending: true, err: String(e.message || e).slice(0, 200) }; }
   }
-  // Gün döndü ya da bir düzeltme özeti sildi: son özet hemen verilir, geçmiş kısım arka planda hesaplanır
+  // Gün döndü: geçmiş parçalar hazırlanana kadar (1-2 dk) son özet gösterilir
   const last = cached && cached.days ? cached : JSON.parse((await getSetting(env, 'home_last')) || 'null');
-  if (last && last.days) { await homeBg(env, ctx); return { ...last, stale: true }; }
-  try { return await computeHome(env); } catch (e) { return { pending: true, err: String(e.message || e).slice(0, 200) }; }
+  await homeBg(env, ctx);
+  if (last && last.days) return { ...last, stale: true };
+  return { pending: true };
 }
-async function homeBg(env, ctx){ const busy = Number(await getSetting(env, 'home_busy')) || 0; if (Date.now() - busy <= 120000) return null;
+async function homeBg(env, ctx){ const busy = Number(await getSetting(env, 'home_busy')) || 0; if (Date.now() - busy <= 90000) return null;
   await setSetting(env, 'home_busy', String(Date.now()));
-  const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {}));
+  const job = homeFixStep(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {}));
   if (ctx && ctx.waitUntil) ctx.waitUntil(job); return job; }
-async function computeHome(env) { const fx = await homeFixedCompute(env); return computeHomeLive(env, fx); }
-// Gün içinde (neredeyse) değişmeyen kısım: bu ayın ve son 30 günün bugünden önceki günleri, dün, geçen ay, önceki 30 gün
-async function homeFixedCompute(env) {
+async function computeHome(env) { const today = trDay(Date.now()); let fx = await homeFixLoad(env, today); for (let i = 0; i < HOME_PARTS.length && homeFixNext(fx, Date.now()); i++) fx = await homeFixPart(env, fx); return computeHomeLive(env, fx); }
+// Sıradaki eksik / eski parçayı hesaplar (cron her dakika çağırır). maxMs: bu çağrıda ayrılan süre
+async function homeFixStep(env, maxMs) { const t = Date.now(), today = trDay(t); let fx = await homeFixLoad(env, today), n = 0;
+  while (homeFixNext(fx, Date.now()) && (n === 0 || Date.now() - t < (maxMs || 0))) { fx = await homeFixPart(env, fx); n++; }
+  if (n && homeFixOk(fx, today)) { try { await computeHomeLive(env, fx); } catch (e) {} } return n; }
+async function homeFixPart(env, fx) {
   const t00 = Date.now(), today = trDay(t00), t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', f30 = addDay(today, -29), R2 = (n) => Math.round(n * 100) / 100;
+  const k = homeFixNext(fx, t00); if (!k) return fx;
+  if (k === 'mp' || k === 'm30p') { // eksik günlük rapor varsa önce o hazırlanır
+    const fromD = [m0d, addDay(today, -6), f30].sort()[0];
+    try { const have = new Set((await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all()).results.map(x => x.day)); let snaps = 0;
+      for (let d = fromD; d < today; d = addDay(d, 1)) if (!have.has(d) && snaps++ < 3) { try { await snapshotDay(env, d); } catch (e) {} } } catch (e) {} }
   const pm0 = (() => { const d = new Date(m0d + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); })(), pmEnd = Math.min(dayStartTR(m0d), dayStartTR(pm0) + (t00 - dayStartTR(m0d)));
-  // Kaydı olmayan geçmiş gün varsa (raporlar) hesaplanıp kaydedilir
-  const fromD = [m0d, addDay(today, -6), f30].sort()[0];
-  try { const have = new Set((await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all()).results.map(x => x.day)); let snaps = 0;
-    for (let d = fromD; d < today; d = addDay(d, 1)) if (!have.has(d) && snaps++ < 6) { try { await snapshotDay(env, d); } catch (e) {} } } catch (e) {}
-  const [MP, M30P, YD, PM, P30] = await Promise.all([
-    m0d < today ? computeProfit(env, iso(dayStartTR(m0d)), iso(t0)) : null,
-    computeProfit(env, iso(dayStartTR(f30)), iso(t0)),
-    computeProfit(env, iso(t0 - 86400000), iso(t0)),
-    computeProfit(env, iso(dayStartTR(pm0)), iso(pmEnd)).catch(() => null),
-    computeProfit(env, iso(dayStartTR(addDay(f30, -30))), iso(dayStartTR(f30))).catch(() => null)]);
-  const sm = (P) => P ? { revenue: R2(P.summary.revenue), profit: R2(P.summary.profit) } : { revenue: 0, profit: 0 };
-  const fx = { day: today, at: t00, mp: sm(MP), mpCh: homeChOf(MP), m30p: sm(M30P), m30pCh: homeChOf(M30P),
-    ydCh: homeChOf(YD), yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null },
-    pmCh: homeChOf(PM), pm: PM ? sm(PM) : null, p30Ch: homeChOf(P30), p30: P30 ? sm(P30) : null, ms: Date.now() - t00 };
-  await setSetting(env, 'home_fixed', JSON.stringify(fx));
-  return fx;
+  const rng = { mp: m0d < today ? [dayStartTR(m0d), t0] : null, m30p: [dayStartTR(f30), t0], yd: [t0 - 86400000, t0], pm: [dayStartTR(pm0), pmEnd], p30: [dayStartTR(addDay(f30, -30)), dayStartTR(f30)] }[k];
+  let P = null; if (rng) { try { P = await computeProfit(env, iso(rng[0]), iso(rng[1])); } catch (e) { if (k === 'mp' || k === 'm30p' || k === 'yd') throw e; } }
+  const part = { at: t00, ms: Date.now() - t00, sum: P ? { revenue: R2(P.summary.revenue), profit: R2(P.summary.profit), margin: P.summary.revenue ? R2(P.summary.profit / P.summary.revenue * 100) : null } : (k === 'pm' || k === 'p30' ? null : { revenue: 0, profit: 0, margin: null }), ch: homeChOf(P) };
+  // en son hali okunur (bu arada başka biri yazmış olabilir), sadece bu parça değişir
+  const cur = await homeFixLoad(env, today); cur.parts[k] = part; cur.at = t00; await setSetting(env, 'home_fixed', JSON.stringify(cur)); return cur;
 }
 // Anlık kısım: bugün, dün bu saate kadar, son 7 günün çubukları
 async function computeHomeLive(env, fx, rev0) {
@@ -3150,11 +3157,12 @@ async function computeHomeLive(env, fx, rev0) {
   const days = [];
   for (let i = 6; i >= 0; i--) { const d = addDay(today, -i); const x = i === 0 ? T.summary : (byDay.get(d) || {}); days.push({ d, rev: Number(x.revenue) || 0, prof: Number(x.profit) || 0, n: Number(x.orders) || 0, u: Number(x.units) || 0 }); }
   const pp = new Map(pdR.results.map(x => [x.pkey, x.p || 0])); for (const x of T.products) pp.set(x.key, (pp.get(x.key) || 0) + (x.profit || 0));
-  const tCh = homeChOf(T), mRev = fx.mp.revenue + T.summary.revenue, mProf = fx.mp.profit + T.summary.profit, dRev = fx.m30p.revenue + T.summary.revenue, dProf = fx.m30p.profit + T.summary.profit;
-  const out = { day: today, rev: rev0, at: Date.now(), fxAt: fx.at, ch: { today: tCh, ys: homeChOf(YS), yday: fx.ydCh, month: homeAddCh(fx.mpCh, tCh), d30: homeAddCh(fx.m30pCh, tCh), pm: fx.pmCh, p30: fx.p30Ch }, todayN: T.summary.orders, ysN: YS.summary.orders,
-    pm: fx.pm, p30: fx.p30, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
+  const F = fx.parts || {}, pt = (k) => F[k] || { sum: null, ch: null }, mp = pt('mp').sum || { revenue: 0, profit: 0 }, m30p = pt('m30p').sum || { revenue: 0, profit: 0 };
+  const tCh = homeChOf(T), mRev = mp.revenue + T.summary.revenue, mProf = mp.profit + T.summary.profit, dRev = m30p.revenue + T.summary.revenue, dProf = m30p.profit + T.summary.profit;
+  const out = { day: today, rev: rev0, at: Date.now(), fxAt: fx.at, ch: { today: tCh, ys: homeChOf(YS), yday: pt('yd').ch, month: homeAddCh(pt('mp').ch, tCh), d30: homeAddCh(pt('m30p').ch, tCh), pm: pt('pm').ch, p30: pt('p30').ch }, todayN: T.summary.orders, ysN: YS.summary.orders,
+    pm: pt('pm').sum ? { revenue: pt('pm').sum.revenue, profit: pt('pm').sum.profit } : null, p30: pt('p30').sum ? { revenue: pt('p30').sum.revenue, profit: pt('p30').sum.profit } : null, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
     month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
-    yday: fx.yday,
+    yday: pt('yd').sum || { revenue: 0, profit: 0, margin: null },
     last30: { revenue: R2(dRev), profit: R2(dProf), margin: dRev ? R2(dProf / dRev * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
   const js = JSON.stringify(out); await env.DB.batch([setStmt(env, 'home_cache', js), setStmt(env, 'home_last', js), setStmt(env, 'home_err', '')]);
   return out;
