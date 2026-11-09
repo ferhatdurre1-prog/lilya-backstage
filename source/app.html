@@ -2177,7 +2177,7 @@ function homeMaybeLoad(force){
   if (S.homeLoading) return;
   if (!S.home) { try { const c = JSON.parse(localStorage.getItem('lb_home') || 'null'); if (c && c.data && c.data.days) S.home = {...c, at: 0, rev: c.data.day === todayTR() ? c.rev : ''}; } catch(e) {} }
   const H = S.home, now = Date.now();
-  if (!force && H && H.data && H.data.day === todayTR() && !H.data.stale && !H.data.refreshing && (H.rev === S.rev || now - H.at < 60000)) return;
+  if (!force && H && H.data && H.data.day === todayTR() && !H.data.stale && !H.data.refreshing && (H.rev === S.rev || now - H.at < 5000)) return;
   if (!force && H && H.data && (H.data.stale || H.data.refreshing || H.data.day !== todayTR()) && now - H.at < 4000) return;
   if (!force && H && H.err && now - H.at < 60000) return;
   if (!force && H && H.pending && now - H.at < 3500) return;

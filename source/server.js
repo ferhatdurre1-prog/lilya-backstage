@@ -2468,7 +2468,7 @@ async function cronRun(env) {
     if (guard.level < 3 && qLeft(envc) > 150 && Date.now() - t0 < 56000 && Date.now() - sAt >= statsEvery * 60000) { try { await setSetting(envc, 'run_stats_at', String(Date.now())); const r = await refreshStats(envc, Date.now() + 4000, Math.max(1, Math.min(6, Math.floor((qLeft(envc) - 60) / 35)))); diag.slow.stats = r.n; } catch (e) { diag.errs.stats = String(e.message || e).slice(0, 150); } }
     try { if (guard.level < 3 && Date.now() - t0 < 50000) await desiLearn(envc, 300); } catch (e) {}
     // Ana ekran özeti önceden hazırlanır: gün dönünce ya da bir düzeltme özeti silince (açılışta bekletmesin)
-    if (guard.level < 3 && Date.now() - t0 < 50000) { try { const hc = JSON.parse((await getSetting(envc, 'home_cache')) || 'null'); if (!hc || hc.day !== trDay(Date.now())) { const j = await homeBg(envc, null); if (j) await j; } } catch (e) {} }
+    if (guard.level < 3 && Date.now() - t0 < 50000) { try { const hs = await getSettings(envc, ['home_cache', 'home_fixed']), fx = JSON.parse(hs.home_fixed || 'null'); if (!homeFixOk(fx, hs.home_cache, trDay(Date.now())) || Date.now() - fx.at > HOME_FIX_TTL) { const j = await homeBg(envc, null); if (j) await j; } } catch (e) {} }
     diag.queries = counter.n; diag.wr = counter.w || 0; diag.rd = counter.r || 0;
     try { await flushUsage(env, { req: 1, wr: diag.wr, rd: diag.rd }); } catch (e) {}
     // Cloudflare gerçek kullanım verisi saatte bir (anahtar varsa)
@@ -3085,66 +3085,77 @@ async function refreshStats(env, deadline, maxDays) {
 }
 /* ---------- ana ekran özeti: küçük cevap, 90 sn önbellek ---------- */
 // Hesap arka planda yapılır; istek hiç beklemez, varsa son hesaplanan değer hemen döner.
+/* ---------- Ana ekran özeti ----------
+   Bugün ve "dün bu saate kadar" her istekte anlık hesaplanır (bir günlük, hızlı).
+   Bu ay / son 30 gün = saklanan geçmiş günler (bugünden önce) + anlık bugün.
+   Geçmiş kısım (ve dün, geçen ay, önceki 30 gün) cron'da 10 dakikada bir ya da bir düzeltme özeti silince yeniden hesaplanır. */
+const HOME_FIX_TTL = 600000;
+function homeChOf(P) { if (!P) return null; const R2 = (n) => Math.round(n * 100) / 100, o = {};
+  for (const c of ['trendyol', 'shopify']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
+    const prof = L.reduce((a, x) => a + (x.profit || 0), 0) - ads - (c === 'trendyol' ? (P.summary.otherFees || 0) - (P.summary.compensation || 0) : 0);
+    o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; }
+function homeAddCh(a, b) { const R2 = (n) => Math.round(n * 100) / 100; if (!a) return b; if (!b) return a; const o = {};
+  for (const c of ['trendyol', 'shopify']) { const x = a[c] || {}, y = b[c] || {}, rev = (x.revenue || 0) + (y.revenue || 0), prof = (x.profit || 0) + (y.profit || 0); o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: (x.n || 0) + (y.n || 0) }; } return o; }
+function homeFixOk(fx, hcRaw, today) { return !!(fx && fx.day === today && hcRaw !== ''); }
 async function homeData(env, ctx, force) {
   const today = trDay(Date.now());
-  const ss = await getSettings(env, ['home_cache', 'rev']), cached = JSON.parse(ss.home_cache || 'null'), rev = String(ss.rev || '');
-  // Özet, hesaplandığı andaki sürümü (rev) hatırlar: yeni sipariş / değişiklik geldiyse 90 sn beklemeden yeniden hesaplanır
-  const fresh = cached && cached.day === today && String(cached.rev || '') === rev && Date.now() - cached.at < 90000;
-  if ((!fresh || force) && cached && cached.day === today) { await homeBg(env, ctx); return { ...cached, refreshing: true }; }
-  if (cached && cached.day === today) return cached;
-  // Geçerli özet yoksa (gün döndü ya da bir düzeltme özeti sildi): son hesaplanan özet hemen verilir, yenisi arka planda hesaplanır
-  const last = JSON.parse((await getSetting(env, 'home_last')) || 'null');
+  const ss = await getSettings(env, ['home_cache', 'rev', 'home_fixed']), cached = JSON.parse(ss.home_cache || 'null'), rev = String(ss.rev || ''), fx = JSON.parse(ss.home_fixed || 'null');
+  if (homeFixOk(fx, ss.home_cache, today)) {
+    // aynı veri sürümünde kısa süre önce hesaplandıysa tekrar hesaplanmaz
+    if (!force && cached && cached.day === today && String(cached.rev || '') === rev && cached.fxAt === fx.at && Date.now() - cached.at < 15000) return cached;
+    try { return await computeHomeLive(env, fx, rev); } catch (e) { if (cached && cached.day === today) return { ...cached, stale: true }; return { pending: true, err: String(e.message || e).slice(0, 200) }; }
+  }
+  // Gün döndü ya da bir düzeltme özeti sildi: son özet hemen verilir, geçmiş kısım arka planda hesaplanır
+  const last = cached && cached.days ? cached : JSON.parse((await getSetting(env, 'home_last')) || 'null');
   if (last && last.days) { await homeBg(env, ctx); return { ...last, stale: true }; }
   try { return await computeHome(env); } catch (e) { return { pending: true, err: String(e.message || e).slice(0, 200) }; }
 }
-async function homeBg(env, ctx){ const busy = Number(await getSetting(env, 'home_busy')) || 0; if (Date.now() - busy <= 30000) return null;
+async function homeBg(env, ctx){ const busy = Number(await getSetting(env, 'home_busy')) || 0; if (Date.now() - busy <= 120000) return null;
   await setSetting(env, 'home_busy', String(Date.now()));
   const job = computeHome(env).catch(async e => { try { await setSetting(env, 'home_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }).finally(() => setSetting(env, 'home_busy', '0').catch(() => {}));
   if (ctx && ctx.waitUntil) ctx.waitUntil(job); return job; }
-// Hızlı: geçmiş günler kayıtlı günlük sonuçlardan (raporlar), sadece bugün ve "dün bu saate kadar" canlı hesaplanır
-async function computeHome(env) {
-  const t00 = Date.now(), today = trDay(t00), rev0 = String((await getSetting(env, 'rev')) || '');
-  const t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', w0d = addDay(today, -6);
-  const f30 = addDay(today, -29), fromD = [m0d, w0d, f30].sort()[0], yday = addDay(today, -1);
-  const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
-  // Ay toplamı Kâr ekranıyla birebir aynı olsun diye kayıtlı günlerden toplanmaz, aynı hesapla canlı alınır
-  // Karşılaştırma için: geçen ayın aynı gününe kadarı ve önceki 30 gün
+async function computeHome(env) { const fx = await homeFixedCompute(env); return computeHomeLive(env, fx); }
+// Gün içinde (neredeyse) değişmeyen kısım: bu ayın ve son 30 günün bugünden önceki günleri, dün, geçen ay, önceki 30 gün
+async function homeFixedCompute(env) {
+  const t00 = Date.now(), today = trDay(t00), t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', f30 = addDay(today, -29), R2 = (n) => Math.round(n * 100) / 100;
   const pm0 = (() => { const d = new Date(m0d + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); })(), pmEnd = Math.min(dayStartTR(m0d), dayStartTR(pm0) + (t00 - dayStartTR(m0d)));
-  // Gün içinde değişmeyen kısımlar (dünün tamamı, geçen ay, önceki 30 gün) 30 dakikada bir hesaplanır; her açılışta yalnız bugün / bu ay / son 30 gün / dün bu saate kadar
-  const fxS = await getSettings(env, ['home_fixed', 'home_cache']), fx0 = JSON.parse(fxS.home_fixed || 'null'), fxOk = !!(fx0 && fx0.day === today && t00 - fx0.at < 1800000 && fxS.home_cache); /* bir düzeltme özeti sildiyse (home_cache boş) sabit kısımlar da yeniden hesaplanır */
-  const [T, YS, statsR, pdR, M, M30, YD, PM, P30] = await Promise.all([
+  // Kaydı olmayan geçmiş gün varsa (raporlar) hesaplanıp kaydedilir
+  const fromD = [m0d, addDay(today, -6), f30].sort()[0];
+  try { const have = new Set((await env.DB.prepare('SELECT day FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all()).results.map(x => x.day)); let snaps = 0;
+    for (let d = fromD; d < today; d = addDay(d, 1)) if (!have.has(d) && snaps++ < 6) { try { await snapshotDay(env, d); } catch (e) {} } } catch (e) {}
+  const [MP, M30P, YD, PM, P30] = await Promise.all([
+    m0d < today ? computeProfit(env, iso(dayStartTR(m0d)), iso(t0)) : null,
+    computeProfit(env, iso(dayStartTR(f30)), iso(t0)),
+    computeProfit(env, iso(t0 - 86400000), iso(t0)),
+    computeProfit(env, iso(dayStartTR(pm0)), iso(pmEnd)).catch(() => null),
+    computeProfit(env, iso(dayStartTR(addDay(f30, -30))), iso(dayStartTR(f30))).catch(() => null)]);
+  const sm = (P) => P ? { revenue: R2(P.summary.revenue), profit: R2(P.summary.profit) } : { revenue: 0, profit: 0 };
+  const fx = { day: today, at: t00, mp: sm(MP), mpCh: homeChOf(MP), m30p: sm(M30P), m30pCh: homeChOf(M30P),
+    ydCh: homeChOf(YD), yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null },
+    pmCh: homeChOf(PM), pm: PM ? sm(PM) : null, p30Ch: homeChOf(P30), p30: P30 ? sm(P30) : null, ms: Date.now() - t00 };
+  await setSetting(env, 'home_fixed', JSON.stringify(fx));
+  return fx;
+}
+// Anlık kısım: bugün, dün bu saate kadar, son 7 günün çubukları
+async function computeHomeLive(env, fx, rev0) {
+  const t00 = Date.now(), today = trDay(t00), t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', w0d = addDay(today, -6), R2 = (n) => Math.round(n * 100) / 100;
+  if (rev0 === undefined) rev0 = String((await getSetting(env, 'rev')) || '');
+  const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
+  const [T, YS, statsR, pdR] = await Promise.all([
     computeProfit(env, iso(t0), iso(t0 + 86400000)),
     computeProfit(env, iso(t0 - 86400000), iso(ySame)),
-    env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(fromD, today).all(),
-    env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all(),
-    computeProfit(env, iso(dayStartTR(m0d)), iso(t0 + 86400000)),
-    computeProfit(env, iso(dayStartTR(f30)), iso(t0 + 86400000)),
-    fxOk ? null : computeProfit(env, iso(t0 - 86400000), iso(t0)),
-    fxOk ? null : computeProfit(env, iso(dayStartTR(pm0)), iso(pmEnd)).catch(() => null),
-    fxOk ? null : computeProfit(env, iso(dayStartTR(addDay(f30, -30))), iso(dayStartTR(f30))).catch(() => null)]);
+    env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(w0d, today).all(),
+    env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all()]);
   const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
-  // Kaydı olmayan geçmiş gün varsa canlı hesaplanıp kaydedilir
-  let snaps = 0;
-  for (let d = fromD; d < today; d = addDay(d, 1)) if (!byDay.has(d) && snaps++ < 6) { try { await snapshotDay(env, d); const r = await env.DB.prepare('SELECT data FROM daily_stats WHERE day=?1').bind(d).first(); if (r) byDay.set(d, JSON.parse(r.data)); } catch (e) {} }
   const days = [];
   for (let i = 6; i >= 0; i--) { const d = addDay(today, -i); const x = i === 0 ? T.summary : (byDay.get(d) || {}); days.push({ d, rev: Number(x.revenue) || 0, prof: Number(x.profit) || 0, n: Number(x.orders) || 0, u: Number(x.units) || 0 }); }
-  const mRev = M.summary.revenue, mProf = M.summary.profit;
   const pp = new Map(pdR.results.map(x => [x.pkey, x.p || 0])); for (const x of T.products) pp.set(x.key, (pp.get(x.key) || 0) + (x.profit || 0));
-  const R2 = (n) => Math.round(n * 100) / 100;
-  // Kanal bazında (Kâr ekranında kanal seçilince çıkan hesapla aynı): sipariş kârları; Trendyol'a siparişe bağlanamayan Trendyol kesintileri / tazminat, her kanala kendi reklamı. Elle girilen genel giderler kanallara yazılmaz.
-  const chOf = (P) => { const o = {}; for (const c of ['trendyol', 'shopify']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
-      const prof = L.reduce((a, x) => a + (x.profit || 0), 0) - ads - (c === 'trendyol' ? (P.summary.otherFees || 0) - (P.summary.compensation || 0) : 0);
-      o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; };
-  const fx = fxOk ? fx0 : { day: today, at: t00, ydCh: chOf(YD), pmCh: PM ? chOf(PM) : null, p30Ch: P30 ? chOf(P30) : null,
-    pm: PM ? { revenue: R2(PM.summary.revenue), profit: R2(PM.summary.profit) } : null, p30: P30 ? { revenue: R2(P30.summary.revenue), profit: R2(P30.summary.profit) } : null,
-    yday: { revenue: R2(YD.summary.revenue), profit: R2(YD.summary.profit), margin: YD.summary.revenue ? R2(YD.summary.profit / YD.summary.revenue * 100) : null } };
-  if (!fxOk) await setSetting(env, 'home_fixed', JSON.stringify(fx));
-  const out = { day: today, rev: rev0, at: Date.now(), ch: { today: chOf(T), ys: chOf(YS), yday: fx.ydCh, month: chOf(M), d30: chOf(M30), pm: fx.pmCh, p30: fx.p30Ch }, todayN: T.summary.orders, ysN: YS.summary.orders,
+  const tCh = homeChOf(T), mRev = fx.mp.revenue + T.summary.revenue, mProf = fx.mp.profit + T.summary.profit, dRev = fx.m30p.revenue + T.summary.revenue, dProf = fx.m30p.profit + T.summary.profit;
+  const out = { day: today, rev: rev0, at: Date.now(), fxAt: fx.at, ch: { today: tCh, ys: homeChOf(YS), yday: fx.ydCh, month: homeAddCh(fx.mpCh, tCh), d30: homeAddCh(fx.m30pCh, tCh), pm: fx.pmCh, p30: fx.p30Ch }, todayN: T.summary.orders, ysN: YS.summary.orders,
     pm: fx.pm, p30: fx.p30, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
     month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
-    // Kâr ekranındaki "Dün" ve "Son 30 gün" ile birebir aynı hesap
     yday: fx.yday,
-    last30: { revenue: R2(M30.summary.revenue), profit: R2(M30.summary.profit), margin: M30.summary.revenue ? R2(M30.summary.profit / M30.summary.revenue * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
+    last30: { revenue: R2(dRev), profit: R2(dProf), margin: dRev ? R2(dProf / dRev * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
   const js = JSON.stringify(out); await env.DB.batch([setStmt(env, 'home_cache', js), setStmt(env, 'home_last', js), setStmt(env, 'home_err', '')]);
   return out;
 }
