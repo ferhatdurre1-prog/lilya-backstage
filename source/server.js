@@ -4211,11 +4211,13 @@ ${catalog}` });
     let trackErr = tk.sr_track_err || ''; const tAt = Date.parse(trackErr.slice(0, 24)) || 0;
     if (trackErr && s.sr_ok && Date.parse(s.sr_ok) > tAt) trackErr = '';
     if (/403|cloudflare|attention/i.test(trackErr)) trackErr = trackErr.slice(0, 27) + `Sürat'ın sitesi takip sorgusunu geçici olarak engelledi (Cloudflare). ${Math.max(1, Math.round((tAt + 20 * 60000 - Date.now()) / 60000))} dk sonra yeniden denenir; barkod oluşturmayı etkilemez.`;
-    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, cod: c2.acct === 'cod' ? { cari: mask(c2.cari), user: mask(c2.user) } : null, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr, ok: s.sr_ok || '' });
+    return json({ connected: !!((c.user || c.cari) && c.pass), cari: mask(c.cari), user: mask(c.user), web: !!c.web, cod: c2.acct === 'cod' ? { cari: mask(c2.cari), user: mask(c2.user), web: !!c2.web } : null, mode: tk.sr_mode === 'api' ? 'api' : 'excel', desi: c.desi, err: s.sr_err || '', trackErr, ok: s.sr_ok || '' });
   }
   if (path === '/api/surat/connect2') {
     // Kapıda ödeme carisi (ikinci Sürat hesabı); boş gönderilirse kaldırılır
     if (body.remove) { await env.DB.batch(['sr2_cari', 'sr2_user', 'sr2_pass', 'sr2_web'].map(k => setStmt(env, k, ''))); return json({ ok: true }); }
+    // Sadece web servis (sorgulama) şifresi değişir; kullanıcı adı ve gönderim şifresi olduğu gibi kalır
+    if (body.webOnly) { const w = String(body.web || '').trim(); if (!w) return bad('Şifre boş olamaz.'); if (!(await getSetting(env, 'sr2_user'))) return bad('Önce kapıda ödeme carisi bağlanmalı.'); await setSetting(env, 'sr2_web', w); return json({ ok: true }); }
     const user = String(body.user || '').trim(), cari = String(body.cari || '').trim() || user, pass = String(body.pass || '').trim();
     if (!user || !pass) return bad('Kullanıcı adı ve şifre gerekli.');
     await env.DB.batch([setStmt(env, 'sr2_cari', cari), setStmt(env, 'sr2_user', user), setStmt(env, 'sr2_pass', pass), setStmt(env, 'sr2_web', String(body.web || '').trim())]);
