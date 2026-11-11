@@ -4362,7 +4362,7 @@ function diagHtml(t){
   const slow = Object.entries(d.slow || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, v]) => `${STEP_NAMES[k] || k} ${(v/1000).toFixed(1).replace('.', ',')} sn`).join(', ');
   const errs = Object.entries(d.errs || {}).map(([k, v]) => `${STEP_NAMES[k.replace(/Err$/, '')] || k}: ${v}`);
   const gaps = (t.gaps || []).slice(0, 3).map(g => `${fmtDate(g.from)} → ${g.min} dk`);
-  return `<p class="muted small" style="margin:0">Son tur ${esc(ago(d.at))}: ${fmtN(d.polls)} eşitleme, ${(d.ms/1000).toFixed(0)} sn${slow ? ' · en uzun: ' + esc(slow) : ''}.${gaps.length ? ' Son duraklamalar: ' + esc(gaps.join(' · ')) + '.' : ''}</p>${errs.length ? `<p class="small" style="margin:0;color:var(--bad)">${esc(errs.join(' · '))}</p>` : ''}` + usageLine();
+  return `<p class="muted small" style="margin:0">Son tur ${esc(ago(d.at))}: ${fmtN(d.polls)} eşitleme, ${(d.ms/1000).toFixed(0)} sn${slow ? ' · en uzun: ' + esc(slow) : ''}.${gaps.length ? ' Son duraklamalar: ' + esc(gaps.join(' · ')) + '.' : ''}</p>${d.skipped && !(d.errs || {}).budget ? `<p class="muted small" style="margin:0">ℹ️ Bu turda ${fmtN(d.skipped)} sipariş kontrolü sorgu sınırı yüzünden sonraki dakikaya kaldı (sorun değil).</p>` : ''}${errs.length ? `<p class="small" style="margin:0;color:var(--bad)">${esc(errs.join(' · '))}</p>` : ''}` + usageLine();
 }
 function usageLine(){
   const u = ((S.sync || {}).trendyol || {}).usage; if (!u || !u.n) return '';

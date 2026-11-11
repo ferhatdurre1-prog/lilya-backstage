@@ -2447,17 +2447,21 @@ async function cronRun(env) {
     diag.level = guard.level;
     // Ağır işler (kesintiler, ürün listesi, iade kontrolü…) siparişlerle AYNI ANDA ayrı kolda çalışır; sipariş turlarını bekletmez
     let heavyP = null;
+    // Bir sipariş kontrolünün gerçekte kaç sorgu kullandığı ölçülür; ağır işler kalan kontroller için hep yer bırakır
+    const pc0 = Math.max(20, Math.min(300, Number(await getSetting(env, 'poll_cost')) || 60)); let pcSum = 0, pcN = 0;
+    const per = () => Math.ceil(Math.max(pcN ? pcSum / pcN : 0, pc0) * 1.25) + 5;
     if (guard.level < 2 || new Date().getUTCMinutes() % 15 === 0) {
-      const reserve = POLLS * 60;
-      const envh = { ...envc, __q: { get n() { return counter.n + reserve; } } };
+      const envh = { ...envc, __q: { get n() { return counter.n + Math.max(0, POLLS - diag.polls) * per(); } } };
       heavyP = sleep(1500).then(() => pollOnce(envh, true, t0 + 50000, 'heavy')).then(absorb).catch(e => { diag.errs.heavy = String(e.message || e).slice(0, 150); });
     }
     for (let i = 0; i < POLLS; i++) {
       const wait = t0 + i * GAP - Date.now();
       if (wait > 0) await sleep(wait);
       if (Date.now() - t0 > 52000) break;
-      if (qLeft(envc) < 130) { diag.errs.budget = 'sorgu bütçesi doldu (' + counter.n + ')'; break; }
+      if (qLeft(envc) < per() + 20) { diag.skipped = POLLS - i; break; }
+      const n0 = counter.n;
       try { absorb(await pollOnce({ ...envc, __poll: i }, false, Date.now() + 9000, 'light')); } catch (e) { diag.errs.orders = String(e.message || e).slice(0, 150); }
+      pcSum += counter.n - n0; pcN++;
       diag.polls++;
     }
     if (heavyP) await heavyP;
@@ -2475,8 +2479,14 @@ async function cronRun(env) {
     try { const last = Number(await getSetting(env, 'cf_usage_run')) || 0; if (Date.now() - last > 3600000 && env.CF_API_TOKEN && env.CF_ACCOUNT_ID) { await setSetting(env, 'cf_usage_run', String(Date.now())); try { const u = await fetchCfUsage(env); if (u) await env.DB.batch([setStmt(env, 'cf_usage', JSON.stringify(u)), setStmt(env, 'cf_usage_err', '')]); } catch (e) { await setSetting(env, 'cf_usage_err', iso() + ' · ' + String(e.message || e)); } } } catch (e) {}
     // Aylık kullanım tahmini için son 60 turun ortalaması
     try { const u = JSON.parse((await getSetting(env, 'usage_avg')) || '{"w":0,"r":0,"n":0}'); const k = Math.min(60, u.n + 1); u.w = u.w + (diag.wr - u.w) / k; u.r = u.r + (diag.rd - u.r) / k; u.n = k; u.at = iso(); await setSetting(env, 'usage_avg', JSON.stringify(u)); } catch (e) {}
+    diag.pollCost = pcN ? Math.round(pcSum / pcN) : null;
+    try { await setSetting(env, 'poll_cost', String(Math.round(pcN ? pc0 * 0.7 + (pcSum / pcN) * 0.3 : pc0))); } catch (e) {}
   } finally {
     diag.ms = Date.now() - t0;
+    // Bütçe yüzünden ertelenen kontroller: arada bir olursa bilgi, son 1 saatte 10'dan fazlaysa uyarı
+    try { let sk = JSON.parse((await getSetting(env, 'budget_skips')) || '[]').filter(x => t0 - x < 3600000); if (diag.skipped) sk.push(t0); diag.skipHour = sk.length;
+      if (sk.length > 10) diag.errs.budget = `son 1 saatte ${sk.length} sipariş kontrolü sorgu sınırı yüzünden ertelendi`;
+      await setSetting(env, 'budget_skips', JSON.stringify(sk.slice(-30))); } catch (e) {}
     try { await env.DB.batch([setStmt(env, 'ty_diag', JSON.stringify(diag)), env.DB.prepare(`UPDATE settings SET v='0' WHERE k='lock_sync'`)]); } catch (e) { await unlock(env); }
   }
 }
