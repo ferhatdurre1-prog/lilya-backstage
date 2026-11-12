@@ -1138,7 +1138,7 @@ const srSizeChips = () => '';
 const lhNum = (c) => { const m = /(?:LH|L[İI]LYAHOME)\D*(\d+)/i.exec(String(c || '')) || /(\d+)/.exec(String(c || '')); return m ? Number(m[1]) : Infinity; };
 const lhCmp = (a, b) => lhNum(a.code) - lhNum(b.code) || String(a.code || '').localeCompare(String(b.code || ''), 'tr');
 async function suratPrint(list){
-  const w = 100, h = 150, per = 6; // Sürat etiketi 100×150: sayfada en çok 6 ürün; fazlası ek sayfada
+  const w = 100, h = 150, per = 6; // Sürat etiketi 100×150: 1. sayfada en çok 4, sonrakilerde 6 ürün
   await run(async () => {
     await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
@@ -1146,7 +1146,7 @@ async function suratPrint(list){
     await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
     const doc = new MiniPdf(w, h), mk = () => ({cv: null, c: doc.addPage()});
     for (const sh of list) { const a = sh.addr || {}, tel = /^5\d{9}$/.test(a.tel || '') ? `0${a.tel.slice(0,3)} ${a.tel.slice(3,6)} ${a.tel.slice(6,8)} ${a.tel.slice(8)}` : '';
-      const p = { orderNo: sh.order_no, date: sh.at, tracking: sh.tracking || sh.ref, codeLabel: sh.tracking ? 'Sürat takip no: ' : 'Sürat barkodu: ', per, noEmpty: true,
+      const p = { orderNo: sh.order_no, date: sh.at, tracking: sh.tracking || sh.ref, codeLabel: sh.tracking ? 'Sürat takip no: ' : 'Sürat barkodu: ', per, first: 4, noEmpty: true,
         to: { name: a.name || '', addr: [a.adres, a.zip].filter(Boolean).join(' · '), city: `${a.ilce || ''} / ${a.il || ''}`.toLocaleUpperCase('tr-TR'), phone: tel },
         cod: a.codTip ? codTxt(a.codTip, a.cod).toLocaleUpperCase('tr-TR') : '',
         lines: (sh.lines || []).map(l => ({ name: l.name, code: l.code, factor: l.factor, qty: l.qty, unit: l.unit, image: l.image })).sort(lhCmp), /* LH koduna göre küçükten büyüğe */
@@ -3291,7 +3291,7 @@ function drawLabelPages(p, W, H, sid, mk){
   const colQty = mm(11), colAmt = mm(19), pad = mm(1.6), nameW = cw - colQty - colAmt - 2 * pad - mm(1);
   const PER = p.per || 4, footH = mm(12), gap = mm(1.2);  // alt kenarda yazıcının basamadığı pay için geniş boşluk
   const items = p.lines.map(l => ({l, name: [String(l.name || l.sku || '').replace(/,?\s*one size\b/ig, '').trim(), l.size && !/^(one size|tek ebat)$/i.test(l.size) ? l.size : '', l.color && !/^[-\s]*$/.test(l.color) ? l.color : ''].filter(Boolean).join(' · ')})); // stok kodu ve 'one size' yazılmaz; Lilya ürün kodu kutuda ayrı satırda
-  const chunks = []; for (let i = 0; i < items.length; i += PER) chunks.push(items.slice(i, i + PER)); if (!chunks.length) chunks.push([]);
+  const P1 = p.first || PER, chunks = []; for (let i = 0; i < items.length; i += (i === 0 ? P1 : PER)) chunks.push(items.slice(i, i + (i === 0 ? P1 : PER))); if (!chunks.length) chunks.push([]); /* 1. sayfada adres var: en çok P1 ürün */
   const total = p.total || p.lines.reduce((t, l) => t + (l.unit ? l.unit * l.qty : Number(l.amount) || 0), 0);
   const newCanvas = mk || (() => { const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH; const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, PW, PH); c.fillStyle = '#000'; c.strokeStyle = '#000'; c.textBaseline = 'top'; return {cv, c}; });
   const rule = (c, y, w) => { c.lineWidth = mm(w || 0.3); c.beginPath(); c.moveTo(m, y); c.lineTo(PW - m, y); c.stroke(); };
@@ -3316,7 +3316,7 @@ function drawLabelPages(p, W, H, sid, mk){
     const qs = Math.min(5, Math.max(3, h / D / u * 0.32)); font(c, qs, true); const q = String(it.l.qty); c.fillText(q, xQty - c.measureText(q).width / 2, y + (h - mm(qs)) / 2);
     const ps = Math.min(3.6, qs * 0.75); font(c, ps, false); const a = tl2(it.l.unit || it.l.amount); c.fillText(a, PW - m - pad - c.measureText(a).width, y + (h - mm(ps)) / 2);
   };
-  const boxes = (c, y0, list) => { const bottom = PH - m - footH - mm(1), bh = (bottom - y0 - gap * (PER - 1)) / PER; for (let k = 0; k < (p.noEmpty ? Math.max(1, list.length) : PER); k++) box(c, list[k], m, y0 + k * (bh + gap), cw, bh); }; /* Sürat etiketinde boş kutu çizilmez */
+  const boxes = (c, y0, list, N) => { const bottom = PH - m - footH - mm(1), bh = (bottom - y0 - gap * (N - 1)) / N; for (let k = 0; k < (p.noEmpty ? Math.max(1, list.length) : N); k++) box(c, list[k], m, y0 + k * (bh + gap), cw, bh); }; /* Sürat etiketinde boş kutu çizilmez */
   const pages = chunks.map((list, i) => {
     const pg = newCanvas(), c = pg.c; let y;
     if (i === 0) {
@@ -3346,7 +3346,7 @@ function drawLabelPages(p, W, H, sid, mk){
       for (const t of wrapText(c, `Sipariş No: ${orderLabel} · ${custName}`, cw)) { c.fillText(t, m, y); y += mm(4); }
       rule(c, y + mm(0.4), 0.4); y += mm(1.6);
     }
-    y = tableHead(c, y); boxes(c, y, list);
+    y = tableHead(c, y); boxes(c, y, list, i === 0 ? P1 : PER);
     const fy = PH - m - mm(9);
     if (chunks.length > 1) { font(c, 2.4, false); c.fillText(`Sayfa ${i + 1}/${chunks.length}`, m, fy); }
     // Devamı var: alt sağda büyük ok + yazı (ürünler sonraki sayfada sürüyor)
