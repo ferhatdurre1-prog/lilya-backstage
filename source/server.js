@@ -4395,6 +4395,12 @@ ${catalog}` });
     const out = { ref: row.ref, order_no: row.order_no, at: row.at, saved: { tracking: row.tracking, track_msg: row.track_msg, track_at: row.track_at, fulfilled_at: row.fulfilled_at, fulfill_err: row.fulfill_err } };
     try { const q = await srQuery(env, cr, row.ref); out.byRef = { no: q.no, durum: q.durum, raw: q.raw }; } catch (e) { out.byRef = { err: String(e.message || e) }; }
     try { const q = await srQuery(env, cr, no); out.byOrderNo = { no: q.no, durum: q.durum, raw: q.raw }; } catch (e) { out.byOrderNo = { err: String(e.message || e) }; }
+    const crA = await srCreds(env, row.acct === 'cod' ? 'cod' : ''); out.acct = crA.acct || 'normal';
+    try { const q = await srQueryRest(crA, row.ref); out.byRefAcct = { no: q.no, durum: q.durum }; } catch (e) { out.byRefAcct = { err: String(e.message || e) }; }
+    out.lists = [];
+    for (const acct of ['', 'cod']) { const c2 = await srCreds(env, acct); if (acct === 'cod' && c2.acct !== 'cod') continue;
+      try { const L = await srList(env, c2, 6); const m = L && L.rows.length ? srMatch(L.rows, row) : null; out.lists.push({ acct: acct || 'normal', count: L ? L.rows.length : 0, mesaj: L && L.mesaj, text: L && L.text, keys: L && L.rows[0] ? Object.keys(L.rows[0]) : [], match: m ? mask(m) : null, track: m ? srRowTrack(m) : null }); }
+      catch (e) { out.lists.push({ acct: acct || 'normal', err: String(e.message || e).slice(0, 200) }); } }
     try { const L = await srList(env, cr, 6); out.list = { count: L ? L.rows.length : 0, mesaj: L && L.mesaj, text: L && L.text, keys: L && L.rows[0] ? Object.keys(L.rows[0]) : [] }; const m = L && srMatch(L.rows, row); out.match = m ? mask(m) : null; out.matchTrack = m ? srRowTrack(m) : ''; if (!m && L && L.rows[0]) out.sampleRow = mask(L.rows[0]); } catch (e) { out.list = { err: String(e.message || e) }; }
     try { const sc = await srSchema(env, false); out.queryMethod = sc.query ? sc.query.method + '(' + sc.query.params.map(p => p.name).join(', ') + ')' : null; } catch (e) {}
     return json(out);
