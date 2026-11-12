@@ -1369,13 +1369,18 @@ function srLiveFromRow(r) { const g = (re) => { for (const [k, v] of Object.entr
   return { durum: [durum, td && td !== durum ? td : ''].filter(Boolean).join(' · ').slice(0, 120), yer: yer.slice(0, 80), teslim: deliv ? (srDay(g(/teslimtarih/i)) || trDay(Date.now())) : null, und: und ? 1 : 0, alan }; }
 function srLiveFromQuery(q) { const all = String(q.durum || '') ; const deliv = !!srDay(q.teslim) || (/teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all)), und = !deliv && (/iade|edilemedi/i.test(all) || /^(true|1|evet)$/i.test(String(q.iade || '')));
   const [durum, yer] = String(q.durum || '').split(' · '); return { durum: (durum || '').slice(0, 120), yer: (yer || '').slice(0, 80), teslim: deliv ? (srDay(q.teslim) || trDay(Date.now())) : null, und: und ? 1 : 0 }; }
+async function srLiveQuery(env, row, crs, max) { const refs = [row.ref]; try { for (const x of (await env.DB.prepare('SELECT DISTINCT ref FROM sr_ship WHERE gid=?1 AND ref<>?2 ORDER BY at DESC LIMIT 4').bind(row.gid, row.ref).all()).results) refs.push(x.ref); } catch (e) {}
+  const own = (row.acct || '') === 'cod' ? 'cod' : '', cl = [crs[own], crs[own === 'cod' ? '' : 'cod']].filter(c => c && c.pass); let first = null, n = 0;
+  for (const ref of refs) for (const cr of cl) { if (n++ >= (max || 8)) return first; let q = null; try { q = await srQueryRest(cr, ref); } catch (e) { continue; }
+    if (q && q.no && (!row.tracking || q.no === String(row.tracking))) return q; if (q && q.no && !first) first = q; if (!first && q && q.durum && !/bulunamad/i.test(q.durum) && ref === row.ref && cr === cl[0]) first = q; }
+  return first; }
 async function srLiveSave(env, ref, L) { await env.DB.prepare('UPDATE sr_ship SET live_durum=?2, live_yer=?3, live_at=?4, live_teslim=COALESCE(?5, live_teslim), live_und=?6 WHERE ref=?1').bind(ref, L.durum || null, L.yer || null, iso(), L.teslim || null, L.und || 0).run(); }
 async function srLiveRefresh(env, lists, crs, dl) {
-  const { results } = await env.DB.prepare(`SELECT s.* FROM sr_ship s WHERE COALESCE(s.tracking,'') <> '' AND s.live_teslim IS NULL AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND (s.live_at IS NULL OR s.live_at < ?2) ORDER BY COALESCE(s.live_at,'') LIMIT 120`).bind(iso(Date.now() - 30 * 86400000), iso(Date.now() - 30 * 60000)).all();
+  const { results } = await env.DB.prepare(`SELECT s.* FROM sr_ship s WHERE COALESCE(s.tracking,'') <> '' AND s.live_teslim IS NULL AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND (s.live_at IS NULL OR s.live_at < ?2 OR (s.live_durum LIKE '%kabul bekleniyor%' AND s.live_at < ?3)) ORDER BY COALESCE(s.live_at,'') LIMIT 120`).bind(iso(Date.now() - 30 * 86400000), iso(Date.now() - 30 * 60000), iso(Date.now() - 5 * 60000)).all();
   let n = 0, solo = 0;
   for (const r of results) { if (dl && Date.now() > dl) break; let L = null;
     for (const rows of [lists[r.acct || ''], lists[(r.acct || '') === 'cod' ? '' : 'cod']]) { if (!rows) continue; const m = rows.find(x => Object.values(x).some(v => String(v).trim() === String(r.tracking))) || srMatch(rows, r); if (m) { L = srLiveFromRow(m); break; } }
-    if (!L) { solo++; try { const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; const q = await srQueryRest(cr, r.ref); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) {} }
+    if (!L) { solo++; try { const q = await srLiveQuery(env, r, crs, 4); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) {} }
     if (L) { await srLiveSave(env, r.ref, L); n++; } }
   if (n) await env.DB.batch([REV(env)]);
   return n; }
@@ -4052,7 +4057,7 @@ ${catalog}` });
       FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
       WHERE COALESCE(s.tracking,'') <> '' AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at DESC LIMIT 500`).bind(iso(Date.now() - 30 * 86400000)).all();
     const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim) || x.live_teslim || null, since = Date.parse(x.fulfilled_at || x.at) || now;
-      const und = !!x.undelivered || !!x.live_und || /^(EVET|E|1)$/i.test(String(x.iade || '')), durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim();
+      const und = x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || ''))), /* Sürat'tan canlı durum geldiyse eski rapor işaretleri yok sayılır */ durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim();
       return { gid: x.gid, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, ref: x.ref, durum, yer: x.live_yer || '', liveAt: x.live_at || null, deliv: dl, und, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
     return json({ ok: true, transit: items.filter(x => !x.deliv), delivered: items.filter(x => x.deliv) });
   }
@@ -4487,8 +4492,8 @@ ${catalog}` });
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
   if (path === '/api/surat/live') { // Tek gönderinin Sürat'taki anlık durumu (Takip düğmesi)
     const gid = String(body.gid || ''); const row = await env.DB.prepare(`SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1`).bind(gid).first(); if (!row) return bad('Gönderi bulunamadı.');
-    const cr = await srCreds(env, row.acct === 'cod' ? 'cod' : ''); let L = null, q = null, err = '';
-    try { q = await srQueryRest(cr, row.ref); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) { err = String(e.message || e).slice(0, 200); }
+    const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') }, cr = crs[row.acct === 'cod' ? 'cod' : '']; let L = null, q = null, err = '';
+    try { q = await srLiveQuery(env, row, crs, 10); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) { err = String(e.message || e).slice(0, 200); }
     if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { try { const Ls = await srList(env, cr, 6); const m = Ls && Ls.rows && (Ls.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking))) || srMatch(Ls.rows, row)); if (m) L = srLiveFromRow(m); } catch (e) { if (!L) err = err || String(e.message || e).slice(0, 200); } }
     if (L) { await srLiveSave(env, row.ref, L); await env.DB.batch([REV(env)]); }
     return json({ ok: true, ref: row.ref, tracking: row.tracking || (q && q.no) || '', live: L, err, tutar: q && q.tutar, desi: q && q.desi });
