@@ -1280,12 +1280,12 @@ async function srCall(env, method, params, val) {
   return raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 }
 // Cari koduna ait gönderiler (Sürat en çok 7 günlük aralık verir)
-async function srList(env, cr, days, endMs) {
+async function srList(env, cr, days, endMs, allRows) {
   const sc = await srSchema(env, false), ps = (sc.lists || {}).CariKoduveSifre; if (!ps) return null;
   const D = 86400000, tIst = Math.min(Date.now(), endMs || Date.now()) + 3 * 3600000, n = Math.max(1, Math.min(6, days || 6)); /* Sürat en çok 1 hafta verir: bugün (İstanbul) dahil n gün + yarın */
   let d0 = new Date(tIst - (n - 1) * D); const d1 = new Date(tIst + D);
   const fmt = (d, p) => /date/i.test(p.type) ? d.toISOString().slice(0, 10) + 'T00:00:00' : `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${d.getUTCFullYear()}`;
-  const call = (pw) => srCall(env, 'CariKoduveSifre', ps, p => /websiparis\w*olsun/i.test(p.name) ? 'true' : /cari|kullanici/i.test(p.name) ? cr.cari : /sifre|password|parola/i.test(p.name) ? pw : /bas|ilk|start|from/i.test(p.name) ? fmt(d0, p) : /bit|son|end|to$/i.test(p.name) ? fmt(d1, p) : null);
+  const call = (pw) => srCall(env, 'CariKoduveSifre', ps, p => /websiparis\w*olsun/i.test(p.name) ? (allRows ? 'false' : 'true') : /cari|kullanici/i.test(p.name) ? cr.cari : /sifre|password|parola/i.test(p.name) ? pw : /bas|ilk|start|from/i.test(p.name) ? fmt(d0, p) : /bit|son|end|to$/i.test(p.name) ? fmt(d1, p) : null);
   let t = await call(cr.pass); if (/hafta/i.test((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '')) { d0 = new Date(tIst - 3 * D); t = await call(cr.pass); } /* yine aralık hatası: son 4 gün */
   if (cr.web && cr.web !== cr.pass && /hatal/i.test((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '')) t = await call(cr.web);
   const rows = srRows(t), mesaj = ((/<Mesaj>([^<]{1,200})</i.exec(t) || [])[1] || '').trim();
@@ -1384,7 +1384,7 @@ async function srLiveRefresh(env, lists, crs, dl) {
     // Takip no elle girildiyse ya da kayıt eskiyse: gönderinin tarihindeki haftanın Sürat listesine bakılır (takip no ile eşleşir)
     if (!L && winCalls < 6) { const t = Date.parse(r.fulfilled_at || r.at) || Date.now(), end = Math.min(Date.now(), t + 5 * 86400000), key = trDay(end);
       for (const acct of ['', 'cod']) { const c = crs[acct]; if (!c || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; const k = acct + '|' + key;
-        if (!(k in wins)) { winCalls++; try { const W = await srList(env, c, 6, end); wins[k] = (W && W.rows) || null; } catch (e) { wins[k] = null; } }
+        if (!(k in wins)) { winCalls++; try { const W = await srList(env, c, 6, end), W2 = await srList(env, c, 6, end, true); wins[k] = [...((W && W.rows) || []), ...((W2 && W2.rows) || [])]; } catch (e) { wins[k] = null; } }
         const m = byNo(wins[k]); if (m) { L = srLiveFromRow(m); break; } } }
     if (!L) { solo++; try { const q = await srLiveQuery(env, r, crs, 4); if (q && (q.no || q.durum) && !(r.tracking && q.no !== String(r.tracking) && /kabul bekl/i.test(q.durum || ''))) L = srLiveFromQuery(q); } catch (e) {} } /* takip no başka kayda aitse 'kabul bekleniyor' yazılmaz */
     if (L) { await srLiveSave(env, r.ref, L); n++; } }
@@ -4503,10 +4503,12 @@ ${catalog}` });
     const gid = String(body.gid || ''); const row = await env.DB.prepare(`SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1`).bind(gid).first(); if (!row) return bad('Gönderi bulunamadı.');
     const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') }, cr = crs[row.acct === 'cod' ? 'cod' : '']; let L = null, q = null, err = '';
     try { q = await srLiveQuery(env, row, crs, 10); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) { err = String(e.message || e).slice(0, 200); }
-    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) for (const [acct, c] of [['', crs['']], ['cod', crs.cod]]) { if (!c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; try { const t = Date.parse(row.fulfilled_at || row.at) || Date.now(), W = await srList(env, c, 6, Math.min(Date.now(), t + 5 * 86400000)); const m = W && W.rows && W.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking))); if (m) { L = srLiveFromRow(m); break; } } catch (e) {} }
+    const wl = [];
+    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { let hit = false; for (const [acct, c] of [['', crs['']], ['cod', crs.cod]]) { if (hit || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; for (const all of [false, true]) { if (hit) break; try { const t = Date.parse(row.fulfilled_at || row.at) || Date.now(), end = Math.min(Date.now(), t + 5 * 86400000), W = await srList(env, c, 6, end, all); const m = W && W.rows && W.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking)));
+        wl.push({ acct: acct || 'normal', all, end: trDay(end), n: W && W.rows ? W.rows.length : 0, mesaj: W && W.mesaj, found: !!m }); if (m) { L = srLiveFromRow(m); hit = true; } } catch (e) { wl.push({ acct: acct || 'normal', all, err: String(e.message || e).slice(0, 100) }); } } } }
     if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { try { const Ls = await srList(env, cr, 6); const m = Ls && Ls.rows && (Ls.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking))) || srMatch(Ls.rows, row)); if (m) L = srLiveFromRow(m); } catch (e) { if (!L) err = err || String(e.message || e).slice(0, 200); } }
     if (L) { await srLiveSave(env, row.ref, L); await env.DB.batch([REV(env)]); }
-    return json({ ok: true, ref: row.ref, tracking: row.tracking || (q && q.no) || '', live: L, err, tutar: q && q.tutar, desi: q && q.desi });
+    return json({ ok: true, ref: row.ref, tracking: row.tracking || (q && q.no) || '', live: L, wl, err, tutar: q && q.tutar, desi: q && q.desi });
   }
   if (path === '/api/surat/autotrack') {
     // Açık uygulama dakikada bir çağırır: istek kullanıcıya yakın (Türkiye) sunucuda çalışır. Zamanlanmış çalışma yurtdışı sunucuda kalabildiği için Sürat'ın Cloudflare'ı onu engelliyor
