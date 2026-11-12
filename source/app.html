@@ -1098,7 +1098,7 @@ function suratForm(o, again){
     ${cd.tip ? `<div class="small" style="color:var(--orange);font-weight:600">Shopify: ${esc(cd.gw || 'kapıda ödeme')} → Sürat müşteriden ${tl2(cd.amt)} tahsil edecek</div>` : `<div class="small muted">Shopify ödeme: ${esc(cd.gw || '—')} (online ödenmiş, kapıda tahsilat yok) · otomatik seçildi</div>`}
     <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end"><label class="f" style="width:90px">Koli adedi<input class="input num" id="sr-adet" inputmode="numeric" value="1"></label><label class="f" style="width:90px">Desi<input class="input num" id="sr-d" inputmode="decimal" value="${esc(String(sr.desi || 2).replace('.', ','))}"></label>
     <button class="btn primary" data-act="sr-ship" data-id="${g}" ${again ? 'data-again="1"' : ''} ${busy ? 'disabled' : ''}>${busy ? "Sürat'a gönderiliyor…" : again ? 'Yeni barkod oluştur ve yazdır' : 'Oluştur ve etiketi yazdır'}</button><button class="btn ghost" data-act="sr-close" ${busy ? 'disabled' : ''}>Vazgeç</button></div>
-    <p class="small muted" style="margin:0">${again ? "Eski barkod Sürat'ta kayıtlı kalır; şubeye yalnız yeni etiketli paketi ver." : "Etiket PDF'i açılır (100×200 mm)."}</p></div>`;
+    <p class="small muted" style="margin:0">${again ? "Eski barkod Sürat'ta kayıtlı kalır; şubeye yalnız yeni etiketli paketi ver." : "Etiket PDF'i açılır (100×150 mm)."}</p></div>`;
 }
 // Sürat etiketi: üstte kendi barkodumuz, altında alıcı adresi (şube okutamazsa elle de girebilsin), gönderici ve ürünler
 function drawSuratLabel(sh, W, H, mk){
@@ -1132,13 +1132,13 @@ function drawSuratLabel(sh, W, H, mk){
   if (pg.cv) lblMono(pg.cv);
   return pg.cv || c;
 }
-function srSize(v){ try { if (v) { localStorage.setItem('lb_srsize', v); return v; } const x = localStorage.getItem('lb_srsize'); if (x === '100x150' || x === '100x200') return x; } catch(e) {} return '100x200'; }
-const srSizeChips = () => { const z = srSize(); return `<span class="small muted" style="display:inline-flex;gap:4px;align-items:center">Etiket: ${['100x200', '100x150'].map(v => `<button class="chip" type="button" data-act="sr-size" data-id="${v}" aria-pressed="${z === v}">${v.replace('x', '×')}</button>`).join('')}</span>`; };
+function srSize(v){ return '100x150'; } /* Sürat etiketi hep 100×150 */
+const srSizeChips = () => '';
 // LH kodu sırası: sayıya göre (LH9 < LH26 < LH67); kodu olmayan en sona
 const lhNum = (c) => { const m = /(?:LH|L[İI]LYAHOME)\D*(\d+)/i.exec(String(c || '')) || /(\d+)/.exec(String(c || '')); return m ? Number(m[1]) : Infinity; };
 const lhCmp = (a, b) => lhNum(a.code) - lhNum(b.code) || String(a.code || '').localeCompare(String(b.code || ''), 'tr');
 async function suratPrint(list){
-  const sz = srSize(), w = 100, h = sz === '100x150' ? 150 : 200, per = h === 150 ? 6 : 8; // Sürat etiketi: 100×200 → 8, 100×150 → 6 ürün satırı; fazlası ek sayfada
+  const w = 100, h = 150, per = 6; // Sürat etiketi 100×150: sayfada en çok 6 ürün; fazlası ek sayfada
   await run(async () => {
     await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js');
     if (!LABEL_LOGO.complete) await new Promise(r => { LABEL_LOGO.onload = r; LABEL_LOGO.onerror = r; setTimeout(r, 2000); });
@@ -1146,7 +1146,7 @@ async function suratPrint(list){
     await Promise.all(urls.map(u => new Promise(r => { const im = new Image(); im.onload = () => { LBL_IMGS.set(u, im); r(); }; im.onerror = () => r(); im.src = '/api/img?u=' + encodeURIComponent(u); setTimeout(r, 8000); })));
     const doc = new MiniPdf(w, h), mk = () => ({cv: null, c: doc.addPage()});
     for (const sh of list) { const a = sh.addr || {}, tel = /^5\d{9}$/.test(a.tel || '') ? `0${a.tel.slice(0,3)} ${a.tel.slice(3,6)} ${a.tel.slice(6,8)} ${a.tel.slice(8)}` : '';
-      const p = { orderNo: sh.order_no, date: sh.at, tracking: sh.tracking || sh.ref, codeLabel: sh.tracking ? 'Sürat takip no: ' : 'Sürat barkodu: ', per,
+      const p = { orderNo: sh.order_no, date: sh.at, tracking: sh.tracking || sh.ref, codeLabel: sh.tracking ? 'Sürat takip no: ' : 'Sürat barkodu: ', per, noEmpty: true,
         to: { name: a.name || '', addr: [a.adres, a.zip].filter(Boolean).join(' · '), city: `${a.ilce || ''} / ${a.il || ''}`.toLocaleUpperCase('tr-TR'), phone: tel },
         cod: a.codTip ? codTxt(a.codTip, a.cod).toLocaleUpperCase('tr-TR') : '',
         lines: (sh.lines || []).map(l => ({ name: l.name, code: l.code, factor: l.factor, qty: l.qty, unit: l.unit, image: l.image })).sort(lhCmp), /* LH koduna göre küçükten büyüğe */
@@ -3133,7 +3133,7 @@ function sheetKayitli(){
   return {title: 'Shopify Barkod', sub: `<span>${fmtN(ships.length)} sipariş</span>`, body: !ships.length ? `<div class="panel empty"><h4>Kayıtlı sipariş yok</h4><p>Barkodu oluşturulan siparişler burada görünür.</p></div>` : `
     <div class="card" style="gap:10px;flex-direction:row;align-items:center;flex-wrap:wrap"><button class="btn sm" type="button" data-act="ky-selall">${ns === ships.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(ns)} / ${fmtN(ships.length)} seçili</span>${srSizeChips()}<button class="btn sm primary" type="button" data-act="ky-print" style="margin-left:auto" ${ns && !A.bulk ? '' : 'disabled'}>${A.bulk ? 'Barkod oluşturuluyor ' + esc(A.bulk) : '🖨 Seçilenleri yazdır (' + fmtN(ns) + ')'}</button></div>
     <div class="card" style="padding:0;gap:0;margin-top:12px;overflow:hidden">${rows}</div>
-    <p class="small muted" style="margin:10px 2px 0">Etiket Sürat ölçüsünde (100×200) basılır; Adres düzeltme → Sürat kayıtlı sekmesindeki yazdırmayla aynı.</p>`};
+    <p class="small muted" style="margin:10px 2px 0">Etiket Sürat ölçüsünde (100×150) basılır; Adres düzeltme → Sürat kayıtlı sekmesindeki yazdırmayla aynı.</p>`};
 }
 function sheetLabels(){
   const L = S.sheet;
@@ -3316,7 +3316,7 @@ function drawLabelPages(p, W, H, sid, mk){
     const qs = Math.min(5, Math.max(3, h / D / u * 0.32)); font(c, qs, true); const q = String(it.l.qty); c.fillText(q, xQty - c.measureText(q).width / 2, y + (h - mm(qs)) / 2);
     const ps = Math.min(3.6, qs * 0.75); font(c, ps, false); const a = tl2(it.l.unit || it.l.amount); c.fillText(a, PW - m - pad - c.measureText(a).width, y + (h - mm(ps)) / 2);
   };
-  const boxes = (c, y0, list) => { const bottom = PH - m - footH - mm(1), bh = (bottom - y0 - gap * (PER - 1)) / PER; for (let k = 0; k < PER; k++) box(c, list[k], m, y0 + k * (bh + gap), cw, bh); };
+  const boxes = (c, y0, list) => { const bottom = PH - m - footH - mm(1), bh = (bottom - y0 - gap * (PER - 1)) / PER; for (let k = 0; k < (p.noEmpty ? Math.max(1, list.length) : PER); k++) box(c, list[k], m, y0 + k * (bh + gap), cw, bh); }; /* Sürat etiketinde boş kutu çizilmez */
   const pages = chunks.map((list, i) => {
     const pg = newCanvas(), c = pg.c; let y;
     if (i === 0) {
