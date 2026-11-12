@@ -2645,8 +2645,9 @@ async function settleCron(env) { try { await init(env); if (!tyConfigured(env)) 
 // Sürat takip: her dakika, ana senkrondan bağımsız (şube okutunca takip no 1-2 dk içinde gelsin)
 async function srTrackCron(env) { const t0 = Date.now();
   try { await init(env); const s = await getSettings(env, ['sr_track_busy', 'sr_mode']); if (t0 - (Number(s.sr_track_busy) || 0) < 55000) return;
+    if (t0 < (Number(await getSetting(env, 'sr_cron_cf')) || 0)) return; /* Sürat zamanlanmış çalışmayı engelliyorsa uygulama sorar */
     await setSetting(env, 'sr_track_busy', String(t0)); await setSetting(env, 'run_sr_at', String(t0));
-    try { await srTrackPending(env, 150, t0 + 45000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } }
+    try { const r = await srTrackPending(env, 150, t0 + 45000); if (r && r.items && r.items.length && r.items.every(x => x.err && /403|cloudflare/i.test(x.err))) await setSetting(env, 'sr_cron_cf', String(t0 + 10 * 60000)); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } }
   catch (e) {} finally { try { await setSetting(env, 'sr_track_busy', '0'); } catch (e) {} } }
 async function desiRefillCron(env) { const t0 = Date.now();
   try { await init(env); if (!tyConfigured(env)) return; const busy = Number(await getSetting(env, 'desi_ref_busy')) || 0; if (t0 - busy < 55000) return;
@@ -4460,6 +4461,14 @@ ${catalog}` });
   }
   if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
+  if (path === '/api/surat/autotrack') {
+    // Açık uygulama dakikada bir çağırır: istek kullanıcıya yakın (Türkiye) sunucuda çalışır. Zamanlanmış çalışma yurtdışı sunucuda kalabildiği için Sürat'ın Cloudflare'ı onu engelliyor
+    const t0 = Date.now(), s = await getSettings(env, ['sr_track_busy', 'run_sr_app_at', 'sr_cari', 'sr_pass']); if (!s.sr_pass && !env.SURAT_SIFRE) return json({ ok: true, skip: 'surat yok' });
+    if (t0 - (Number(s.run_sr_app_at) || 0) < 50000 || t0 - (Number(s.sr_track_busy) || 0) < 55000) return json({ ok: true, skip: 'yakın zamanda soruldu' });
+    await env.DB.batch([setStmt(env, 'sr_track_busy', String(t0)), setStmt(env, 'run_sr_app_at', String(t0)), setStmt(env, 'run_sr_at', String(t0))]);
+    let r = null; try { r = await srTrackPending(env, 150, t0 + 22000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } finally { await setSetting(env, 'sr_track_busy', '0'); }
+    return json({ ok: true, checked: r ? r.checked : 0, tracked: r ? r.tracked : 0, ms: Date.now() - t0 });
+  }
   if (path === '/api/surat/track') {
     const acctRow = await env.DB.prepare('SELECT acct FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(), acct = acctRow && acctRow.acct || '';
     if (body.number === undefined) { const cr1 = await srCreds(env, acct), row1 = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first();
