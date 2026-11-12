@@ -1355,6 +1355,7 @@ async function srTrackOne(env, row, cr, c, restOnly) {
   let fulfilled = false, ferr = '';
   if (tr && !row.fulfilled_at && shConfigured(c)) { try { const fr = await shFulfill(env, c, row.gid, tr); if (fr && fr.already) await shFixTracking(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } } // Shopify'da zaten kargolanmışsa takip no güncellenir
   if (fulfilled) st.push(env.DB.prepare('UPDATE sr_ship SET fulfilled_at=?2, fulfill_err=NULL WHERE gid=?1').bind(row.gid, iso()));
+  if (tr && tr !== row.tracking) st.push(REV(env)); /* takip no geldi: açık ekranlar kendini yeniler */
   else if (ferr) st.push(env.DB.prepare('UPDATE sr_ship SET fulfill_err=?2 WHERE ref=?1').bind(row.ref, ferr));
   await env.DB.batch(st);
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
@@ -2319,7 +2320,7 @@ async function heavySteps(env, budget, result, step, left, t) {
     // Shopify: bildirim kaçarsa diye 2 dakikada bir kontrol
     if (left() > 10000 && ok(120)) { const sd = await getSettings(env, ['run_sh_at', 'sh_cid']); if ((sd.sh_cid || env.SHOPIFY_CLIENT_ID) && now - (Number(sd.run_sh_at) || 0) >= 2 * 60000 * mult) { await setSetting(env, 'run_sh_at', String(now)); await step('shopify', async () => { try { const r = await syncShopifyOrders(env); if (left() > 15000) { try { await shPayBackfill(env, 3); } catch (e) { await setSetting(env, 'sh_pay_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } } try { const pa2 = Number(await getSetting(env, 'run_pt_at')) || 0; if (now - pa2 > 3 * 3600000 && left() > 15000) { await setSetting(env, 'run_pt_at', String(now)); await ptSync(env, 4); } } catch (e) { await setSetting(env, 'pt_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } const pa = await getSetting(env, 'run_shp_at'); if (now - (Number(pa) || 0) >= 5 * 60000 * mult && left() > 20000) { await setSetting(env, 'run_shp_at', String(now)); try { await syncShopifyProducts(env); } catch (e) {} } try { await ensureShopifyHooks(env, false); } catch (e) { await setSetting(env, 'sh_hook_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } return r; } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); throw e; } }); } }
     // Sürat: şube okuttuysa takip numarası alınıp Shopify'a işlenir (müşteriye bildirim) — 30 dakikada bir
-    if (left() > 12000 && ok(80) && isDue('run_sr_at', 60000)) { await setSetting(env, 'run_sr_at', String(now)); await step('surat', () => srTrackPending(env), 'sr_track_err'); }
+    /* Sürat takibi ayrı çalışır (srTrackCron): ağır işler sırasını ve bütçesini beklemez */
     if (left() > 8000 && ok(50)) await step('pushCheck', () => checkTrendyolPushBatch(env), 'ty_push_err');
     if (left() > 8000 && ok(150)) await step('claimsCheck', () => reconcileTrendyolClaims(env, Date.now() + Math.min(15000, left() - 5000)));
     if (left() > 8000 && ok(100)) await step('retDesi', () => backfillReturnDesi(env));
@@ -2634,6 +2635,12 @@ async function settleCron(env) { try { await init(env); if (!tyConfigured(env)) 
   if (now - (Date.parse(s.ty_settle_at || '') || 0) < 30 * 60000 || now - (Number(s.ty_settle_busy) || 0) < 5 * 60000) return;
   await setSetting(env, 'ty_settle_busy', String(now)); await tySettleSync(env, 2); await setSetting(env, 'ty_settle_busy', '0'); } catch (e) { try { await env.DB.batch([setStmt(env, 'ty_set_err', iso() + ' · ' + String(e.message || e).slice(0, 200)), setStmt(env, 'ty_settle_busy', '0')]); } catch (x) {} } }
 // Ayrı çalışır (ana senkronu beklemez); üst üste binmesin diye kısa kilit
+// Sürat takip: her dakika, ana senkrondan bağımsız (şube okutunca takip no 1-2 dk içinde gelsin)
+async function srTrackCron(env) { const t0 = Date.now();
+  try { await init(env); const s = await getSettings(env, ['sr_track_busy', 'sr_mode']); if (t0 - (Number(s.sr_track_busy) || 0) < 55000) return;
+    await setSetting(env, 'sr_track_busy', String(t0)); await setSetting(env, 'run_sr_at', String(t0));
+    try { await srTrackPending(env, 20); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } }
+  catch (e) {} finally { try { await setSetting(env, 'sr_track_busy', '0'); } catch (e) {} } }
 async function desiRefillCron(env) { const t0 = Date.now();
   try { await init(env); if (!tyConfigured(env)) return; const busy = Number(await getSetting(env, 'desi_ref_busy')) || 0; if (t0 - busy < 55000) return;
     await setSetting(env, 'desi_ref_busy', String(t0)); await desiRefill(env, t0 + 40000); } catch (e) { try { await setSetting(env, 'desi_ref_err', String(e && e.message || e).slice(0, 300)); } catch (x) {} }
@@ -5245,7 +5252,7 @@ export default {
     }
   },
   // Ana eşitleme her dakika; raporlar 2 dakikada bir ayrı çalışmada (sorgu sınırı ayrı sayılsın, eşitlemeyi yavaşlatmasın)
-  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); ctx.waitUntil(desiRefillCron(env)); ctx.waitUntil(settleCron(env)); }
+  async scheduled(event, env, ctx) { ctx.waitUntil(cronRun(env)); ctx.waitUntil(desiRefillCron(env)); ctx.waitUntil(settleCron(env)); ctx.waitUntil(srTrackCron(env)); }
 };
 
 const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d2235"/><stop offset=".55" stop-color="#0f121c"/><stop offset="1" stop-color="#06070b"/></linearGradient><radialGradient id="g1" cx="860" cy="140" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#6366f1" stop-opacity=".62"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/></radialGradient><radialGradient id="g2" cx="120" cy="980" r="560" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient><linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset=".5" stop-color="#818cf8"/><stop offset="1" stop-color="#22d3ee"/></linearGradient><clipPath id="r"><rect width="1024" height="1024" rx="230"/></clipPath></defs><g clip-path="url(#r)"><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#g1)"/><rect width="1024" height="1024" fill="url(#g2)"/><g fill="#fff"><rect x="262" y="236" width="156" height="548" rx="40"/><rect x="262" y="628" width="392" height="156" rx="40"/></g><circle cx="742" cy="706" r="78" fill="url(#ac)"/></g></svg>`;
