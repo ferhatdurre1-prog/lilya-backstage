@@ -1242,7 +1242,8 @@ async function srCancelRest(creds, ref) {
 /* SOAP adresi Cloudflare'a takıldıysa 30 dk ona hiç gidilmez */
 async function srSoapBlocked(env) { return Date.now() < (Number(await getSetting(env, 'sr_soap_block')) || 0); }
 async function srSoapMark(env, e) { if (e && (e.cf || /403|cloudflare/i.test(String(e.message)))) await setSetting(env, 'sr_soap_block', String(Date.now() + 30 * 60000)); }
-async function srQuery(env, creds, ref) {
+async function srQuery(env, creds, ref, restOnly) {
+  if (restOnly) return await srQueryRest(creds, ref); /* otomatik takip: eski adrese hiç gidilmez */
   try { return await srQueryRest(creds, ref); }
   catch (e) { if (await srSoapBlocked(env)) throw e; try { return await srQuerySoap(env, creds, ref); } catch (e2) { await srSoapMark(env, e2); throw e; } }
 }
@@ -1341,14 +1342,14 @@ async function shFixTracking(env, c, gid, number) {
   return { ok: true };
 }
 // Bir gönderinin takip numarasını sor; geldiyse Shopify'a işle
-async function srTrackOne(env, row, cr, c) {
+async function srTrackOne(env, row, cr, c, restOnly) {
   let tr = row.tracking || '', msg = row.track_msg || '';
   // Önce bizim barkodumuz (Web Takip No), bulunamazsa sipariş numarası (Referans No) ile sorulur
-  if (!tr) { let q = await srQuery(env, cr, row.ref); const alt = String(row.order_no || '').replace(/\D/g, '');
+  if (!tr) { let q = await srQuery(env, cr, row.ref, restOnly); const alt = String(row.order_no || '').replace(/\D/g, '');
     // aynı siparişin önceki barkodları (pakete eski etiket yapıştırılmış olabilir), sonra sipariş no
     if (!q.no && row.gid) { const olds = (await env.DB.prepare(`SELECT ref FROM sr_ship WHERE gid=?1 AND ref<>?2 AND COALESCE(mode,'') <> 'manual' ORDER BY at DESC LIMIT 4`).bind(row.gid, row.ref).all()).results.map(x => x.ref);
-      for (const r0 of olds) { const q1 = await srQuery(env, cr, r0); if (q1.no) { q = q1; q.raw = (q1.durum || q1.raw) + ' (eski etiket ' + r0 + ')'; break; } } }
-    if (!q.no && alt && /bulunamad|yok|kay[ıi]t/i.test(q.durum || q.raw)) { const q2 = await srQuery(env, cr, alt); if (q2.no || !/bulunamad/i.test(q2.durum || q2.raw)) q = q2; }
+      for (const r0 of olds) { const q1 = await srQuery(env, cr, r0, restOnly); if (q1.no) { q = q1; q.raw = (q1.durum || q1.raw) + ' (eski etiket ' + r0 + ')'; break; } } }
+    if (!q.no && alt && /bulunamad|yok|kay[ıi]t/i.test(q.durum || q.raw)) { const q2 = await srQuery(env, cr, alt, restOnly); if (q2.no || !/bulunamad/i.test(q2.durum || q2.raw)) q = q2; }
     tr = q.no; msg = q.no ? (q.durum || q.raw) : q.raw; }
   const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 600))];
   let fulfilled = false, ferr = '';
@@ -1365,9 +1366,9 @@ async function srTrackPending(env, limit) {
   const { results: all } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
   const out = [];
   for (const acct of ['', 'cod']) { const results = all.filter(r => (r.acct || '') === acct); if (!results.length) continue; const cr = await srCreds(env, acct); if (!cr.pass) continue;
-  let rows = null; try { const L = results.length ? await srList(env, cr, 6) : null; rows = L && L.rows; } catch (e) {}
+  const rows = null; /* eski (SOAP) liste adresi Cloudflare'a takılıyor: takip yalnız yeni adresten, sipariş sipariş sorulur */
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
-  let solo = 0; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (/403|cloudflare|attention/i.test(String(e.message))) await setSetting(env, 'sr_block_until', String(Date.now() + 20 * 60000)); break; } } }
+  let solo = 0; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
