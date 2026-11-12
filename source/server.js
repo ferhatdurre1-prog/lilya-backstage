@@ -1382,7 +1382,7 @@ async function srLiveRefresh(env, lists, crs, dl) {
     const byNo = (rows) => rows && rows.find(x => Object.values(x).some(v => String(v).trim() === String(r.tracking)));
     for (const rows of [lists[r.acct || ''], lists[(r.acct || '') === 'cod' ? '' : 'cod']]) { if (!rows) continue; const m = byNo(rows) || srMatch(rows, r); if (m) { L = srLiveFromRow(m); break; } }
     // Takip no elle girildiyse ya da kayıt eskiyse: gönderinin tarihindeki haftanın Sürat listesine bakılır (takip no ile eşleşir)
-    if (!L && winCalls < 6) { const t = Date.parse(r.fulfilled_at || r.at) || Date.now(), end = Math.min(Date.now(), t + 5 * 86400000), key = trDay(end);
+    if (!L && winCalls < 6) { const t = Date.parse(r.fulfilled_at || r.at) || Date.now(), end = Math.min(Date.now(), t + 3 * 86400000), key = trDay(end);
       for (const acct of ['', 'cod']) { const c = crs[acct]; if (!c || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; const k = acct + '|' + key;
         if (!(k in wins)) { winCalls++; try { const W = await srList(env, c, 6, end), W2 = await srList(env, c, 6, end, true); wins[k] = [...((W && W.rows) || []), ...((W2 && W2.rows) || [])]; } catch (e) { wins[k] = null; } }
         const m = byNo(wins[k]); if (m) { L = srLiveFromRow(m); break; } } }
@@ -4504,7 +4504,7 @@ ${catalog}` });
     const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') }, cr = crs[row.acct === 'cod' ? 'cod' : '']; let L = null, q = null, err = '';
     try { q = await srLiveQuery(env, row, crs, 10); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) { err = String(e.message || e).slice(0, 200); }
     const wl = [];
-    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { let hit = false; for (const [acct, c] of [['', crs['']], ['cod', crs.cod]]) { if (hit || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; for (const all of [false, true]) { if (hit) break; try { const t = Date.parse(row.fulfilled_at || row.at) || Date.now(), end = Math.min(Date.now(), t + 5 * 86400000), W = await srList(env, c, 6, end, all); const m = W && W.rows && W.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking)));
+    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { let hit = false; for (const [acct, c] of [['', crs['']], ['cod', crs.cod]]) { if (hit || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; for (const all of [false, true]) { if (hit) break; try { const t = Date.parse(row.fulfilled_at || row.at) || Date.now(), end = Math.min(Date.now(), t + 3 * 86400000), W = await srList(env, c, 6, end, all); const m = W && W.rows && W.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking)));
         wl.push({ acct: acct || 'normal', all, end: trDay(end), n: W && W.rows ? W.rows.length : 0, mesaj: W && W.mesaj, found: !!m }); if (m) { L = srLiveFromRow(m); hit = true; } } catch (e) { wl.push({ acct: acct || 'normal', all, err: String(e.message || e).slice(0, 100) }); } } } }
     if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { try { const Ls = await srList(env, cr, 6); const m = Ls && Ls.rows && (Ls.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking))) || srMatch(Ls.rows, row)); if (m) L = srLiveFromRow(m); } catch (e) { if (!L) err = err || String(e.message || e).slice(0, 200); } }
     if (L) { await srLiveSave(env, row.ref, L); await env.DB.batch([REV(env)]); }
