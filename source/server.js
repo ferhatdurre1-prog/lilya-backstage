@@ -167,7 +167,7 @@ async function init0(env) {
   // Sürat Kargo gönderileri: kendi barkodumuz (OzelKargoTakipNo) ve Sürat'a bildirilen adres
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ship(ref TEXT PRIMARY KEY, gid TEXT, order_no TEXT, adet INTEGER, desi REAL, addr TEXT, lines TEXT, msg TEXT, at TEXT)').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS sr_ship_gid ON sr_ship(gid)').run();
-  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT', 'printed_at TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT', 'printed_at TEXT', 'live_durum TEXT', 'live_yer TEXT', 'live_at TEXT', 'live_teslim TEXT', 'live_und INTEGER']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_costreset1'`).first())) {
@@ -1361,6 +1361,24 @@ async function srTrackOne(env, row, cr, c, restOnly) {
   await env.DB.batch(st);
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
 }
+// Yoldaki gönderinin durumu: Sürat listesinden (Durum / TeslimatDurum / SonBulunduguYer) ya da tek tek sorgudan
+const srDay = (v) => { const d = dlvDay(v); return d && d >= '2020-01-01' && d <= trDay(Date.now() + 86400000) ? d : null; }; /* Sürat boş tarihi 01.01.0001 yazabiliyor */
+function srLiveFromRow(r) { const g = (re) => { for (const [k, v] of Object.entries(r)) if (re.test(k) && v != null && String(v).trim()) return String(v).trim(); return ''; };
+  const durum = g(/^durum$/i) || srRowState(r), td = g(/teslimatdurum/i), yer = g(/sonbulundu|bulundugu/i), alan = g(/teslimalan/i), all = [durum, td].join(' ');
+  const deliv = /teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all), und = /iade|edilemedi|devir/i.test(all) && !deliv;
+  return { durum: [durum, td && td !== durum ? td : ''].filter(Boolean).join(' · ').slice(0, 120), yer: yer.slice(0, 80), teslim: deliv ? (srDay(g(/teslimtarih/i)) || trDay(Date.now())) : null, und: und ? 1 : 0, alan }; }
+function srLiveFromQuery(q) { const all = String(q.durum || '') ; const deliv = !!srDay(q.teslim) || (/teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all)), und = !deliv && (/iade|edilemedi/i.test(all) || /^(true|1|evet)$/i.test(String(q.iade || '')));
+  const [durum, yer] = String(q.durum || '').split(' · '); return { durum: (durum || '').slice(0, 120), yer: (yer || '').slice(0, 80), teslim: deliv ? (srDay(q.teslim) || trDay(Date.now())) : null, und: und ? 1 : 0 }; }
+async function srLiveSave(env, ref, L) { await env.DB.prepare('UPDATE sr_ship SET live_durum=?2, live_yer=?3, live_at=?4, live_teslim=COALESCE(?5, live_teslim), live_und=?6 WHERE ref=?1').bind(ref, L.durum || null, L.yer || null, iso(), L.teslim || null, L.und || 0).run(); }
+async function srLiveRefresh(env, lists, crs, dl) {
+  const { results } = await env.DB.prepare(`SELECT s.* FROM sr_ship s WHERE COALESCE(s.tracking,'') <> '' AND s.live_teslim IS NULL AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND (s.live_at IS NULL OR s.live_at < ?2) ORDER BY COALESCE(s.live_at,'') LIMIT 120`).bind(iso(Date.now() - 30 * 86400000), iso(Date.now() - 30 * 60000)).all();
+  let n = 0, solo = 0;
+  for (const r of results) { if (dl && Date.now() > dl) break; let L = null;
+    for (const rows of [lists[r.acct || ''], lists[(r.acct || '') === 'cod' ? '' : 'cod']]) { if (!rows) continue; const m = rows.find(x => Object.values(x).some(v => String(v).trim() === String(r.tracking))) || srMatch(rows, r); if (m) { L = srLiveFromRow(m); break; } }
+    if (!L && solo < 25) { solo++; try { const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; const q = await srQueryRest(cr, r.ref); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) {} }
+    if (L) { await srLiveSave(env, r.ref, L); n++; } }
+  if (n) await env.DB.batch([REV(env)]);
+  return n; }
 async function srTrackPending(env, limit, dl) {
   const cr0 = await srCreds(env); if (!cr0.cari || !cr0.pass) return null;
   if (!limit && Date.now() < (Number(await getSetting(env, 'sr_block_until')) || 0)) return { checked: 0, tracked: 0, fulfilled: 0, items: [], paused: true };
@@ -1378,6 +1396,7 @@ async function srTrackPending(env, limit, dl) {
   const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') };
   { const results = all; for (const r of results) { if (dl && Date.now() > dl) break; const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; if (!cr.pass) continue; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); try { await env.DB.prepare('UPDATE sr_ship SET track_at=?2, track_msg=?3 WHERE ref=?1').bind(r.ref, iso(), ('Otomatik takip hatası: ' + String(e.message || e)).slice(0, 300)).run(); } catch (x) {} /* hata verse de sıranın sonuna geçer, diğerleri beklemez */ await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
+  try { if (!dl || Date.now() < dl) { for (const acct of ['', 'cod']) if (!(acct in lists)) await listFor(acct); await srLiveRefresh(env, lists, crs, dl); } } catch (e) {}
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
 // Sürat: iki cari olabilir: varsayılan (online ödemeli) ve kapıda ödeme carisi (acct='cod'; girilmemişse varsayılan kullanılır)
@@ -4024,12 +4043,12 @@ ${catalog}` });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   if (path === '/api/shaddr/transit') { // Sürat yolda / teslim edildi: takip no'su olan Sürat gönderileri (son 30 gün); durum Sürat raporundan
-    const { results } = await env.DB.prepare(`SELECT s.gid, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, c.durum cdurum, c.teslim, c.undelivered, c.cod_amount, r.durum rdurum, r.cod rcod, r.collected, r.iade
+    const { results } = await env.DB.prepare(`SELECT s.gid, s.ref, s.acct, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, s.live_durum, s.live_yer, s.live_at, s.live_teslim, s.live_und, c.durum cdurum, c.teslim, c.undelivered, c.cod_amount, r.durum rdurum, r.cod rcod, r.collected, r.iade
       FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
       WHERE COALESCE(s.tracking,'') <> '' AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at DESC LIMIT 500`).bind(iso(Date.now() - 30 * 86400000)).all();
-    const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim), since = Date.parse(x.fulfilled_at || x.at) || now;
-      const und = !!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || '')), durum = String(x.rdurum || x.cdurum || '').trim();
-      return { gid: x.gid, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, durum, deliv: dl, und, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
+    const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim) || x.live_teslim || null, since = Date.parse(x.fulfilled_at || x.at) || now;
+      const und = !!x.undelivered || !!x.live_und || /^(EVET|E|1)$/i.test(String(x.iade || '')), durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim();
+      return { gid: x.gid, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, ref: x.ref, durum, yer: x.live_yer || '', liveAt: x.live_at || null, deliv: dl, und, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
     return json({ ok: true, transit: items.filter(x => !x.deliv), delivered: items.filter(x => x.deliv) });
   }
   if (path === '/api/shaddr/addrok') { // "Adres doğru, bekleyene al": sarı adres uyarısı bu sipariş için yok sayılır
@@ -4461,6 +4480,14 @@ ${catalog}` });
   }
   if (path === '/api/surat/mode') { await env.DB.batch([setStmt(env, 'sr_mode', body.api ? 'api' : 'excel'), setStmt(env, 'sr_block_until', '0'), setStmt(env, 'sr_track_err', '')]); return json({ ok: true }); }
   if (path === '/api/surat/trackall') { try { const r = await srTrackPending(env, 60); if (!r) return bad('Sürat bağlantısı yok: Bağlantılar → Sürat Kargo\'da cari kodu ve şifreyi gir.'); return json({ ok: true, r }); } catch (e) { return bad(String(e.message || e)); } }
+  if (path === '/api/surat/live') { // Tek gönderinin Sürat'taki anlık durumu (Takip düğmesi)
+    const gid = String(body.gid || ''); const row = await env.DB.prepare(`SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1`).bind(gid).first(); if (!row) return bad('Gönderi bulunamadı.');
+    const cr = await srCreds(env, row.acct === 'cod' ? 'cod' : ''); let L = null, q = null, err = '';
+    try { q = await srQueryRest(cr, row.ref); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) { err = String(e.message || e).slice(0, 200); }
+    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { try { const Ls = await srList(env, cr, 6); const m = Ls && Ls.rows && (Ls.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking))) || srMatch(Ls.rows, row)); if (m) L = srLiveFromRow(m); } catch (e) { if (!L) err = err || String(e.message || e).slice(0, 200); } }
+    if (L) { await srLiveSave(env, row.ref, L); await env.DB.batch([REV(env)]); }
+    return json({ ok: true, ref: row.ref, tracking: row.tracking || (q && q.no) || '', live: L, err, tutar: q && q.tutar, desi: q && q.desi });
+  }
   if (path === '/api/surat/autotrack') {
     // Açık uygulama dakikada bir çağırır: istek kullanıcıya yakın (Türkiye) sunucuda çalışır. Zamanlanmış çalışma yurtdışı sunucuda kalabildiği için Sürat'ın Cloudflare'ı onu engelliyor
     const t0 = Date.now(), s = await getSettings(env, ['sr_track_busy', 'run_sr_app_at', 'sr_cari', 'sr_pass']); if (!s.sr_pass && !env.SURAT_SIFRE) return json({ ok: true, skip: 'surat yok' });
