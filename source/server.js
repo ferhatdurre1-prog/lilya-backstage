@@ -1347,9 +1347,10 @@ async function srTrackOne(env, row, cr, c, restOnly) {
   // Önce bizim barkodumuz (Web Takip No), bulunamazsa sipariş numarası (Referans No) ile sorulur
   if (!tr) { let q = await srQuery(env, cr, row.ref, restOnly); const alt = String(row.order_no || '').replace(/\D/g, '');
     // aynı siparişin önceki barkodları (pakete eski etiket yapıştırılmış olabilir), sonra sipariş no
-    if (!q.no && row.gid) { const olds = (await env.DB.prepare(`SELECT ref FROM sr_ship WHERE gid=?1 AND ref<>?2 AND COALESCE(mode,'') <> 'manual' ORDER BY at DESC LIMIT 4`).bind(row.gid, row.ref).all()).results.map(x => x.ref);
+    const deep = !restOnly || Math.random() < 0.15; /* otomatik takipte eski barkod / sipariş no ile ek sorgular ara sıra: her sipariş hızlıca sırayla sorulsun */
+    if (!q.no && row.gid && deep) { const olds = (await env.DB.prepare(`SELECT ref FROM sr_ship WHERE gid=?1 AND ref<>?2 AND COALESCE(mode,'') <> 'manual' ORDER BY at DESC LIMIT 4`).bind(row.gid, row.ref).all()).results.map(x => x.ref);
       for (const r0 of olds) { const q1 = await srQuery(env, cr, r0, restOnly); if (q1.no) { q = q1; q.raw = (q1.durum || q1.raw) + ' (eski etiket ' + r0 + ')'; break; } } }
-    if (!q.no && alt && /bulunamad|yok|kay[ıi]t/i.test(q.durum || q.raw)) { const q2 = await srQuery(env, cr, alt, restOnly); if (q2.no || !/bulunamad/i.test(q2.durum || q2.raw)) q = q2; }
+    if (!q.no && alt && deep && /bulunamad|yok|kay[ıi]t/i.test(q.durum || q.raw)) { const q2 = await srQuery(env, cr, alt, restOnly); if (q2.no || !/bulunamad/i.test(q2.durum || q2.raw)) q = q2; }
     tr = q.no; msg = q.no ? (q.durum || q.raw) : q.raw; }
   const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 600))];
   let fulfilled = false, ferr = '';
@@ -1360,7 +1361,7 @@ async function srTrackOne(env, row, cr, c, restOnly) {
   await env.DB.batch(st);
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
 }
-async function srTrackPending(env, limit) {
+async function srTrackPending(env, limit, dl) {
   const cr0 = await srCreds(env); if (!cr0.cari || !cr0.pass) return null;
   if (!limit && Date.now() < (Number(await getSetting(env, 'sr_block_until')) || 0)) return { checked: 0, tracked: 0, fulfilled: 0, items: [], paused: true };
   const c = await shCreds(env);
@@ -1369,7 +1370,7 @@ async function srTrackPending(env, limit) {
   for (const acct of ['', 'cod']) { const results = all.filter(r => (r.acct || '') === acct); if (!results.length) continue; const cr = await srCreds(env, acct); if (!cr.pass) continue;
   const rows = null; /* eski (SOAP) liste adresi Cloudflare'a takılıyor: takip yalnız yeni adresten, sipariş sipariş sorulur */
   for (const r of results) if (rows && rows.length && !r.tracking) { const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; } }
-  let solo = 0; for (const r of results) { if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
+  let solo = 0; for (const r of results) { if (dl && Date.now() > dl) break; if (!r.tracking && rows && rows.length && solo >= 6) continue; if (!r.tracking) solo++; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); try { await env.DB.prepare('UPDATE sr_ship SET track_at=?2 WHERE ref=?1').bind(r.ref, iso()).run(); } catch (x) {} /* hata verse de sıranın sonuna geçer, diğerleri beklemez */ await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
@@ -2639,7 +2640,7 @@ async function settleCron(env) { try { await init(env); if (!tyConfigured(env)) 
 async function srTrackCron(env) { const t0 = Date.now();
   try { await init(env); const s = await getSettings(env, ['sr_track_busy', 'sr_mode']); if (t0 - (Number(s.sr_track_busy) || 0) < 55000) return;
     await setSetting(env, 'sr_track_busy', String(t0)); await setSetting(env, 'run_sr_at', String(t0));
-    try { await srTrackPending(env, 20); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } }
+    try { await srTrackPending(env, 40, t0 + 45000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } }
   catch (e) {} finally { try { await setSetting(env, 'sr_track_busy', '0'); } catch (e) {} } }
 async function desiRefillCron(env) { const t0 = Date.now();
   try { await init(env); if (!tyConfigured(env)) return; const busy = Number(await getSetting(env, 'desi_ref_busy')) || 0; if (t0 - busy < 55000) return;
