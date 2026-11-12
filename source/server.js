@@ -1356,7 +1356,7 @@ async function srTrackOne(env, row, cr, c, restOnly) {
   let fulfilled = false, ferr = '';
   if (tr && !row.fulfilled_at && shConfigured(c)) { try { const fr = await shFulfill(env, c, row.gid, tr); if (fr && fr.already) await shFixTracking(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } } // Shopify'da zaten kargolanmışsa takip no güncellenir
   if (fulfilled) st.push(env.DB.prepare('UPDATE sr_ship SET fulfilled_at=?2, fulfill_err=NULL WHERE gid=?1').bind(row.gid, iso()));
-  if (tr && tr !== row.tracking) st.push(REV(env)); /* takip no geldi: açık ekranlar kendini yeniler */
+  if (tr && (tr !== row.tracking || row._fresh)) st.push(REV(env)); /* takip no geldi: açık ekranlar kendini yeniler */
   else if (ferr) st.push(env.DB.prepare('UPDATE sr_ship SET fulfill_err=?2 WHERE ref=?1').bind(row.ref, ferr));
   await env.DB.batch(st);
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
@@ -1365,16 +1365,18 @@ async function srTrackPending(env, limit, dl) {
   const cr0 = await srCreds(env); if (!cr0.cari || !cr0.pass) return null;
   if (!limit && Date.now() < (Number(await getSetting(env, 'sr_block_until')) || 0)) return { checked: 0, tracked: 0, fulfilled: 0, items: [], paused: true };
   const c = await shCreds(env);
-  const { results: all } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(60, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
+  const { results: all } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE fulfilled_at IS NULL AND COALESCE(mode,'') <> 'manual' AND at > ?1 AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY COALESCE(track_at, '') LIMIT ${Math.min(200, limit || 15)}`).bind(iso(Date.now() - 21 * 86400000)).all();
   const out = [];
   // Sürat takip numarasını gönderi kaydedilince verir; detay sorgusu ise ancak şube kabulünden sonra cevap verir. Bu yüzden önce iki carinin gönderi listesine bakılır
   // (barkod, irsaliye/sipariş no ya da alıcı adıyla eşleşir; kayıt hangi cariye düşmüş olursa olsun bulunur). Liste alınamazsa takip durmaz, detay sorgusuyla devam eder.
   const lists = {}; const listFor = async (acct) => { if (acct in lists) return lists[acct]; lists[acct] = null; try { const cr = await srCreds(env, acct); if (cr.pass && (acct === '' || cr.acct === 'cod')) { const L = await srList(env, cr, 6); lists[acct] = (L && L.rows) || null; } } catch (e) {} return lists[acct]; };
   if (all.some(r => !r.tracking)) for (const acct of ['', 'cod']) { await listFor(acct); }
   for (const r of all) if (!r.tracking) { const own = lists[r.acct || ''], other = lists[(r.acct || '') === 'cod' ? '' : 'cod'];
-    for (const rows of [own, other]) { if (!rows || !rows.length) continue; const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat listesinden'; break; } } }
-  for (const acct of ['', 'cod']) { const results = all.filter(r => (r.acct || '') === acct); if (!results.length) continue; const cr = await srCreds(env, acct); if (!cr.pass) continue;
-  for (const r of results) { if (dl && Date.now() > dl) break; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); try { await env.DB.prepare('UPDATE sr_ship SET track_at=?2 WHERE ref=?1').bind(r.ref, iso()).run(); } catch (x) {} /* hata verse de sıranın sonuna geçer, diğerleri beklemez */ await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
+    for (const rows of [own, other]) { if (!rows || !rows.length) continue; const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r._fresh = true; r.track_msg = srRowState(m) || 'Sürat listesinden'; break; } } }
+  // Listede takip no'su bulunanlar önce işlenir (Shopify'a hemen işlensin); kalanlar en uzun süredir sorulmayandan başlayarak tek tek sorulur
+  all.sort((a, b) => (b._fresh ? 2 : b.tracking ? 1 : 0) - (a._fresh ? 2 : a.tracking ? 1 : 0));
+  const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') };
+  { const results = all; for (const r of results) { if (dl && Date.now() > dl) break; const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; if (!cr.pass) continue; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); try { await env.DB.prepare('UPDATE sr_ship SET track_at=?2 WHERE ref=?1').bind(r.ref, iso()).run(); } catch (x) {} /* hata verse de sıranın sonuna geçer, diğerleri beklemez */ await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
 }
@@ -2644,7 +2646,7 @@ async function settleCron(env) { try { await init(env); if (!tyConfigured(env)) 
 async function srTrackCron(env) { const t0 = Date.now();
   try { await init(env); const s = await getSettings(env, ['sr_track_busy', 'sr_mode']); if (t0 - (Number(s.sr_track_busy) || 0) < 55000) return;
     await setSetting(env, 'sr_track_busy', String(t0)); await setSetting(env, 'run_sr_at', String(t0));
-    try { await srTrackPending(env, 40, t0 + 45000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } }
+    try { await srTrackPending(env, 150, t0 + 45000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } }
   catch (e) {} finally { try { await setSetting(env, 'sr_track_busy', '0'); } catch (e) {} } }
 async function desiRefillCron(env) { const t0 = Date.now();
   try { await init(env); if (!tyConfigured(env)) return; const busy = Number(await getSetting(env, 'desi_ref_busy')) || 0; if (t0 - busy < 55000) return;
