@@ -4429,6 +4429,9 @@ ${catalog}` });
     try { const q = await srQuery(env, cr, no); out.byOrderNo = { no: q.no, durum: q.durum, raw: q.raw }; } catch (e) { out.byOrderNo = { err: String(e.message || e) }; }
     const crA = await srCreds(env, row.acct === 'cod' ? 'cod' : ''); out.acct = crA.acct || 'normal';
     try { const q = await srQueryRest(crA, row.ref); out.byRefAcct = { no: q.no, durum: q.durum }; } catch (e) { out.byRefAcct = { err: String(e.message || e) }; }
+    // siparişin bütün barkodları × iki cari: hangisi hangi takip no / durumu veriyor
+    out.refs = []; try { const crs2 = { normal: await srCreds(env, ''), cod: await srCreds(env, 'cod') }; const refs = (await env.DB.prepare('SELECT ref, at, tracking, mode, acct, live_durum, live_und, live_at FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 6').bind(row.gid).all()).results;
+      for (const r of refs) { const o = { ref: r.ref, at: r.at, mode: r.mode, acct: r.acct || 'normal', saved: r.tracking, live: r.live_durum, liveUnd: r.live_und }; for (const [k, c] of Object.entries(crs2)) { if (!c.pass || (k === 'cod' && c.acct !== 'cod')) continue; try { const q = await srQueryRest(c, r.ref); o[k] = { no: q.no, durum: q.durum, teslim: q.teslim, iade: q.iade, sayi: q.sayi }; } catch (e) { o[k] = { err: String(e.message || e).slice(0, 120) }; } } out.refs.push(o); } } catch (e) { out.refsErr = String(e.message || e); }
     out.lists = [];
     for (const acct of ['', 'cod']) { const c2 = await srCreds(env, acct); if (acct === 'cod' && c2.acct !== 'cod') continue;
       try { const L = await srList(env, c2, 6); const m = L && L.rows.length ? srMatch(L.rows, row) : null; out.lists.push({ acct: acct || 'normal', count: L ? L.rows.length : 0, mesaj: L && L.mesaj, text: L && L.text, keys: L && L.rows[0] ? Object.keys(L.rows[0]) : [], match: m ? mask(m) : null, track: m ? srRowTrack(m) : null }); }
