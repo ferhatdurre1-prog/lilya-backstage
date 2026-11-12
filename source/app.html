@@ -4142,6 +4142,7 @@ function tyDiagCard(o){
   const cl = d.claims.map((c, i) => `<details style="margin-top:6px"><summary class="small"><b>Talep ${i + 1}</b></summary><div class="mono" style="font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere">${esc(Object.entries(c).map(([k, v]) => k + ': ' + v).join('\n'))}</div></details>`).join('');
   const ap = d.app || {};
   return `<div class="card"><div class="spread"><h3 style="margin:0">Trendyol kayıtları</h3>${btn}</div>
+    ${(d.pkgs || []).map(p => `<div class="small muted">Paket ${esc(p.id)} · Trendyol şu an: <b>${esc(p.status)}</b>${p.carrier ? ' · ' + esc(p.carrier) : ''}</div><dl class="kv">${Object.entries(p.desi || {}).map(([k, v]) => `<dt class="mono" style="font-size:12px">${esc(k)}</dt><dd><b>${esc(String(v))}</b></dd>`).join('') || '<dt>Desi alanı</dt><dd>yok</dd>'}</dl>${p.hist && p.hist.length ? `<div class="small muted">Durum geçmişi: ${p.hist.map(h => esc(h.st) + ' (' + esc(h.at) + ')').join(' → ')}</div>` : ''}`).join('')}
     <div class="small muted">Cari hesap hareketleri (son 15 gün)</div><dl class="kv">${fin}${oth}</dl>
     <div class="small muted">İade / kusurlu ürün talepleri: ${d.claims.length ? d.claims.length + ' adet' : 'yok'}</div>${cl}
     <div class="small muted">Uygulamadaki kayıt: ${(ap.returns || []).length ? ap.returns.map(r => `${esc(r.sku)} · ${r.qty} adet · ${esc(r.status)}${r.ext_status ? ' (' + esc(r.ext_status) + ')' : ''}${r.note ? ' · ' + esc(r.note) : ''}${r.kept ? ' · <b class="ink">ürün müşteride kaldı</b>' : ''}`).join('<br>') : 'iade kaydı yok'}</div>
