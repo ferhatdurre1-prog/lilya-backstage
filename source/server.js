@@ -1375,7 +1375,7 @@ async function srLiveRefresh(env, lists, crs, dl) {
   let n = 0, solo = 0;
   for (const r of results) { if (dl && Date.now() > dl) break; let L = null;
     for (const rows of [lists[r.acct || ''], lists[(r.acct || '') === 'cod' ? '' : 'cod']]) { if (!rows) continue; const m = rows.find(x => Object.values(x).some(v => String(v).trim() === String(r.tracking))) || srMatch(rows, r); if (m) { L = srLiveFromRow(m); break; } }
-    if (!L && solo < 25) { solo++; try { const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; const q = await srQueryRest(cr, r.ref); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) {} }
+    if (!L) { solo++; try { const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; const q = await srQueryRest(cr, r.ref); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) {} }
     if (L) { await srLiveSave(env, r.ref, L); n++; } }
   if (n) await env.DB.batch([REV(env)]);
   return n; }
@@ -1394,7 +1394,8 @@ async function srTrackPending(env, limit, dl) {
   // Listede takip no'su bulunanlar önce işlenir (Shopify'a hemen işlensin); kalanlar en uzun süredir sorulmayandan başlayarak tek tek sorulur
   all.sort((a, b) => (b._fresh ? 2 : b.tracking ? 1 : 0) - (a._fresh ? 2 : a.tracking ? 1 : 0));
   const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') };
-  { const results = all; for (const r of results) { if (dl && Date.now() > dl) break; const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; if (!cr.pass) continue; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); try { await env.DB.prepare('UPDATE sr_ship SET track_at=?2, track_msg=?3 WHERE ref=?1').bind(r.ref, iso(), ('Otomatik takip hatası: ' + String(e.message || e)).slice(0, 300)).run(); } catch (x) {} /* hata verse de sıranın sonuna geçer, diğerleri beklemez */ await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
+  const tdl = dl ? Date.now() + Math.max(4000, (dl - Date.now()) * 0.45) : null; /* sürenin yarısı takip no'ya, kalanı yoldaki gönderilerin durumuna */
+  { const results = all; for (const r of results) { if (tdl && Date.now() > tdl) break; if (!r._fresh && r.track_at && Date.now() - Date.parse(r.track_at) < 120000) continue; const cr = crs[(r.acct || '') === 'cod' ? 'cod' : '']; if (!cr.pass) continue; try { out.push(await srTrackOne(env, r, cr, c, true)); } catch (e) { out.push({ ref: r.ref, err: String(e.message || e) }); try { await env.DB.prepare('UPDATE sr_ship SET track_at=?2, track_msg=?3 WHERE ref=?1').bind(r.ref, iso(), ('Otomatik takip hatası: ' + String(e.message || e)).slice(0, 300)).run(); } catch (x) {} /* hata verse de sıranın sonuna geçer, diğerleri beklemez */ await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); if (e.cf && /yeni adres/.test(String(e.message))) { await setSetting(env, 'sr_block_until', String(Date.now() + 5 * 60000)); break; } /* tek siparişin hatası diğerlerini durdurmaz */ } } }
   if (out.length && !out.some(x => x.err && /403|cloudflare|attention/i.test(x.err))) await setSetting(env, 'sr_track_err', '');
   try { if (!dl || Date.now() < dl) { for (const acct of ['', 'cod']) if (!(acct in lists)) await listFor(acct); await srLiveRefresh(env, lists, crs, dl); } } catch (e) {}
   return { checked: out.length, tracked: out.filter(x => x.tracking).length, fulfilled: out.filter(x => x.fulfilled).length, items: out };
@@ -4493,7 +4494,7 @@ ${catalog}` });
     const t0 = Date.now(), s = await getSettings(env, ['sr_track_busy', 'run_sr_app_at', 'sr_cari', 'sr_pass']); if (!s.sr_pass && !env.SURAT_SIFRE) return json({ ok: true, skip: 'surat yok' });
     if (t0 - (Number(s.run_sr_app_at) || 0) < 50000 || t0 - (Number(s.sr_track_busy) || 0) < 55000) return json({ ok: true, skip: 'yakın zamanda soruldu' });
     await env.DB.batch([setStmt(env, 'sr_track_busy', String(t0)), setStmt(env, 'run_sr_app_at', String(t0)), setStmt(env, 'run_sr_at', String(t0))]);
-    let r = null; try { r = await srTrackPending(env, 150, t0 + 22000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } finally { await setSetting(env, 'sr_track_busy', '0'); }
+    let r = null; try { r = await srTrackPending(env, 150, t0 + 25000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } finally { await setSetting(env, 'sr_track_busy', '0'); }
     return json({ ok: true, checked: r ? r.checked : 0, tracked: r ? r.tracked : 0, ms: Date.now() - t0 });
   }
   if (path === '/api/surat/track') {
