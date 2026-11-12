@@ -1379,6 +1379,10 @@ async function srLiveRefresh(env, lists, crs, dl) {
     if (L) { await srLiveSave(env, r.ref, L); n++; } }
   if (n) await env.DB.batch([REV(env)]);
   return n; }
+// Listedeki takip no Sürat kaydı oluşur oluşmaz yazılır (paket kuryeye verilmeden). Sipariş ancak Sürat paketi teslim aldıysa takibe geçer
+function srAccepted(row) { const d = (Object.entries(row).find(([k]) => /^durum$/i.test(k)) || [])[1] || '', all = Object.entries(row).filter(([k]) => /durum|bulundu/i.test(k)).map(([, v]) => String(v || '')).join(' ').toLocaleLowerCase('tr');
+  if (/kabul bekl|veri aktar|hazırlan|hazirlan|oluşturul|olusturul/.test(String(d).toLocaleLowerCase('tr'))) return false;
+  return /şube|sube|aktarma|transfer|yolda|dağıtım|dagitim|kurye|teslim edildi|devir|iade|araç|arac/.test(all); }
 async function srTrackPending(env, limit, dl) {
   const cr0 = await srCreds(env); if (!cr0.cari || !cr0.pass) return null;
   if (!limit && Date.now() < (Number(await getSetting(env, 'sr_block_until')) || 0)) return { checked: 0, tracked: 0, fulfilled: 0, items: [], paused: true };
@@ -1390,7 +1394,7 @@ async function srTrackPending(env, limit, dl) {
   const lists = {}; const listFor = async (acct) => { if (acct in lists) return lists[acct]; lists[acct] = null; try { const cr = await srCreds(env, acct); if (cr.pass && (acct === '' || cr.acct === 'cod')) { const L = await srList(env, cr, 6); lists[acct] = (L && L.rows) || null; } } catch (e) {} return lists[acct]; };
   if (all.some(r => !r.tracking)) for (const acct of ['', 'cod']) { await listFor(acct); }
   for (const r of all) if (!r.tracking) { const own = lists[r.acct || ''], other = lists[(r.acct || '') === 'cod' ? '' : 'cod'];
-    for (const rows of [own, other]) { if (!rows || !rows.length) continue; const m = srMatch(rows, r), tn = m && srRowTrack(m); if (tn) { r.tracking = tn; r._fresh = true; r.track_msg = srRowState(m) || 'Sürat listesinden'; break; } } }
+    for (const rows of [own, other]) { if (!rows || !rows.length) continue; const m = srMatch(rows, r), tn = m && srRowTrack(m) && srAccepted(m) ? srRowTrack(m) : ''; if (tn) { r.tracking = tn; r._fresh = true; r.track_msg = srRowState(m) || 'Sürat listesinden'; break; } } }
   // Listede takip no'su bulunanlar önce işlenir (Shopify'a hemen işlensin); kalanlar en uzun süredir sorulmayandan başlayarak tek tek sorulur
   all.sort((a, b) => (b._fresh ? 2 : b.tracking ? 1 : 0) - (a._fresh ? 2 : a.tracking ? 1 : 0));
   const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') };
