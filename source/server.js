@@ -121,6 +121,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret_in(takip TEXT PRIMARY KEY, no TEXT, at TEXT, lines TEXT, auto INTEGER)').run(); // Sürat iadesi depoya ulaştı: stoğa eklenen adetler
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret(takip TEXT PRIMARY KEY, web TEXT, gonderen TEXT, il TEXT, fatura TEXT, teslim TEXT, durum TEXT, fee REAL, desi REAL, cod REAL, no TEXT, how TEXT, at TEXT)').run();
   // Kural değişti (13.11): iade kârı sadece depoya ulaşınca etkiler; önceki yüklemede işaretlenen ama depoya ulaşmamış iadelerin kâr işareti kalkar
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_retcargo_all1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_retcargo_all1','1')`), env.DB.prepare('DELETE FROM daily_stats'), setStmt(env, 'home_cache', '')]); } catch (e) {} } // iade siparişlerinde gidiş kargosu da iade kargosuna: kâr günleri yeniden hesaplanır
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_srret_profit1'`).first())) { try {
     await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_srret_profit1','1')`),
       env.DB.prepare(`UPDATE sr_cost SET undelivered=0, ret_real=NULL, cost=NULL, durum=NULL WHERE ret_real=1 AND no IN (SELECT no FROM sr_ret r WHERE no IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sr_ret_in i WHERE i.takip = r.takip))`),
@@ -2983,6 +2984,8 @@ async function computeProfit(env, from, to, ch0) {
     if (ch === 'trendyol' && !svcActual && service) { sum.svcChk = sum.svcChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; sum.svcChk.est++; sum.svcChk.estOnlyTL = r2(sum.svcChk.estOnlyTL + service); }
     if (ch === 'shopify') { const rr = shRet.get(String(ord.order_no || '').replace(/\D/g, '')); if (rr && rr.cost) { retCargo = r2(retCargo + rr.cost); retCargoEst = false; } }
     if (undel) { revenue = 0; commission = 0; } // teslim edilemeyen: satış yok, komisyon yok
+    /* Tamamen iade olan / teslim edilemeyen siparişte gidiş kargosu da iade kargosuna yazılır (Trendyol ve Shopify): iadelerin toplam kargo maliyeti tek satırda. Kısmi iadede gidiş kargosu Kargo'da kalır */
+    if ((undel || (retUnits > 0 && rows.every(x => x.qty === 0))) && cargo) { retCargo = r2(retCargo + cargo); cargoInfo.push(`İade: gidiş kargosu ${r2(cargo)} TL iade kargosuna yazıldı`); cargo = 0; }
     { const D = ch === 'trendyol' ? defOrd.get(ord.id) : null; if (D && D.amt > 0) { const pv = penaltyFor(D.amt), nt = D.note.toLocaleLowerCase('tr-TR'); penRaw += pv;
       if (!(D.at && Date.now() - D.at > PEN_TTL)) { penalty += pv; penN.push(`${MISSING_RE.test(nt) || /eksik ürün/.test(nt) ? 'Eksik ürün' : /yanlış ürün/.test(nt) ? 'Yanlış ürün' : 'Kusurlu ürün'} iadesi (sebep: ${D.note}) · ürün ${r2(D.amt)} TL → ${pv} TL`); } } }
     penalty += unsPenalty;
