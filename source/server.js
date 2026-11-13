@@ -167,7 +167,7 @@ async function init0(env) {
   // Sürat Kargo gönderileri: kendi barkodumuz (OzelKargoTakipNo) ve Sürat'a bildirilen adres
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ship(ref TEXT PRIMARY KEY, gid TEXT, order_no TEXT, adet INTEGER, desi REAL, addr TEXT, lines TEXT, msg TEXT, at TEXT)').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS sr_ship_gid ON sr_ship(gid)').run();
-  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT', 'printed_at TEXT', 'live_durum TEXT', 'live_yer TEXT', 'live_at TEXT', 'live_teslim TEXT', 'live_und INTEGER', 'iade_at TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
+  for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT', 'printed_at TEXT', 'live_durum TEXT', 'live_yer TEXT', 'live_at TEXT', 'live_teslim TEXT', 'live_und INTEGER', 'iade_at TEXT', 'live_raw TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   // Sürat iadeleri: 'Depoya ulaştı' işaretlenenler (stoğa eklenen adetlerle); hiç silinmez
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_iade_in(gid TEXT PRIMARY KEY, order_no TEXT, at TEXT, lines TEXT)').run();
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_sr_iade1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_sr_iade1','1')`),
@@ -1305,7 +1305,7 @@ const srToks = (x) => String(x || '').split(/\s+/).map(srNorm).filter(t => t.len
 const srTrl = (v) => String(v || '').replace(/[İIı]/g, 'i').toLowerCase(); // Türkçe İ/I/ı: 'İADE TESLİM EDİLDİ' de yakalansın
 const srDig = (v) => String(v == null ? '' : v).replace(/\D/g, '').replace(/^0+/, '');
 const srHasTrk = (row, t) => { const d = srDig(t); return d.length >= 8 && !!row && Object.values(row).some(v => srDig(v) === d); };
-const srRowTrk = (row) => { for (const [k, v] of Object.entries(row || {})) if (/takip/i.test(k) && srDig(v).length >= 8) return srDig(v); return ''; };
+const srRowTrk = (row) => { const E = Object.entries(row || {}); for (const [k, v] of E) if (/takip/i.test(k) && srDig(v).length >= 8) return srDig(v); for (const [, v] of E) if (/^\s*\d{12,16}\s*$/.test(String(v == null ? '' : v))) return srDig(v); return ''; }; /* takip alanı adı yoksa 12-16 haneli sayı takip no sayılır */
 /* Bizim takip no'muz varken başka takip no'lu bir satır/kayıt (ör. Sürat'ın hiç teslim almadığı ikinci kayıt) kullanılmaz */
 const srTrkOk = (row, t) => !t || !srRowTrk(row) || srRowTrk(row) === srDig(t);
 function srMatch(rows, ship) {
@@ -1379,16 +1379,19 @@ async function srTrackOne(env, row, cr, c, restOnly) {
 const srDay = (v) => { const d = dlvDay(v); return d && d >= '2020-01-01' && d <= trDay(Date.now() + 86400000) ? d : null; }; /* Sürat boş tarihi 01.01.0001 yazabiliyor */
 function srLiveFromRow(r) { const g = (re) => { for (const [k, v] of Object.entries(r)) if (re.test(k) && v != null && String(v).trim()) return String(v).trim(); return ''; };
   const durum = g(/^durum$/i) || srRowState(r), td = g(/teslimatdurum/i), yer = g(/sonbulundu|bulundugu/i), alan = g(/teslimalan/i), all = srTrl([durum, td].join(' '));
-  const back = /iade/i.test(all) && /teslim edildi/i.test(all), deliv = /teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all), und = back || (/iade|edilemedi|devir/i.test(all) && !deliv); /* 'İade teslim edildi': paket bize geri teslim edildi, iadedir */
-  return { durum: [durum, td && td !== durum ? td : ''].filter(Boolean).join(' · ').slice(0, 120), yer: yer.slice(0, 80), teslim: deliv ? (srDay(g(/teslimtarih/i)) || trDay(Date.now())) : null, und: und ? 1 : 0, alan }; }
-function srLiveFromQuery(q) { const all = srTrl(q.durum); const deliv = !!srDay(q.teslim) || (/teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all)), back = /iade/i.test(all) && /teslim edildi/i.test(all), und = back || (!deliv && (/iade|edilemedi/i.test(all) || /^(true|1|evet)$/i.test(String(q.iade || ''))));
+  /* Listedeki 'Durum' eski bir dağıtım denemesini gösterebiliyor (ör. TekrarGidilecek): iade ve teslim tarihi alanlarına da bakılır */
+  const iadeF = Object.entries(r).some(([k, v]) => /iade/i.test(k) && !/tutar|ucret|bedel|adres|tel|sube|kod$/i.test(k) && (/^(true|1|evet|e)$/i.test(String(v).trim()) || (/iade/.test(srTrl(v)) && !/degil|değil|yok|hayir|hayır|false/.test(srTrl(v)))));
+  const tDay = srDay(g(/teslimtarih|teslimedilme|teslim_tarih/i));
+  const back = (/iade/.test(all) && /teslim ?edildi/.test(all)) || (iadeF && !!tDay), deliv = !!tDay || (/teslim ?edildi/.test(all) && !/edilmedi|edilemedi/.test(all)), und = back || iadeF || (/iade|edilemedi|devir/.test(all) && !deliv);
+  return { durum: [durum, td && td !== durum ? td : ''].filter(Boolean).join(' · ').slice(0, 120), yer: yer.slice(0, 80), teslim: deliv ? (tDay || trDay(Date.now())) : null, und: und ? 1 : 0, alan, raw: JSON.stringify(r).slice(0, 1500) }; }
+function srLiveFromQuery(q) { const all = srTrl(q.durum); const deliv = !!srDay(q.teslim) || (/teslim ?edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all)), back = /iade/i.test(all) && /teslim ?edildi/i.test(all), und = back || (!deliv && (/iade|edilemedi/i.test(all) || /^(true|1|evet)$/i.test(String(q.iade || ''))));
   const [durum, yer] = String(q.durum || '').split(' · '); return { durum: (durum || '').slice(0, 120), yer: (yer || '').slice(0, 80), teslim: deliv ? (srDay(q.teslim) || trDay(Date.now())) : null, und: und ? 1 : 0 }; }
 async function srLiveQuery(env, row, crs, max) { const refs = [row.ref]; try { for (const x of (await env.DB.prepare('SELECT DISTINCT ref FROM sr_ship WHERE gid=?1 AND ref<>?2 ORDER BY at DESC LIMIT 4').bind(row.gid, row.ref).all()).results) refs.push(x.ref); } catch (e) {}
   const own = (row.acct || '') === 'cod' ? 'cod' : '', cl = [crs[own], crs[own === 'cod' ? '' : 'cod']].filter(c => c && c.pass); let first = null, n = 0;
   for (const ref of refs) for (const cr of cl) { if (n++ >= (max || 8)) return first; let q = null; try { q = await srQueryRest(cr, ref, row.tracking); } catch (e) { continue; }
     if (q && q.no && (!row.tracking || srDig(q.no) === srDig(row.tracking))) return q; if (row.tracking) continue; /* takip no tutmayan kayıt başka gönderidir: kullanılmaz */ if (q && q.no && !first) first = q; if (!first && q && q.durum && !/bulunamad/i.test(q.durum) && ref === row.ref && cr === cl[0]) first = q; }
   return first; }
-async function srLiveSave(env, ref, L) { await env.DB.prepare('UPDATE sr_ship SET live_durum=?2, live_yer=?3, live_at=?4, live_teslim=COALESCE(?5, live_teslim), live_und=?6, iade_at=CASE WHEN ?6=1 THEN COALESCE(iade_at, ?4) ELSE iade_at END WHERE ref=?1').bind(ref, L.durum || null, L.yer || null, iso(), L.teslim || null, L.und || 0).run(); }
+async function srLiveSave(env, ref, L) { await env.DB.prepare('UPDATE sr_ship SET live_durum=?2, live_yer=?3, live_at=?4, live_teslim=COALESCE(?5, live_teslim), live_und=?6, iade_at=CASE WHEN ?6=1 THEN COALESCE(iade_at, ?4) ELSE iade_at END, live_raw=COALESCE(?7, live_raw) WHERE ref=?1').bind(ref, L.durum || null, L.yer || null, iso(), L.teslim || null, L.und || 0, L.raw || null).run(); }
 async function srLiveRefresh(env, lists, crs, dl) {
   const { results } = await env.DB.prepare(`SELECT s.* FROM sr_ship s WHERE COALESCE(s.tracking,'') <> '' AND s.live_teslim IS NULL AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND (s.live_at IS NULL OR s.live_at < ?2 OR (s.live_durum LIKE '%kabul bekleniyor%' AND s.live_at < ?3)) ORDER BY COALESCE(s.live_at,'') LIMIT 120`).bind(iso(Date.now() - 30 * 86400000), iso(Date.now() - 30 * 60000), iso(Date.now() - 5 * 60000)).all();
   let n = 0, solo = 0, winCalls = 0; const wins = {};
@@ -4551,7 +4554,8 @@ ${catalog}` });
         wl.push({ acct: acct || 'normal', all, end: trDay(end), n: W && W.rows ? W.rows.length : 0, mesaj: W && W.mesaj, found: !!m }); if (m) { L = srLiveFromRow(m); hit = true; } } catch (e) { wl.push({ acct: acct || 'normal', all, err: String(e.message || e).slice(0, 100) }); } } } }
     if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { try { const Ls = await srList(env, cr, 6); let m = Ls && Ls.rows && (Ls.rows.find(x => srHasTrk(x, row.tracking)) || srMatch(Ls.rows, row)); if (m && !srTrkOk(m, row.tracking)) m = null; if (m) L = srLiveFromRow(m); } catch (e) { if (!L) err = err || String(e.message || e).slice(0, 200); } }
     if (L) { await srLiveSave(env, row.ref, L); await env.DB.batch([REV(env)]); }
-    return json({ ok: true, ref: row.ref, tracking: row.tracking || (q && q.no) || '', live: L, wl, err, tutar: q && q.tutar, desi: q && q.desi });
+    let raw = (L && L.raw) || row.live_raw || (q && q.raw) || ''; try { raw = raw ? JSON.parse(raw) : null; } catch (e) {} /* Sürat'ın bu gönderi için döndürdüğü bütün alanlar (teşhis için) */
+    return json({ ok: true, ref: row.ref, tracking: row.tracking || (q && q.no) || '', live: L, wl, err, tutar: q && q.tutar, desi: q && q.desi, raw });
   }
   if (path === '/api/surat/autotrack') {
     // Açık uygulama dakikada bir çağırır: istek kullanıcıya yakın (Türkiye) sunucuda çalışır. Zamanlanmış çalışma yurtdışı sunucuda kalabildiği için Sürat'ın Cloudflare'ı onu engelliyor
