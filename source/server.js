@@ -170,6 +170,9 @@ async function init0(env) {
   for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT', 'printed_at TEXT', 'live_durum TEXT', 'live_yer TEXT', 'live_at TEXT', 'live_teslim TEXT', 'live_und INTEGER', 'iade_at TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   // Sürat iadeleri: 'Depoya ulaştı' işaretlenenler (stoğa eklenen adetlerle); hiç silinmez
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_iade_in(gid TEXT PRIMARY KEY, order_no TEXT, at TEXT, lines TEXT)').run();
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_sr_iade1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_sr_iade1','1')`),
+    env.DB.prepare(`UPDATE sr_ship SET live_und=1, iade_at=COALESCE(iade_at, live_at) WHERE (live_durum LIKE '%iade%' OR live_durum LIKE '%İade%' OR live_durum LIKE '%İADE%')`), /* 'İade teslim edildi' teslim sanılmıştı */
+    env.DB.prepare(`UPDATE sr_ship SET live_at=NULL, live_durum=NULL, live_yer=NULL WHERE live_durum LIKE '%kabul bekleniyor%' AND COALESCE(tracking,'') <> ''`)]); } catch (e) {} } /* takılı 'kabul bekleniyor' durumları baştan sorulsun */
   for (const c of ['code TEXT', 'merged_into TEXT', 'name_manual INTEGER']) { try { await env.DB.prepare('ALTER TABLE products ADD COLUMN ' + c).run(); } catch (e) {} }
   try { await env.DB.prepare('ALTER TABLE listings ADD COLUMN inv_item TEXT').run(); } catch (e) {}
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_costreset1'`).first())) {
@@ -1212,12 +1215,12 @@ async function srRest(path, qs, body) {
 const srRestMsg = (x) => { const j = x.j; if (typeof j === 'string') return j; if (j && typeof j === 'object') return String(j.Message || j.errorMessage || j.Mesaj || j.message || '').trim() || x.t.slice(0, 200); return srText(x.t).slice(0, 200) || ('HTTP ' + x.status); };
 const srAuthErr = (m) => /[şs]ifre|kullan[ıi]c[ıi] (ad|kod)|yetki|001/i.test(m) && /hatal|yanl[ıi][şs]|ge[çc]ersiz|yetki/i.test(m);
 /* Takip: bizim barkodla (WebSiparisKodu) Sürat takip no + durum. Şifre hatalıysa kullanıcı adı / web şifresiyle tekrar denenir */
-async function srQueryRest(creds, ref) {
+async function srQueryRest(creds, ref, want) {
   const tries = [[creds.cari, creds.pass]]; if (creds.user && creds.user !== creds.cari) tries.push([creds.user, creds.pass]); if (creds.web && creds.web !== creds.pass) tries.push([creds.cari, creds.web]);
   let last = null;
   for (const [ck, pw] of tries) { const x = await srRest('KargoTakipHareketDetayi', { CariKodu: ck, Sifre: pw, WebSiparisKodu: ref }); last = x;
     const j = x.j && typeof x.j === 'object' ? x.j : null, G = j && Array.isArray(j.Gonderiler) ? j.Gonderiler : [];
-    if (G.length) { const g = G.find(z => z && z.KargoTakipNo) || G[0];
+    if (G.length) { const g = (want && G.find(z => z && srDig(z.KargoTakipNo) === srDig(want))) || G.find(z => z && z.KargoTakipNo) || G[0];
       return { no: String(g.KargoTakipNo || '').trim(), durum: [g.KargonunDurumu, g.KargonunBulunduguYer].filter(Boolean).join(' · ').slice(0, 160), sayi: Number(g.KargonunDurumuSayi) || 0, tutar: Number(g.Tutar) || null, desi: Number(g.ToplamDesiKg) || null, teslim: g.TeslimTarihi || '', iade: g.IadeDurum, raw: JSON.stringify(g).slice(0, 600), rest: true }; }
     const m = srRestMsg(x); if (!srAuthErr(m)) return { no: '', durum: m || 'Gönderi bulunamadı', raw: m, rest: true }; }
   const m = srRestMsg(last); return { no: '', durum: m, raw: m, rest: true, auth: true };
@@ -1298,6 +1301,13 @@ async function srList(env, cr, days, endMs, allRows) {
 const srNorm = (x) => String(x || '').toLocaleUpperCase('tr').replace(/İ/g, 'I').replace(/Ç/g, 'C').replace(/Ğ/g, 'G').replace(/Ö/g, 'O').replace(/Ş/g, 'S').replace(/Ü/g, 'U').replace(/Â/g, 'A').replace(/Î/g, 'I').replace(/Û/g, 'U').replace(/[^A-Z0-9]/g, ''); // Türkçe harfler sadeleşir: Müjgan = MUJGAN
 const srToks = (x) => String(x || '').split(/\s+/).map(srNorm).filter(t => t.length > 1).sort().join(' ');
 // Listeden bizim gönderiyi bul: barkodumuz (LH…), sipariş no ya da alıcı adı
+// Takip no karşılaştırma: sadece rakamlar, baştaki sıfırlar yok sayılır
+const srTrl = (v) => String(v || '').replace(/[İIı]/g, 'i').toLowerCase(); // Türkçe İ/I/ı: 'İADE TESLİM EDİLDİ' de yakalansın
+const srDig = (v) => String(v == null ? '' : v).replace(/\D/g, '').replace(/^0+/, '');
+const srHasTrk = (row, t) => { const d = srDig(t); return d.length >= 8 && !!row && Object.values(row).some(v => srDig(v) === d); };
+const srRowTrk = (row) => { for (const [k, v] of Object.entries(row || {})) if (/takip/i.test(k) && srDig(v).length >= 8) return srDig(v); return ''; };
+/* Bizim takip no'muz varken başka takip no'lu bir satır/kayıt (ör. Sürat'ın hiç teslim almadığı ikinci kayıt) kullanılmaz */
+const srTrkOk = (row, t) => !t || !srRowTrk(row) || srRowTrk(row) === srDig(t);
 function srMatch(rows, ship) {
   const ref = srNorm(ship.ref), no = String(ship.order_no || '').replace(/\D/g, ''); let a = {}; try { a = JSON.parse(ship.addr || '{}'); } catch (e) {}
   const nm = srNorm(a.name), tk = srToks(a.name), byName = [];
@@ -1368,28 +1378,29 @@ async function srTrackOne(env, row, cr, c, restOnly) {
 // Yoldaki gönderinin durumu: Sürat listesinden (Durum / TeslimatDurum / SonBulunduguYer) ya da tek tek sorgudan
 const srDay = (v) => { const d = dlvDay(v); return d && d >= '2020-01-01' && d <= trDay(Date.now() + 86400000) ? d : null; }; /* Sürat boş tarihi 01.01.0001 yazabiliyor */
 function srLiveFromRow(r) { const g = (re) => { for (const [k, v] of Object.entries(r)) if (re.test(k) && v != null && String(v).trim()) return String(v).trim(); return ''; };
-  const durum = g(/^durum$/i) || srRowState(r), td = g(/teslimatdurum/i), yer = g(/sonbulundu|bulundugu/i), alan = g(/teslimalan/i), all = [durum, td].join(' ');
-  const deliv = /teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all), und = /iade|edilemedi|devir/i.test(all) && !deliv;
+  const durum = g(/^durum$/i) || srRowState(r), td = g(/teslimatdurum/i), yer = g(/sonbulundu|bulundugu/i), alan = g(/teslimalan/i), all = srTrl([durum, td].join(' '));
+  const back = /iade/i.test(all) && /teslim edildi/i.test(all), deliv = /teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all), und = back || (/iade|edilemedi|devir/i.test(all) && !deliv); /* 'İade teslim edildi': paket bize geri teslim edildi, iadedir */
   return { durum: [durum, td && td !== durum ? td : ''].filter(Boolean).join(' · ').slice(0, 120), yer: yer.slice(0, 80), teslim: deliv ? (srDay(g(/teslimtarih/i)) || trDay(Date.now())) : null, und: und ? 1 : 0, alan }; }
-function srLiveFromQuery(q) { const all = String(q.durum || '') ; const deliv = !!srDay(q.teslim) || (/teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all)), und = !deliv && (/iade|edilemedi/i.test(all) || /^(true|1|evet)$/i.test(String(q.iade || '')));
+function srLiveFromQuery(q) { const all = srTrl(q.durum); const deliv = !!srDay(q.teslim) || (/teslim edildi/i.test(all) && !/edilmedi|edilemedi/i.test(all)), back = /iade/i.test(all) && /teslim edildi/i.test(all), und = back || (!deliv && (/iade|edilemedi/i.test(all) || /^(true|1|evet)$/i.test(String(q.iade || ''))));
   const [durum, yer] = String(q.durum || '').split(' · '); return { durum: (durum || '').slice(0, 120), yer: (yer || '').slice(0, 80), teslim: deliv ? (srDay(q.teslim) || trDay(Date.now())) : null, und: und ? 1 : 0 }; }
 async function srLiveQuery(env, row, crs, max) { const refs = [row.ref]; try { for (const x of (await env.DB.prepare('SELECT DISTINCT ref FROM sr_ship WHERE gid=?1 AND ref<>?2 ORDER BY at DESC LIMIT 4').bind(row.gid, row.ref).all()).results) refs.push(x.ref); } catch (e) {}
   const own = (row.acct || '') === 'cod' ? 'cod' : '', cl = [crs[own], crs[own === 'cod' ? '' : 'cod']].filter(c => c && c.pass); let first = null, n = 0;
-  for (const ref of refs) for (const cr of cl) { if (n++ >= (max || 8)) return first; let q = null; try { q = await srQueryRest(cr, ref); } catch (e) { continue; }
-    if (q && q.no && (!row.tracking || q.no === String(row.tracking))) return q; if (q && q.no && !first) first = q; if (!first && q && q.durum && !/bulunamad/i.test(q.durum) && ref === row.ref && cr === cl[0]) first = q; }
+  for (const ref of refs) for (const cr of cl) { if (n++ >= (max || 8)) return first; let q = null; try { q = await srQueryRest(cr, ref, row.tracking); } catch (e) { continue; }
+    if (q && q.no && (!row.tracking || srDig(q.no) === srDig(row.tracking))) return q; if (row.tracking) continue; /* takip no tutmayan kayıt başka gönderidir: kullanılmaz */ if (q && q.no && !first) first = q; if (!first && q && q.durum && !/bulunamad/i.test(q.durum) && ref === row.ref && cr === cl[0]) first = q; }
   return first; }
 async function srLiveSave(env, ref, L) { await env.DB.prepare('UPDATE sr_ship SET live_durum=?2, live_yer=?3, live_at=?4, live_teslim=COALESCE(?5, live_teslim), live_und=?6, iade_at=CASE WHEN ?6=1 THEN COALESCE(iade_at, ?4) ELSE iade_at END WHERE ref=?1').bind(ref, L.durum || null, L.yer || null, iso(), L.teslim || null, L.und || 0).run(); }
 async function srLiveRefresh(env, lists, crs, dl) {
   const { results } = await env.DB.prepare(`SELECT s.* FROM sr_ship s WHERE COALESCE(s.tracking,'') <> '' AND s.live_teslim IS NULL AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND (s.live_at IS NULL OR s.live_at < ?2 OR (s.live_durum LIKE '%kabul bekleniyor%' AND s.live_at < ?3)) ORDER BY COALESCE(s.live_at,'') LIMIT 120`).bind(iso(Date.now() - 30 * 86400000), iso(Date.now() - 30 * 60000), iso(Date.now() - 5 * 60000)).all();
   let n = 0, solo = 0, winCalls = 0; const wins = {};
   for (const r of results) { if (dl && Date.now() > dl) break; let L = null;
-    const byNo = (rows) => rows && rows.find(x => Object.values(x).some(v => String(v).trim() === String(r.tracking)));
-    for (const rows of [lists[r.acct || ''], lists[(r.acct || '') === 'cod' ? '' : 'cod']]) { if (!rows) continue; const m = byNo(rows) || srMatch(rows, r); if (m) { L = srLiveFromRow(m); break; } }
+    const byNo = (rows) => rows && rows.find(x => srHasTrk(x, r.tracking));
+    for (const rows of [lists[r.acct || ''], lists[(r.acct || '') === 'cod' ? '' : 'cod']]) { if (!rows) continue; let m = byNo(rows) || srMatch(rows, r); if (m && !srTrkOk(m, r.tracking)) m = null; if (m) { L = srLiveFromRow(m); break; } }
     // Takip no elle girildiyse ya da kayıt eskiyse: gönderinin tarihindeki haftanın Sürat listesine bakılır (takip no ile eşleşir)
-    if (!L && winCalls < 6) { const t = Date.parse(r.fulfilled_at || r.at) || Date.now(), end = Math.min(Date.now(), t + 3 * 86400000), key = trDay(end);
+    if (!L && winCalls < 8) { const t = Date.parse(r.fulfilled_at || r.at) || Date.now();
+      for (const end of [Math.min(Date.now(), t + 3 * 86400000), Math.min(Date.now(), t - 2 * 86400000)]) { if (L) break; const key = trDay(end); /* kayıt şubede bizden önce açılmış olabilir */
       for (const acct of ['', 'cod']) { const c = crs[acct]; if (!c || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; const k = acct + '|' + key;
         if (!(k in wins)) { winCalls++; try { const W = await srList(env, c, 6, end), W2 = await srList(env, c, 6, end, true); wins[k] = [...((W && W.rows) || []), ...((W2 && W2.rows) || [])]; } catch (e) { wins[k] = null; } }
-        const m = byNo(wins[k]); if (m) { L = srLiveFromRow(m); break; } } }
+        const m = byNo(wins[k]); if (m) { L = srLiveFromRow(m); break; } } } }
     if (!L) { solo++; try { const q = await srLiveQuery(env, r, crs, 4); if (q && (q.no || q.durum) && !(r.tracking && q.no !== String(r.tracking) && /kabul bekl/i.test(q.durum || ''))) L = srLiveFromQuery(q); } catch (e) {} } /* takip no başka kayda aitse 'kabul bekleniyor' yazılmaz */
     if (L) { await srLiveSave(env, r.ref, L); n++; } }
   if (n) await env.DB.batch([REV(env)]);
@@ -4067,10 +4078,10 @@ ${catalog}` });
       FROM sr_ship s LEFT JOIN sr_iade_in i ON i.gid = s.gid LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
       WHERE COALESCE(s.tracking,'') <> '' AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at DESC LIMIT 10000`).all(); /* geçmişten bugüne hepsi: kayıtlar silinmez */
     const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim) || x.live_teslim || null, since = Date.parse(x.fulfilled_at || x.at) || now;
-      const und = x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || ''))), /* Sürat'tan canlı durum geldiyse eski rapor işaretleri yok sayılır */ durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim();
+      const durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim(), und = (x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || '')))) || /iade/.test(srTrl(durum)); /* Sürat'tan canlı durum geldiyse eski rapor işaretleri yok sayılır */
       let inL = []; try { inL = JSON.parse(x.iade_in_lines || '[]'); } catch (e) {}
       /* bir kez 'teslim edilemedi / iade' denen gönderi iadedir; sonra gelen 'teslim edildi' bize geri teslimdir */
-      return { gid: x.gid, ref: x.ref, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, durum, yer: x.live_yer || '', liveAt: x.live_at || null, deliv: dl, und, iade: !!x.iade_at || und, iadeAt: x.iade_at || null, inAt: x.iade_in_at || null, inLines: inL, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
+      return { gid: x.gid, ref: x.ref, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, durum, yer: x.live_yer || '', liveAt: x.live_at || null, deliv: dl, und, back: !!dl && (!!x.iade_at || und), iade: !!x.iade_at || und, iadeAt: x.iade_at || null, inAt: x.iade_in_at || null, inLines: inL, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
     const mark = items.filter(x => x.und && !x.iadeAt); /* rapordan gelen iade işaretleri de kalıcı olsun */
     if (mark.length) { try { const t = iso(), st = mark.map(x => env.DB.prepare('UPDATE sr_ship SET iade_at=COALESCE(iade_at, ?2) WHERE ref=?1').bind(x.ref, t)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); } catch (e) {} }
     return json({ ok: true, transit: items.filter(x => !x.iade && !x.deliv), delivered: items.filter(x => !x.iade && x.deliv), iade: items.filter(x => x.iade) });
@@ -4534,11 +4545,11 @@ ${catalog}` });
   if (path === '/api/surat/live') { // Tek gönderinin Sürat'taki anlık durumu (Takip düğmesi)
     const gid = String(body.gid || ''); const row = await env.DB.prepare(`SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1`).bind(gid).first(); if (!row) return bad('Gönderi bulunamadı.');
     const crs = { '': await srCreds(env, ''), cod: await srCreds(env, 'cod') }, cr = crs[row.acct === 'cod' ? 'cod' : '']; let L = null, q = null, err = '';
-    try { q = await srLiveQuery(env, row, crs, 10); if (q && (q.no || q.durum)) L = srLiveFromQuery(q); } catch (e) { err = String(e.message || e).slice(0, 200); }
+    try { q = await srLiveQuery(env, row, crs, 10); if (q && (q.no || q.durum) && !(row.tracking && q.no && srDig(q.no) !== srDig(row.tracking))) L = srLiveFromQuery(q); } catch (e) { err = String(e.message || e).slice(0, 200); }
     const wl = [];
-    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { let hit = false; for (const [acct, c] of [['', crs['']], ['cod', crs.cod]]) { if (hit || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; for (const all of [false, true]) { if (hit) break; try { const t = Date.parse(row.fulfilled_at || row.at) || Date.now(), end = Math.min(Date.now(), t + 3 * 86400000), W = await srList(env, c, 6, end, all); const m = W && W.rows && W.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking)));
+    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { let hit = false; for (const [acct, c] of [['', crs['']], ['cod', crs.cod]]) { if (hit || !c.pass || (acct === 'cod' && c.acct !== 'cod')) continue; const t0 = Date.parse(row.fulfilled_at || row.at) || Date.now(); for (const [all, end] of [[false, t0 + 3 * 86400000], [true, t0 + 3 * 86400000], [true, t0 - 2 * 86400000], [true, t0 + 9 * 86400000]].map(([a, e]) => [a, Math.min(Date.now(), e)])) { if (hit) break; try { const W = await srList(env, c, 6, end, all); const m = W && W.rows && W.rows.find(x => srHasTrk(x, row.tracking));
         wl.push({ acct: acct || 'normal', all, end: trDay(end), n: W && W.rows ? W.rows.length : 0, mesaj: W && W.mesaj, found: !!m }); if (m) { L = srLiveFromRow(m); hit = true; } } catch (e) { wl.push({ acct: acct || 'normal', all, err: String(e.message || e).slice(0, 100) }); } } } }
-    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { try { const Ls = await srList(env, cr, 6); const m = Ls && Ls.rows && (Ls.rows.find(x => Object.values(x).some(v => String(v).trim() === String(row.tracking))) || srMatch(Ls.rows, row)); if (m) L = srLiveFromRow(m); } catch (e) { if (!L) err = err || String(e.message || e).slice(0, 200); } }
+    if ((!L || !L.durum || /kabul bekleniyor/i.test(L.durum)) && row.tracking) { try { const Ls = await srList(env, cr, 6); let m = Ls && Ls.rows && (Ls.rows.find(x => srHasTrk(x, row.tracking)) || srMatch(Ls.rows, row)); if (m && !srTrkOk(m, row.tracking)) m = null; if (m) L = srLiveFromRow(m); } catch (e) { if (!L) err = err || String(e.message || e).slice(0, 200); } }
     if (L) { await srLiveSave(env, row.ref, L); await env.DB.batch([REV(env)]); }
     return json({ ok: true, ref: row.ref, tracking: row.tracking || (q && q.no) || '', live: L, wl, err, tutar: q && q.tutar, desi: q && q.desi });
   }
