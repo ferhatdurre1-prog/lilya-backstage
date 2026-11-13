@@ -1425,7 +1425,7 @@ async function srGkdWindow(env, acct, d0) {
   const shNo = new Set((webNos.length ? (await selectIn(env, `SELECT order_no, channel FROM orders`, 'order_no', webNos.map(n => '#' + n))).filter(x => x.channel === 'shopify') : []).map(x => String(x.order_no).replace(/\D/g, '')));
   const st = []; let fee = 0, ret = 0;
   for (const x of G) { const takip = String(x.TakipNo).replace(/\D/g, ''), w = String(x.WebSiparisKodu || '').replace(/^LH/i, '').replace(/\D/g, ''), no = (w && shNo.has(w)) ? w : (byTrk.get(takip) || ''), us = /lilya/i.test(String(x.AliciUnvan || '')), ua = /^(üa|ua)$/i.test(String(x.OdemeSekli || '').replace(/\s/g, ''));
-    const tut = num(x.Tutar), tes = dt(x.TeslimTarihi), durum = String(x.Durum || x.TeslimatDurum || '').slice(0, 80);
+    const tut = num(x.Tutar), tes = dt(x.TeslimTarihi), durum = [x.Durum || x.TeslimatDurum, x.SonBulunduguYer].filter(Boolean).join(' · ').slice(0, 120);
     if (us && !ua) { ret++; st.push(env.DB.prepare(`INSERT INTO sr_ret(takip, web, gonderen, il, fatura, teslim, durum, fee, desi, cod, no, how, at) VALUES(?1,?2,'','',?3,?4,?5,?6,NULL,0,?7,?8,?9)
         ON CONFLICT(takip) DO UPDATE SET web=COALESCE(NULLIF(excluded.web,''), sr_ret.web), teslim=COALESCE(excluded.teslim, sr_ret.teslim), durum=excluded.durum, fee=excluded.fee, no=CASE WHEN sr_ret.how='manual' THEN sr_ret.no ELSE COALESCE(sr_ret.no, excluded.no) END, how=CASE WHEN sr_ret.no IS NULL AND excluded.no IS NOT NULL THEN excluded.how ELSE sr_ret.how END, at=excluded.at`)
         .bind(takip, x.WebSiparisKodu || '', dt(x.OlusturulmaTarihi), tes || null, durum, tut, no || null, no ? 'servis' : '', iso())); }
@@ -4153,7 +4153,9 @@ ${catalog}` });
     const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim) || x.live_teslim || null, since = Date.parse(x.fulfilled_at || x.at) || now;
       const und = x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || ''))), /* Sürat'tan canlı durum geldiyse eski rapor işaretleri yok sayılır */ durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim();
       return { gid: x.gid, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, ref: x.ref, durum, yer: x.live_yer || '', liveAt: x.live_at || null, deliv: dl, und, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
-    return json({ ok: true, transit: items.filter(x => !x.deliv), delivered: items.filter(x => x.deliv) });
+    /* iade paketleri Yolda / Teslim edildi'de görünmez: İade sekmelerinde */
+    const retNo = new Set((await env.DB.prepare('SELECT no FROM sr_ret WHERE no IS NOT NULL').all()).results.map(x => String(x.no))), isRet = (x) => x.und || retNo.has(String(x.orderNo || '').replace(/\D/g, ''));
+    return json({ ok: true, transit: items.filter(x => !x.deliv && !isRet(x)), delivered: items.filter(x => x.deliv && !isRet(x)) });
   }
   if (path === '/api/shaddr/addrok') { // "Adres doğru, bekleyene al": sarı adres uyarısı bu sipariş için yok sayılır
     const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
