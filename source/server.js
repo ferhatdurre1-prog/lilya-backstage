@@ -172,6 +172,12 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_iade_in(gid TEXT PRIMARY KEY, order_no TEXT, at TEXT, lines TEXT)').run();
   // Sürat beyanı (12.11.2026 dahil öncesi): Sürat'ın Gönderilen Kargo raporundaki her gönderi; bitmişler sabit, bitmemişleri bizim sorgu sürdürür
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_decl(takip TEXT PRIMARY KEY, acct TEXT, kind TEXT, web TEXT, alici TEXT, gonderen TEXT, il TEXT, ilce TEXT, fatura TEXT, teslim TEXT, durum TEXT, iade INTEGER, sebep TEXT, desi REAL, fee REAL, kapida REAL, tahsil TEXT, odeme TEXT, final INTEGER, gid TEXT, order_no TEXT, match TEXT, at TEXT)').run();
+  // Shopify ödeme şekli kayıtları ödeme adından yeniden hesaplanır ('Kapıda Nakit Ödeme' / 'Kapıda Kredi Kartı ile Ödeme' kapıda sayılmamıştı); kâr günleri yeniden hesaplanır
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_shpay_cod1'`).first())) { try { const T = (v) => String(v || '').replace(/[İIı]/g, 'i').toLowerCase();
+    const { results } = await env.DB.prepare('SELECT no, gateway, cod, card FROM sh_pay').all(), st = [env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_shpay_cod1','1')`)];
+    for (const x of results) { const g = T(x.gateway), cod = /kapida|cash on delivery|\bcod\b|teslimatta|nakit/.test(g) ? 1 : 0, card = cod && /kart|card|pos|kredi/.test(g) ? 1 : 0; if (cod !== Number(x.cod || 0) || card !== Number(x.card || 0)) st.push(env.DB.prepare('UPDATE sh_pay SET cod=?2, card=?3 WHERE no=?1').bind(x.no, cod, card)); }
+    if (st.length > 1) st.push(env.DB.prepare('DELETE FROM daily_stats'), setStmt(env, 'home_cache', ''), setStmt(env, 'sh_pay_fix_n', String(st.length - 1)));
+    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); } catch (e) {} }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_sr_iade1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_sr_iade1','1')`),
     env.DB.prepare(`UPDATE sr_ship SET live_und=1, iade_at=COALESCE(iade_at, live_at) WHERE (live_durum LIKE '%iade%' OR live_durum LIKE '%İade%' OR live_durum LIKE '%İADE%')`), /* 'İade teslim edildi' teslim sanılmıştı */
     env.DB.prepare(`UPDATE sr_ship SET live_at=NULL, live_durum=NULL, live_yer=NULL WHERE live_durum LIKE '%kabul bekleniyor%' AND COALESCE(tracking,'') <> ''`)]); } catch (e) {} } /* takılı 'kabul bekleniyor' durumları baştan sorulsun */
@@ -1563,8 +1569,8 @@ function shCod(o) { const x = shPayRow(o); if (!x.cod) return { tip: 0, amt: 0, 
 // Shopify ödeme yöntemi: kapıda nakit / kapıda kart / online (kâr hesabında kargo ve kapıda ödeme kuralları için)
 function shPayRow(o) {
   const g = (o.paymentGatewayNames || []).join(' | '), gl = g.toLocaleLowerCase('tr-TR');
-  const cod = /kap[ıi]da|cash on delivery|\bcod\b|teslimatta|nakit/.test(gl) ? 1 : 0;
-  const card = cod && /kart|card|pos|kredi/.test(gl) ? 1 : 0;
+  const gT = g.replace(/[İIı]/g, 'i').toLowerCase(), cod = /kapida|cash on delivery|\bcod\b|teslimatta|nakit/.test(gT) ? 1 : 0; // Türkçe büyük/küçük harften bağımsız
+  const card = cod && /kart|card|pos|kredi/.test(gT) ? 1 : 0;
   const M = (x) => x && x.shopMoney ? Number(x.shopMoney.amount) || 0 : null;
   const tx = (o.transactions || []).flatMap(t => [t.paymentId, t.authorizationCode]).filter(Boolean).map(String).join(' ').slice(0, 400);
   const dl = (o.fulfillments || []).map(f => f && f.deliveredAt).filter(Boolean).sort().pop();
