@@ -567,6 +567,24 @@ function bkDelivered(o) { const out = []; const walk = (x, d) => { if (!x || typ
 // Sürat kapıda tahsilatı: perşembe–çarşamba haftası; çarşambaya kadar (dahil) teslim edilenler 8 gün sonraki perşembe yatar
 // (ör. 21.10 çarşambaya kadar → 29.10; 22.10'dan sonra → 5.11). Ödeme günü resmi tatile denk gelirse önceki iş günü (29 Ekim → 28 Ekim)
 const TR_HOLI = new Set(['01-01', '04-23', '05-01', '05-19', '07-15', '08-30', '10-29', '2026-03-20', '2026-05-27', '2026-05-28', '2026-05-29', '2027-03-09', '2027-03-10', '2027-05-16', '2027-05-17', '2027-05-18', '2027-05-19']);
+// Kapanış sonrası Sürat gönderileri: bizim hesabımız (kapıda tutar siparişten, ücret sözleşmeden: 102 TL + %2,35, kapıda ödeme bedeli, iadede 1,5 kat)
+async function srOwnSince(env, fromIso) {
+  const { results: sh } = await env.DB.prepare(`SELECT s.gid, s.order_no, s.tracking, s.at, s.desi, s.live_teslim, s.live_und, s.iade_at FROM sr_ship s WHERE s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at`).bind(fromIso).all();
+  if (!sh.length) return [];
+  const nos = sh.map(x => String(x.order_no || '').replace(/\D/g, '')), ids = sh.map(x => orderId('shopify', x.order_no)), ph = (a, o) => a.map((_, i) => '?' + (i + 1 + o)).join(',');
+  const out = [], fee = await loadFees(env), dz = new Map((await env.DB.prepare('SELECT key, desi FROM products').all()).results.map(x => [x.key, Number(x.desi) || null]));
+  for (let i = 0; i < sh.length; i += 40) { const S = sh.slice(i, i + 40), N = nos.slice(i, i + 40), I = ids.slice(i, i + 40);
+    const [pR, oR, fR, iR] = await env.DB.batch([env.DB.prepare(`SELECT * FROM sh_pay WHERE no IN (${ph(N, 0)})`).bind(...N), env.DB.prepare(`SELECT id, lines FROM orders WHERE id IN (${ph(I, 0)})`).bind(...I), env.DB.prepare(`SELECT no, kind FROM sr_online WHERE no IN (${ph(N, 0)})`).bind(...N), env.DB.prepare(`SELECT gid, at FROM sr_iade_in WHERE gid IN (${ph(S, 0)})`).bind(...S.map(x => x.gid))]);
+    const P = new Map(pR.results.map(x => [x.no, x])), O = new Map(oR.results.map(x => [x.id, x])), F = new Map(fR.results.map(x => [x.no, x.kind])), IN = new Map(iR.results.map(x => [x.gid, x.at]));
+    S.forEach((x, k) => { const p = P.get(N[k]) || {}, o = O.get(I[k]); let lines = []; try { lines = JSON.parse((o && o.lines) || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled');
+      const cod = !!p.cod && F.get(N[k]) !== 'online', card = !!p.card, sub = r2(p.subtotal !== null && p.subtotal !== undefined ? p.subtotal : act.reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0));
+      const total = r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0) + (cod ? (card ? SH_COD_CARD : SH_COD_CASH) : 0));
+      let d = Number(x.desi) || 0; if (!d) for (const l of act) d += (dz.get(l.pkey) || 1) * (Number(l.qty) || 1); const desi = Math.max(1, Math.ceil(d - 1e-9));
+      const iade = !!x.iade_at || !!x.live_und, deliv = !iade && x.live_teslim ? x.live_teslim : null, base = r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, x.at, cod));
+      const coll = cod && deliv ? total : 0, fe = iade ? r2(base * 1.5) : r2(base + (cod ? suratDirectCod(total) : 0));
+      out.push({ gid: x.gid, orderNo: x.order_no, tracking: x.tracking || '', at: x.at, method: cod ? (card ? 'Kapıda kart' : 'Kapıda nakit') : 'Online', total: cod ? total : 0, coll, fee: fe, st: iade ? 'iade' : deliv ? 'teslim' : x.tracking ? 'yolda' : 'kabul', deliv, payDay: coll ? srPayDay(deliv) : null, inAt: IN.get(x.gid) || null }); }); }
+  return out;
+}
 function srPayDay(d) { if (!d) return null; let t = Date.parse(d + 'T12:00:00Z'); if (!t) return null; const D = 86400000;
   const wed = t + ((3 - new Date(t).getUTCDay() + 7) % 7) * D; t = wed + 8 * D;
   while (trOff(t)) t -= D; return new Date(t).toISOString().slice(0, 10); }
@@ -4356,6 +4374,16 @@ ${catalog}` });
     const sumK = (k) => r2(mv.filter(x => x.kind === k).reduce((a, x) => a + (x.amount || 0), 0));
     const fee = r2(t.fee || 0), coll = r2(t.coll || 0), inn = sumK('in'), out = sumK('out'), adj = sumK('adj');
     const bal = r2(coll - fee - inn + out + adj); // + : Sürat bize borçlu, − : biz Sürat'a borçluyuz
+    // Kapanış: o güne kadar Sürat'ın beyanı (dondurulmuş), sonrası bizim takibimiz
+    const cs = await getSettings(env, ['sr_close']); let close = null; try { close = cs.sr_close ? JSON.parse(cs.sr_close) : null; } catch (e) {}
+    if (close && close.day) { const after = mv.filter(x => x.day > close.day), sk = (k) => r2(after.filter(x => x.kind === k).reduce((a, x) => a + (x.amount || 0), 0));
+      const own = await srOwnSince(env, iso(dayStartTR(close.day) + 86400000)), oColl = r2(own.reduce((a, x) => a + x.coll, 0)), oFee = r2(own.reduce((a, x) => a + x.fee, 0)), oIn = sk('in'), oOut = sk('out'), oAdj = sk('adj');
+      const oPend = r2(own.filter(x => x.st === 'yolda' || x.st === 'kabul').reduce((a, x) => a + x.total, 0)), oSch = new Map(); for (const x of own) if (x.payDay) { const g = oSch.get(x.payDay) || { day: x.payDay, amount: 0, n: 0 }; g.amount = r2(g.amount + x.coll); g.n++; oSch.set(x.payDay, g); }
+      const inAfter = after.filter(x => x.kind === 'in'), schedule2 = [...oSch.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(g => { const got = r2(inAfter.filter(x => Math.abs(Date.parse(x.day) - Date.parse(g.day)) <= 2 * 86400000).reduce((a, x) => a + (x.amount || 0), 0)); return { ...g, got, st: g.day > today ? 'future' : got >= g.amount - 1 ? 'paid' : 'late' }; });
+      const cnt = (st) => own.filter(x => x.st === st).length, post = r2(oColl - oFee - oIn + oOut + oAdj);
+      return json({ ok: true, closed: true, close, own: { n: own.length, teslim: cnt('teslim'), iade: cnt('iade'), yolda: cnt('yolda') + cnt('kabul'), coll: oColl, fee: oFee, inn: oIn, out: oOut, adj: oAdj, pend: oPend, bal: post, items: own.slice().reverse() }, bal: r2(close.bal + post), schedule: schedule2, next: schedule2.find(x => x.day >= today) || null, moves: mv, n: t.n || 0, from: t.a || '', to: t.b || '' });
+    }
+    // Kapanış önerisi: seçilen güne kadar Sürat raporunun söylediği (tahsil edilen − ücret) ve o güne kadarki hareketler
     return json({ ok: true, schedule, noDl, noDlAmt, next: schedule.find(x => x.day >= today) || null, n: t.n || 0, fee, codAll: r2(t.codAll || 0), codN: t.codN || 0, coll, collN: t.collN || 0, pend: r2(t.pend || 0), from: t.a || '', to: t.b || '', inn, out, adj, bal, moves: mv });
   }
   if (path === '/api/srcari/recon') {
@@ -4422,6 +4450,17 @@ ${catalog}` });
     if (!amount) return bad('Tutar yaz.'); const day = /^\d{4}-\d{2}-\d{2}$/.test(body.day || '') ? body.day : trToday();
     await env.DB.prepare('INSERT INTO sr_mov(day, kind, amount, note, at) VALUES(?1,?2,?3,?4,?5)').bind(day, kind, amount, String(body.note || '').slice(0, 160), iso()).run();
     return json({ ok: true });
+  }
+  if (path === '/api/srcari/close') { // Geçmişi Sürat'ın beyanıyla kapat: o güne kadarki bakiye dondurulur; sonrası bizim takibimiz
+    if (body.undo) { await env.DB.batch([setStmt(env, 'sr_close', ''), REV(env)]); return json({ ok: true }); }
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(body.day || '') ? body.day : trToday(); if (day > trToday()) return bad('Kapanış günü ileri bir tarih olamaz.');
+    const t = await env.DB.prepare(`SELECT COUNT(*) n, SUM(fee) fee, SUM(CASE WHEN cod>0 AND collected=1 THEN COALESCE(NULLIF(coll_amt,0), cod) END) coll, SUM(CASE WHEN cod>0 AND collected=0 THEN cod END) pend FROM sr_rows WHERE COALESCE(cancelled,0)=0 AND COALESCE(day,'') <= ?1`).bind(day).first();
+    const m = (await env.DB.prepare(`SELECT kind, SUM(amount) a FROM sr_mov WHERE deleted=0 AND day <= ?1 GROUP BY kind`).bind(day).all()).results, mk = (k) => r2((m.find(x => x.kind === k) || {}).a || 0);
+    const calc = r2((t.coll || 0) - (t.fee || 0) - mk('in') + mk('out') + mk('adj')), a0 = String(body.bal ?? '').trim(), typed = a0 ? Number(a0.includes(',') ? a0.replace(/\./g, '').replace(',', '.') : a0) : null;
+    if (a0 && !Number.isFinite(typed)) return bad('Bakiye tutarı anlaşılamadı.');
+    const close = { day, bal: typed !== null ? r2(typed) : calc, calc, src: typed !== null ? 'ekstre' : 'rapor', n: t.n || 0, coll: r2(t.coll || 0), fee: r2(t.fee || 0), inn: mk('in'), out: mk('out'), adj: mk('adj'), pend: r2(t.pend || 0), at: iso() };
+    if (body.preview) return json({ ok: true, close });
+    await env.DB.batch([setStmt(env, 'sr_close', JSON.stringify(close)), REV(env)]); return json({ ok: true, close });
   }
   if (path === '/api/srcari/del') { await env.DB.prepare('UPDATE sr_mov SET deleted=1 WHERE id=?1').bind(intOr(body.id, 0)).run(); return json({ ok: true }); }
   if (path === '/api/shcheck') {
