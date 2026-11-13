@@ -117,6 +117,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE audit_pkg ADD COLUMN delivered TEXT').run(); } catch (e) {} // Trendyol paketinin teslim günü
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN planned TEXT').run(); } catch (e) {} // Sürat planlanan teslim tarihi
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN ret_real INTEGER').run(); } catch (e) {} // Sürat iade listesinden: iade kesin, ücret Sürat'ın kestiği (×1,5 yok)
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret_in(takip TEXT PRIMARY KEY, no TEXT, at TEXT, lines TEXT, auto INTEGER)').run(); // Sürat iadesi depoya ulaştı: stoğa eklenen adetler
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret(takip TEXT PRIMARY KEY, web TEXT, gonderen TEXT, il TEXT, fatura TEXT, teslim TEXT, durum TEXT, fee REAL, desi REAL, cod REAL, no TEXT, how TEXT, at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN delivered TEXT').run(); } catch (e) {} // Shopify gönderisinin teslim günü
   try { await env.DB.prepare('ALTER TABLE bk_ship ADD COLUMN delivered TEXT').run(); } catch (e) {} // Basit Kargo teslim günü
@@ -803,7 +804,8 @@ async function ingestOrdersRaw(env, channel, input, opts = {}) {
       const applied0 = prev ? (Number(prev.applied) || 0) : (baseline ? desired : 0);
       // Satır başka ürüne bağlandıysa (ürün birleştirme) eski siparişin stoğu yeniden düşülmez
       const remap = !!(prev && prev.pkey && prev.pkey !== fl.pkey);
-      const d = remap ? 0 : applied0 - desired;
+      let d = remap ? 0 : applied0 - desired, rin = prev ? (Number(prev.rin) || 0) : 0;
+      if (d > 0 && rin > 0) { const t = Math.min(d, rin); d -= t; rin -= t; } // Sürat iadesiyle stoğa zaten eklendi: iptal/iade tekrar eklemez
       const kp = known.get(fl.pkey);
       if (!kp) newSet.add(fl.pkey);
       if (!ensured.has(fl.pkey) && (!kp || (channel !== 'manuel' && !kp.channels.includes(channel)) || d)) { stmts.push(...ensureProduct(env, fl.pkey, { sku: fl.sku, name: fl.name, image: fl.image, barcode: fl.barcode }, channel)); ensured.add(fl.pkey); }
@@ -812,14 +814,14 @@ async function ingestOrdersRaw(env, channel, input, opts = {}) {
         stmts.push(...changeQty(env, fl.pkey, d, { type, channel, ref: o.orderNo }));
         if (d < 0) s.sold += -d; else s.restored += d;
       }
-      const line = { key: fl.key, pkey: fl.pkey, sku: fl.sku, name: fl.name || (prev && prev.name) || (kp && kp.name) || fl.sku, qty: fl.qty, status: fl.status, applied: desired, ret: !!(prev && prev.ret), fin: fl.fin ? (prev && prev.fin && prev.fin.und && !fl.fin.und ? { ...fl.fin, und: true } : fl.fin) : ((prev && prev.fin) || null) };
+      const line = { key: fl.key, pkey: fl.pkey, sku: fl.sku, name: fl.name || (prev && prev.name) || (kp && kp.name) || fl.sku, qty: fl.qty, status: fl.status, applied: desired, ret: !!(prev && prev.ret), ...(rin ? { rin } : {}), fin: fl.fin ? (prev && prev.fin && prev.fin.und && !fl.fin.und ? { ...fl.fin, und: true } : fl.fin) : ((prev && prev.fin) || null) };
       if (fl.status === 'returned' && !line.ret) {
         line.ret = true; s.newReturns++;
         const rid = 'r-' + safeSeg(id + '~' + fl.key).slice(0, 180);
         stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO returns(id,channel,order_no,order_id,line_key,pkey,sku,name,qty,status,source,note,ext_status,created_at,decided_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'requested',?10,?11,'',?12,NULL)`)
           .bind(rid, channel, o.orderNo, id, fl.key, fl.pkey, fl.sku, line.name, fl.qty, source, 'Pazaryerinde iade olarak işaretlendi', iso()));
       }
-      if (!prev || prev.qty !== line.qty || prev.status !== line.status || prev.applied !== line.applied || !!prev.ret !== line.ret || JSON.stringify(prev.fin || null) !== JSON.stringify(line.fin)) changed = true;
+      if (!prev || prev.qty !== line.qty || prev.status !== line.status || prev.applied !== line.applied || !!prev.ret !== line.ret || (Number(prev.rin) || 0) !== rin || JSON.stringify(prev.fin || null) !== JSON.stringify(line.fin)) changed = true;
       prevLines.set(fl.key, line);
     }
     if (!changed) return { changed: false, isNew, baseline, s, suspect };
@@ -1362,6 +1364,24 @@ async function srTrackOne(env, row, cr, c, restOnly) {
   else if (ferr) st.push(env.DB.prepare('UPDATE sr_ship SET fulfill_err=?2 WHERE ref=?1').bind(row.ref, ferr));
   await env.DB.batch(st);
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
+}
+const SR_RET_AUTO_UNTIL = '2026-11-13'; // bu güne kadar Sürat'ın 'iade teslim edildi' dediği iadeler kabul sayılıp bir kez stoğa girer; sonrası sadece 'Depoya ulaştı' ile
+// Sürat iadesi depoya ulaştı: siparişin (iptal edilmemiş) ürünleri stoğa eklenir; on=false geri alır
+async function srRetStock(env, takip, on, auto) {
+  const r = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(takip).first(); if (!r) return { err: 'İade bulunamadı.' }; if (!r.no) return { err: 'Bu iade bir siparişe bağlı değil; önce bağla.' };
+  const ex = await env.DB.prepare('SELECT * FROM sr_ret_in WHERE takip=?1').bind(takip).first();
+  if (on && ex) return { err: 'Bu iade zaten stoğa eklenmiş.' }; if (!on && !ex) return { err: 'Bu iade stoğa eklenmemiş.' };
+  const o = await env.DB.prepare(`SELECT id, order_no, lines, version FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(r.no).first(); if (!o) return { err: `#${r.no} siparişlerde bulunamadı.` };
+  const lines = JSON.parse(o.lines || '[]'), st = [guardStmt(env, `(SELECT version FROM orders WHERE id=?1)=?2`, o.id, o.version)], L = [];
+  if (on) { for (const l of lines) { const q = l.status === 'cancelled' ? 0 : Math.max(0, (Number(l.applied) || 0) - (Number(l.rin) || 0)); if (!q || !l.pkey) continue; /* iptal edilmiş satırın stoğu iptalde zaten geri eklendi */
+      st.push(...changeQty(env, l.pkey, q, { type: 'ret', channel: 'shopify', ref: o.order_no, note: auto ? 'Sürat iadesi (13.11 öncesi, kabul sayıldı)' : 'Sürat iadesi depoya ulaştı' })); l.rin = (Number(l.rin) || 0) + q; L.push({ key: l.key, pkey: l.pkey, name: l.name || l.sku || '', qty: q }); }
+    st.push(env.DB.prepare('INSERT INTO sr_ret_in(takip, no, at, lines, auto) VALUES(?1,?2,?3,?4,?5)').bind(takip, r.no, iso(), JSON.stringify(L), auto ? 1 : 0)); }
+  else { let P = []; try { P = JSON.parse(ex.lines || '[]'); } catch (e) {}
+    for (const p of P) { const q = Number(p.qty) || 0; if (!q || !p.pkey) continue; st.push(...changeQty(env, p.pkey, -q, { type: 'adjust', channel: 'shopify', ref: o.order_no, note: 'Sürat iadesi stok girişi geri alındı' })); const l = lines.find(z => z.key === p.key); if (l) { l.rin = Math.max(0, (Number(l.rin) || 0) - q); if (!l.rin) delete l.rin; } }
+    st.push(env.DB.prepare('DELETE FROM sr_ret_in WHERE takip=?1').bind(takip)); }
+  st.push(env.DB.prepare('UPDATE orders SET lines=?1, version=version+1, updated_at=?2 WHERE id=?3').bind(JSON.stringify(lines), iso(), o.id), unguard(env), REV(env));
+  try { await env.DB.batch(st); } catch (e) { return { err: 'Sipariş az önce güncellendi; tekrar dene.' }; }
+  return { ok: true, lines: L, orderNo: o.order_no };
 }
 // Sürat iade listesindeki gönderi: siparişte 'teslim edilemedi' (satış ve maliyet yok), ücret Sürat'ın kestiği
 const srRetMark = (env, no, x) => env.DB.prepare(`INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, ret_real) VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,1) ON CONFLICT(no) DO UPDATE SET tracking=excluded.tracking, cost=excluded.cost, desi=excluded.desi, cod_amount=excluded.cod_amount, undelivered=1, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at, ret_real=1`)
@@ -4325,6 +4345,10 @@ ${catalog}` });
         .bind(x.takip, x.web, x.gonderen, x.il, x.fatura, x.teslim, x.durum, x.fee, x.desi, x.cod, no || null, how, iso()));
       if (no) { st.push(srRetMark(env, no, x)); out[how]++; } else out.un.push(x); }
     if (st.length) { st.push(env.DB.prepare(`DELETE FROM daily_stats WHERE day >= '2026-10-17'`), setStmt(env, 'home_cache', ''), REV(env)); for (let i = 0; i < st.length; i += 80) await env.DB.batch(st.slice(i, i + 80)); }
+    /* bugüne kadar depoya ulaşmış iadeler bir kez stoğa girer (kabul sayıldı) */
+    out.stock = 0; out.stockSkip = 0; const inDone = new Set((R.length ? await selectIn(env, 'SELECT takip FROM sr_ret_in', 'takip', R.map(x => x.takip)) : []).map(x => x.takip));
+    for (const x of R) { if (inDone.has(x.takip) || !x.teslim || x.teslim.slice(0, 10) > SR_RET_AUTO_UNTIL) continue; const rr = await env.DB.prepare('SELECT no FROM sr_ret WHERE takip=?1').bind(x.takip).first(); if (!rr || !rr.no) continue;
+      const res = await srRetStock(env, x.takip, true, true); if (res.ok) { if (res.lines.length) out.stock++; else out.stockSkip++; } }
     return json({ ok: true, total, ...out });
   }
   if (path === '/api/srret/link') { // eşleşmeyen Sürat iadesini siparişe elle bağla
@@ -4332,9 +4356,11 @@ ${catalog}` });
     const x = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(takip).first(); if (!x) return bad('Bu iade listede yok; önce dosyayı yükle.');
     const o = await env.DB.prepare(`SELECT 1 FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(no).first(); if (!o) return bad(`#${no} Shopify siparişlerinde bulunamadı.`);
     await env.DB.batch([env.DB.prepare(`UPDATE sr_ret SET no=?2, how='manual' WHERE takip=?1`).bind(takip, no), srRetMark(env, no, x), env.DB.prepare(`DELETE FROM daily_stats WHERE day >= '2026-10-17'`), setStmt(env, 'home_cache', ''), REV(env)]);
-    return json({ ok: true });
+    let stock = null; if (x.teslim && x.teslim.slice(0, 10) <= SR_RET_AUTO_UNTIL && !(await env.DB.prepare('SELECT 1 FROM sr_ret_in WHERE takip=?1').bind(takip).first())) stock = await srRetStock(env, takip, true, true);
+    return json({ ok: true, stock });
   }
-  if (path === '/api/srret/list') { const { results } = await env.DB.prepare('SELECT * FROM sr_ret ORDER BY fatura DESC').all(); return json({ ok: true, rows: results }); }
+  if (path === '/api/srret/list') { const { results } = await env.DB.prepare('SELECT r.*, i.at in_at, i.lines in_lines, i.auto in_auto FROM sr_ret r LEFT JOIN sr_ret_in i ON i.takip = r.takip ORDER BY COALESCE(r.teslim, r.fatura) DESC').all(); return json({ ok: true, rows: results.map(x => { let L = []; try { L = JSON.parse(x.in_lines || '[]'); } catch (e) {} return { ...x, in_lines: L }; }) }); }
+  if (path === '/api/srret/stock') { const r = await srRetStock(env, String(body.takip || '').replace(/\D/g, ''), body.on !== false, false); return r.err ? bad(r.err, 409) : json(r); }
   if (path === '/api/srcari/summary') {
     // Sürat cari: alacak = kapıda tahsil edilen; borç = kargo ücretleri; hareketler = Sürat'ın aktardığı (in) / bizim ödediğimiz (out) / düzeltme
     const t = await env.DB.prepare(`SELECT COUNT(*) n, SUM(fee) fee, SUM(CASE WHEN cod>0 THEN cod END) codAll, SUM(CASE WHEN cod>0 THEN 1 END) codN, SUM(CASE WHEN cod>0 AND collected=1 THEN COALESCE(NULLIF(coll_amt,0), cod) END) coll, SUM(CASE WHEN cod>0 AND collected=1 THEN 1 END) collN, SUM(CASE WHEN cod>0 AND collected=0 THEN cod END) pend, MIN(day) a, MAX(day) b FROM sr_rows WHERE COALESCE(cancelled,0)=0`).first();
