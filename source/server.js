@@ -116,6 +116,8 @@ async function init0(env) {
   try { await env.DB.prepare('CREATE TABLE IF NOT EXISTS cari_imp(batch TEXT PRIMARY KEY, at TEXT, file TEXT, n INTEGER, skipped INTEGER, undone_at TEXT)').run(); } catch (e) {} // döviz cari: USD / EUR (boş = TL) // elle açılan cari (hareketi olmasa da listede görünür)
   try { await env.DB.prepare('ALTER TABLE audit_pkg ADD COLUMN delivered TEXT').run(); } catch (e) {} // Trendyol paketinin teslim günü
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN planned TEXT').run(); } catch (e) {} // Sürat planlanan teslim tarihi
+  try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN ret_real INTEGER').run(); } catch (e) {} // Sürat iade listesinden: iade kesin, ücret Sürat'ın kestiği (×1,5 yok)
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret(takip TEXT PRIMARY KEY, web TEXT, gonderen TEXT, il TEXT, fatura TEXT, teslim TEXT, durum TEXT, fee REAL, desi REAL, cod REAL, no TEXT, how TEXT, at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE sh_pay ADD COLUMN delivered TEXT').run(); } catch (e) {} // Shopify gönderisinin teslim günü
   try { await env.DB.prepare('ALTER TABLE bk_ship ADD COLUMN delivered TEXT').run(); } catch (e) {} // Basit Kargo teslim günü
   for (const c of ['stocked_at TEXT', 'cari_at TEXT']) { try { await env.DB.prepare('ALTER TABLE purchases ADD COLUMN ' + c).run(); } catch (e) {} }
@@ -1361,6 +1363,9 @@ async function srTrackOne(env, row, cr, c, restOnly) {
   await env.DB.batch(st);
   return { ref: row.ref, tracking: tr, msg, fulfilled, err: ferr };
 }
+// Sürat iade listesindeki gönderi: siparişte 'teslim edilemedi' (satış ve maliyet yok), ücret Sürat'ın kestiği
+const srRetMark = (env, no, x) => env.DB.prepare(`INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, ret_real) VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,1) ON CONFLICT(no) DO UPDATE SET tracking=excluded.tracking, cost=excluded.cost, desi=excluded.desi, cod_amount=excluded.cod_amount, undelivered=1, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at, ret_real=1`)
+  .bind(no, x.takip, x.fee || null, x.desi || null, x.cod || 0, ('İade · ' + (x.durum || '')).slice(0, 80), x.teslim || null, iso());
 // Yoldaki gönderinin durumu: Sürat listesinden (Durum / TeslimatDurum / SonBulunduguYer) ya da tek tek sorgudan
 const srDay = (v) => { const d = dlvDay(v); return d && d >= '2020-01-01' && d <= trDay(Date.now() + 86400000) ? d : null; }; /* Sürat boş tarihi 01.01.0001 yazabiliyor */
 function srLiveFromRow(r) { const g = (re) => { for (const [k, v] of Object.entries(r)) if (re.test(k) && v != null && String(v).trim()) return String(v).trim(); return ''; };
@@ -2885,8 +2890,9 @@ async function computeProfit(env, from, to, ch0) {
         const sc = srCost.get(no), real = sc && sc.cost !== null && sc.cost > 0;
         const desi = sc && sc.desi !== null ? Math.ceil(sc.desi) : dRound(d), base = real ? r2(sc.cost) : r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, ord.date, cod));
         if (sc && sc.undelivered) { // teslim edilemedi: gidiş tam + dönüş yarı fiyat; kapıda ödeme bedeli ve müşteriden gelir yok
-          undel = true; cargo = r2(base * 1.5); shInc = 0; shReal = real;
-          cargoInfo.push(`TESLİM EDİLEMEDİ · Sürat ${real ? 'gerçek ücret' : 'tarife'} ${base} TL + dönüş yarı fiyat ${r2(base / 2)} TL · ${sc.durum || ''}`); }
+          undel = true; shInc = 0; shReal = real;
+          if (real && sc.ret_real) { cargo = base; cargoInfo.push(`TESLİM EDİLEMEDİ · Sürat iade listesi · Sürat'ın kestiği ücret ${base} TL · ${sc.durum || ''}`); }
+          else { cargo = r2(base * 1.5); cargoInfo.push(`TESLİM EDİLEMEDİ · Sürat ${real ? 'gerçek ücret' : 'tarife'} ${base} TL + dönüş yarı fiyat ${r2(base / 2)} TL · ${sc.durum || ''}`); } }
         else { const cf = cod ? suratDirectCod(gross + shInc) : 0; cargo = r2(base + cf); shReal = real ? cod !== null : (!miss && cod !== null);
           cargoInfo.push(`Sürat (anlaşmalı) · ${desi} desi${!real && miss ? ` (${miss} ürünün desisi yok, 1 sayıldı)` : ''}${desi > 20 ? ' · 20 desi üstü!' : ''} · ${real ? `gerçek ücret ${base} TL (Sürat raporu)` : `${suratDirectPrice(desi)} TL + %2,35 posta vergisi`}${cf ? ` + kapıda ödeme bedeli ${cf} TL` : ''} · ${pm}${incTxt}`); } }
       else if (bk && bk.fee !== null) { const cc = card && /s[üu]rat/i.test(bk.handler || '') ? r2((gross + shInc) * 0.045) : 0;
@@ -4297,6 +4303,38 @@ ${catalog}` });
     return json({ ok: true });
   }
   if (path === '/api/surat/settings') { const desi = Math.max(0.5, Math.min(300, Number(String(body.desi || '2').replace(',', '.')) || 2)); await env.DB.batch([setStmt(env, 'sr_desi', String(desi)), ...(body.web !== undefined ? [setStmt(env, 'sr_web', String(body.web || '').trim())] : [])]); return json({ ok: true }); }
+  if (path === '/api/srret/upload') { // Sürat iade listesi (Gönderilen Kargo raporu): Sürat'ın iade dediği gönderiler siparişte 'teslim edilemedi' olur (kâr); stoğa dokunmaz
+    const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 3000).filter(r => r && typeof r === 'object'), g = (r, k) => String(r[k] ?? '').trim(), num = (t) => { const n = Number(String(t).replace(',', '.')); return Number.isFinite(n) ? n : 0; };
+    const dt = (t) => { t = String(t || '').trim(); if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 16).replace('T', ' '); const m = /^(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}:\d{2}))?/.exec(t); return m ? `${m[3]}-${m[2]}-${m[1]}${m[4] ? ' ' + m[4] : ''}` : ''; };
+    const R = []; let total = 0;
+    for (const r of rows) { const takip = g(r, 'takipno').replace(/\D/g, ''); if (!takip) continue; total++;
+      const us = /lilya/i.test(g(r, 'alici')), iade = /^(evet|e|1|true)$/i.test(g(r, 'iadedurum')), ua = /^(üa|ua)$/i.test(g(r, 'odemesekli').replace(/\s/g, ''));
+      if (!(iade || (us && !ua))) continue; /* alıcı ödemeli (ÜA) gönderi müşterinin kendi yolladığı iadedir, teslim edilmiş siparişe aittir */
+      R.push({ takip, web: g(r, 'websipariskodu'), gonderen: us ? g(r, 'gonderen') : g(r, 'alici'), il: us ? g(r, 'cikisil') : g(r, 'varisil'), fatura: dt(g(r, 'faturatarihi')), teslim: dt(g(r, 'teslimtarihi')), durum: g(r, 'teslimatdurum') || 'İade', fee: num(g(r, 'tutar')), desi: num(g(r, 'toplamdesi')), cod: num(g(r, 'kapidantahsilattutari')) }); }
+    if (!total) return bad('Dosyada "TakipNo" sütunu bulunamadı. Sürat eKargo → Gönderilen Kargo raporunu yükle.');
+    const prev = new Map((R.length ? await selectIn(env, 'SELECT takip, no, how FROM sr_ret', 'takip', R.map(x => x.takip)) : []).map(x => [x.takip, x]));
+    const { results: S } = await env.DB.prepare(`SELECT gid, order_no, addr, at FROM sr_ship WHERE at > '2026-10-10'`).all(), byNo = new Set(), cand = [];
+    for (const x of S) { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const no = String(x.order_no || '').replace(/\D/g, ''); byNo.add(no); cand.push({ no, n: srToks(a.name), il: srNorm(a.il), t: Date.parse(x.at) || 0 }); }
+    const out = { n: R.length, web: 0, auto: 0, manual: 0, un: [] }, st = [];
+    for (const x of R) { let no = '', how = ''; const p = prev.get(x.takip);
+      if (p && p.how === 'manual' && p.no) { no = p.no; how = 'manual'; }
+      const w = String(x.web || '').replace(/\D/g, ''); if (!no && w && byNo.has(w)) { no = w; how = 'web'; }
+      if (!no) { const nm = srToks(x.gonderen), il = srNorm(x.il), ft = Date.parse((x.fatura || '').replace(' ', 'T') + ':00+03:00') || 0, D = 86400000;
+        const c = [...new Map(cand.filter(y => nm && y.n === nm && (!il || !y.il || y.il === il) && y.t >= ft - 6 * D && y.t <= ft + D).map(y => [y.no, y])).values()]; if (c.length === 1) { no = c[0].no; how = 'auto'; } }
+      st.push(env.DB.prepare(`INSERT INTO sr_ret(takip, web, gonderen, il, fatura, teslim, durum, fee, desi, cod, no, how, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(takip) DO UPDATE SET web=excluded.web, gonderen=excluded.gonderen, il=excluded.il, fatura=excluded.fatura, teslim=excluded.teslim, durum=excluded.durum, fee=excluded.fee, desi=excluded.desi, cod=excluded.cod, no=excluded.no, how=excluded.how, at=excluded.at`)
+        .bind(x.takip, x.web, x.gonderen, x.il, x.fatura, x.teslim, x.durum, x.fee, x.desi, x.cod, no || null, how, iso()));
+      if (no) { st.push(srRetMark(env, no, x)); out[how]++; } else out.un.push(x); }
+    if (st.length) { st.push(env.DB.prepare(`DELETE FROM daily_stats WHERE day >= '2026-10-17'`), setStmt(env, 'home_cache', ''), REV(env)); for (let i = 0; i < st.length; i += 80) await env.DB.batch(st.slice(i, i + 80)); }
+    return json({ ok: true, total, ...out });
+  }
+  if (path === '/api/srret/link') { // eşleşmeyen Sürat iadesini siparişe elle bağla
+    const takip = String(body.takip || '').replace(/\D/g, ''), no = String(body.no || '').replace(/\D/g, ''); if (!takip || !no) return bad('Takip no ve sipariş no gerekli.');
+    const x = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(takip).first(); if (!x) return bad('Bu iade listede yok; önce dosyayı yükle.');
+    const o = await env.DB.prepare(`SELECT 1 FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(no).first(); if (!o) return bad(`#${no} Shopify siparişlerinde bulunamadı.`);
+    await env.DB.batch([env.DB.prepare(`UPDATE sr_ret SET no=?2, how='manual' WHERE takip=?1`).bind(takip, no), srRetMark(env, no, x), env.DB.prepare(`DELETE FROM daily_stats WHERE day >= '2026-10-17'`), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true });
+  }
+  if (path === '/api/srret/list') { const { results } = await env.DB.prepare('SELECT * FROM sr_ret ORDER BY fatura DESC').all(); return json({ ok: true, rows: results }); }
   if (path === '/api/srcari/summary') {
     // Sürat cari: alacak = kapıda tahsil edilen; borç = kargo ücretleri; hareketler = Sürat'ın aktardığı (in) / bizim ödediğimiz (out) / düzeltme
     const t = await env.DB.prepare(`SELECT COUNT(*) n, SUM(fee) fee, SUM(CASE WHEN cod>0 THEN cod END) codAll, SUM(CASE WHEN cod>0 THEN 1 END) codN, SUM(CASE WHEN cod>0 AND collected=1 THEN COALESCE(NULLIF(coll_amt,0), cod) END) coll, SUM(CASE WHEN cod>0 AND collected=1 THEN 1 END) collN, SUM(CASE WHEN cod>0 AND collected=0 THEN cod END) pend, MIN(day) a, MAX(day) b FROM sr_rows WHERE COALESCE(cancelled,0)=0`).first();
@@ -4481,7 +4519,7 @@ ${catalog}` });
     const out = [], miss = [], fixed = []; let already = 0;
     const costSt = [];
     for (const r of results) { const m = srByTrack(rows, r.tracking) || srMatch(rows, r), tn = m && srRowTrack(m);
-      if (m) { const g = srPick(m); if (g.cost !== null || g.undelivered) costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, planned) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(no) DO UPDATE SET planned=excluded.planned, tracking=excluded.tracking, cost=COALESCE(excluded.cost, sr_cost.cost), desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=excluded.cod_amount, undelivered=excluded.undelivered, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn || null, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso(), g.planned || null)); }
+      if (m) { const g = srPick(m); if (g.cost !== null || g.undelivered) costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, planned) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(no) DO UPDATE SET planned=excluded.planned, tracking=CASE WHEN sr_cost.ret_real=1 THEN sr_cost.tracking ELSE excluded.tracking END, cost=CASE WHEN sr_cost.ret_real=1 THEN sr_cost.cost ELSE COALESCE(excluded.cost, sr_cost.cost) END, desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=CASE WHEN sr_cost.ret_real=1 THEN sr_cost.cod_amount ELSE excluded.cod_amount END, undelivered=CASE WHEN sr_cost.ret_real=1 THEN 1 ELSE excluded.undelivered END, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn || null, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso(), g.planned || null)); }
       if (!tn) { if (!r.fulfilled_at) miss.push(r.order_no); continue; }
       if (r.fulfilled_at) { // zaten kargolandı: numara farklıysa (eski hatalı okuma) düzelt
         if (r.tracking === tn) { already++; continue; }
@@ -4492,7 +4530,7 @@ ${catalog}` });
     // Elle "Kayıtlı"ya alınmış ve takip no'su girilmiş siparişler: sadece takip numarasıyla eşleşir; yalnızca Sürat ücret/tahsilat/desi verisi alınır (Shopify'a dokunulmaz)
     { const { results: man } = await env.DB.prepare(`SELECT * FROM sr_ship s WHERE at > ?1 AND mode = 'manual' AND COALESCE(tracking,'') <> '' AND at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
       for (const r of man) { const m = srByTrack(rows, r.tracking); if (!m) continue; const g = srPick(m), tn = srRowTrack(m) || r.tracking; if (g.cost === null && !g.undelivered) continue;
-        costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, planned) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(no) DO UPDATE SET planned=excluded.planned, tracking=excluded.tracking, cost=COALESCE(excluded.cost, sr_cost.cost), desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=excluded.cod_amount, undelivered=excluded.undelivered, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso(), g.planned || null)); } }
+        costSt.push(env.DB.prepare('INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, planned) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(no) DO UPDATE SET planned=excluded.planned, tracking=CASE WHEN sr_cost.ret_real=1 THEN sr_cost.tracking ELSE excluded.tracking END, cost=CASE WHEN sr_cost.ret_real=1 THEN sr_cost.cost ELSE COALESCE(excluded.cost, sr_cost.cost) END, desi=COALESCE(excluded.desi, sr_cost.desi), cod_amount=CASE WHEN sr_cost.ret_real=1 THEN sr_cost.cod_amount ELSE excluded.cod_amount END, undelivered=CASE WHEN sr_cost.ret_real=1 THEN 1 ELSE excluded.undelivered END, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at').bind(String(r.order_no || '').replace(/\D/g, ''), tn, g.cost, g.desi, g.cod, g.undelivered ? 1 : 0, g.durum, g.teslim, iso(), g.planned || null)); } }
     for (let i = 0; i < costSt.length; i += 90) await env.DB.batch(costSt.slice(i, i + 90));
     if (costSt.length) await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-17'), setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true, costs: costSt.length, undelivered: 0, rows: rows.length, pending: results.filter(r => !r.fulfilled_at).length, tracked: out.filter(x => !x.fixed).length, fulfilled: out.filter(x => x.fulfilled && !x.fixed).length, fixed: fixed.length, fixedList: fixed.slice(0, 30), already, errs: out.filter(x => x.err).map(x => x.ref + ': ' + x.err).slice(0, 3), miss: miss.slice(0, 30), items: out });
