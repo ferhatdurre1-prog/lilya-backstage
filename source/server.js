@@ -117,6 +117,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE audit_pkg ADD COLUMN delivered TEXT').run(); } catch (e) {} // Trendyol paketinin teslim günü
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN planned TEXT').run(); } catch (e) {} // Sürat planlanan teslim tarihi
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN ret_real INTEGER').run(); } catch (e) {} // Sürat iade listesinden: iade kesin, ücret Sürat'ın kestiği (×1,5 yok)
+  for (const c of ['live_durum TEXT', 'live_at TEXT', 'live_teslim TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ret ADD COLUMN ' + c).run(); } catch (e) {} } // Sürat iadesinin anlık durumu (sadece gösterim; stok ve kâr sadece Depoya ulaştı ile)
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret_in(takip TEXT PRIMARY KEY, no TEXT, at TEXT, lines TEXT, auto INTEGER)').run(); // Sürat iadesi depoya ulaştı: stoğa eklenen adetler
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret(takip TEXT PRIMARY KEY, web TEXT, gonderen TEXT, il TEXT, fatura TEXT, teslim TEXT, durum TEXT, fee REAL, desi REAL, cod REAL, no TEXT, how TEXT, at TEXT)').run();
   // Kural değişti (13.11): iade kârı sadece depoya ulaşınca etkiler; önceki yüklemede işaretlenen ama depoya ulaşmamış iadelerin kâr işareti kalkar
@@ -1391,6 +1392,22 @@ async function srRetStock(env, takip, on, auto) {
 // Sürat iade listesindeki gönderi: siparişte 'teslim edilemedi' (satış ve maliyet yok), ücret Sürat'ın kestiği
 const srRetMark = (env, no, x) => env.DB.prepare(`INSERT INTO sr_cost(no, tracking, cost, desi, cod_amount, undelivered, durum, teslim, at, ret_real) VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,1) ON CONFLICT(no) DO UPDATE SET tracking=excluded.tracking, cost=excluded.cost, desi=excluded.desi, cod_amount=excluded.cod_amount, undelivered=1, durum=excluded.durum, teslim=excluded.teslim, at=excluded.at, ret_real=1`)
   .bind(no, x.takip, x.fee || null, x.desi || null, x.cod || 0, ('İade · ' + (x.durum || '')).slice(0, 80), x.teslim || null, iso());
+// Sürat iadesinin anlık durumu: sipariş koduyla (WebSiparisKodu) iki cariye sorulur, takip no'su tutan kayıt alınır. Sadece gösterim
+async function srRetLive(env, x) {
+  const web = String(x.web || '').trim(); if (!web) return { err: 'Bu iadenin Sürat\'ta sipariş kodu yok (şube elle açmış); anlık sorgu yapılamıyor, durum yüklediğin Excel\'den.' };
+  let last = '';
+  for (const acct of ['cod', '']) { const cr = await srCreds(env, acct); if (!cr.pass || (acct === 'cod' && cr.acct !== 'cod')) continue;
+    const x2 = await srRest('KargoTakipHareketDetayi', { CariKodu: cr.cari, Sifre: cr.pass, WebSiparisKodu: web }); const j = x2.j && typeof x2.j === 'object' ? x2.j : null, G = j && Array.isArray(j.Gonderiler) ? j.Gonderiler : [];
+    const g = G.find(z => z && srDig(z.KargoTakipNo) === srDig(x.takip)); if (!g) { last = srRestMsg(x2) || last; continue; }
+    const durum = [g.KargonunDurumu, g.KargonunBulunduguYer].filter(Boolean).join(' · ').slice(0, 160), tes = srDay(g.TeslimTarihi), deliv = !!tes || /teslim ?edildi/.test(srTrl(g.KargonunDurumu)) && !/edilemedi/.test(srTrl(g.KargonunDurumu));
+    const T = deliv ? (tes || trDay(Date.now())) : null;
+    await env.DB.prepare('UPDATE sr_ret SET live_durum=?2, live_at=?3, live_teslim=COALESCE(?4, live_teslim) WHERE takip=?1').bind(x.takip, durum || null, iso(), T).run();
+    return { ok: true, durum, teslim: T }; }
+  await env.DB.prepare('UPDATE sr_ret SET live_at=?2 WHERE takip=?1').bind(x.takip, iso()).run();
+  return { err: 'Sürat bu iadeyi bulamadı' + (last ? ': ' + last : '') };
+}
+const srDig = (v) => String(v == null ? '' : v).replace(/\D/g, '').replace(/^0+/, '');
+const srTrl = (v) => String(v || '').replace(/[İIı]/g, 'i').toLowerCase();
 // İade henüz depoya ulaşmadı: kâr hesabında satış geri gelir (Sürat iade işareti kalkar, kargo tarifeden)
 const srRetUnmark = (env, no) => env.DB.prepare(`UPDATE sr_cost SET undelivered=0, ret_real=NULL, cost=NULL, durum=NULL WHERE no=?1 AND ret_real=1`).bind(no);
 const srStatsReset = (env) => [env.DB.prepare(`DELETE FROM daily_stats WHERE day >= '2026-10-17'`), setStmt(env, 'home_cache', '')];
@@ -4372,6 +4389,7 @@ ${catalog}` });
     return json({ ok: true, stock });
   }
   if (path === '/api/srret/list') { const { results } = await env.DB.prepare('SELECT r.*, i.at in_at, i.lines in_lines, i.auto in_auto FROM sr_ret r LEFT JOIN sr_ret_in i ON i.takip = r.takip ORDER BY COALESCE(r.teslim, r.fatura) DESC').all(); return json({ ok: true, rows: results.map(x => { let L = []; try { L = JSON.parse(x.in_lines || '[]'); } catch (e) {} return { ...x, in_lines: L }; }) }); }
+  if (path === '/api/srret/live') { const x = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(String(body.takip || '').replace(/\D/g, '')).first(); if (!x) return bad('İade bulunamadı.'); let r; try { r = await srRetLive(env, x); } catch (e) { r = { err: String(e.message || e).slice(0, 200) }; } return json({ ok: true, ...r }); }
   if (path === '/api/srret/stock') { const r = await srRetStock(env, String(body.takip || '').replace(/\D/g, ''), body.on !== false, false); return r.err ? bad(r.err, 409) : json(r); }
   if (path === '/api/srcari/summary') {
     // Sürat cari: alacak = kapıda tahsil edilen; borç = kargo ücretleri; hareketler = Sürat'ın aktardığı (in) / bizim ödediğimiz (out) / düzeltme
@@ -4592,6 +4610,9 @@ ${catalog}` });
     if (t0 - (Number(s.run_sr_app_at) || 0) < 50000 || t0 - (Number(s.sr_track_busy) || 0) < 55000) return json({ ok: true, skip: 'yakın zamanda soruldu' });
     await env.DB.batch([setStmt(env, 'sr_track_busy', String(t0)), setStmt(env, 'run_sr_app_at', String(t0)), setStmt(env, 'run_sr_at', String(t0))]);
     let r = null; try { r = await srTrackPending(env, 150, t0 + 25000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } finally { await setSetting(env, 'sr_track_busy', '0'); }
+    /* Sürat iadeleri: depoya ulaşmamış ve 30 dakikadır sorulmamış olanlar, dakikada en çok 4 tane (sadece durum gösterimi) */
+    try { const { results: RR } = await env.DB.prepare(`SELECT r.* FROM sr_ret r WHERE COALESCE(r.web,'') <> '' AND r.live_teslim IS NULL AND NOT EXISTS (SELECT 1 FROM sr_ret_in i WHERE i.takip = r.takip) AND (r.live_at IS NULL OR r.live_at < ?1) ORDER BY COALESCE(r.live_at,'') LIMIT 4`).bind(iso(Date.now() - 30 * 60000)).all();
+      for (const x of RR) { if (Date.now() - t0 > 40000) break; try { await srRetLive(env, x); } catch (e) {} } if (RR.length) await env.DB.batch([REV(env)]); } catch (e) {}
     return json({ ok: true, checked: r ? r.checked : 0, tracked: r ? r.tracked : 0, ms: Date.now() - t0 });
   }
   if (path === '/api/surat/track') {
