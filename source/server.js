@@ -170,6 +170,8 @@ async function init0(env) {
   for (const c of ['tracking TEXT', 'track_at TEXT', 'track_msg TEXT', 'fulfilled_at TEXT', 'fulfill_err TEXT', 'exported_at TEXT', 'mode TEXT', 'acct TEXT', 'printed_at TEXT', 'live_durum TEXT', 'live_yer TEXT', 'live_at TEXT', 'live_teslim TEXT', 'live_und INTEGER', 'iade_at TEXT', 'live_raw TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ship ADD COLUMN ' + c).run(); } catch (e) {} }
   // Sürat iadeleri: 'Depoya ulaştı' işaretlenenler (stoğa eklenen adetlerle); hiç silinmez
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_iade_in(gid TEXT PRIMARY KEY, order_no TEXT, at TEXT, lines TEXT)').run();
+  // Sürat beyanı (12.11.2026 dahil öncesi): Sürat'ın Gönderilen Kargo raporundaki her gönderi; bitmişler sabit, bitmemişleri bizim sorgu sürdürür
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_decl(takip TEXT PRIMARY KEY, acct TEXT, kind TEXT, web TEXT, alici TEXT, gonderen TEXT, il TEXT, ilce TEXT, fatura TEXT, teslim TEXT, durum TEXT, iade INTEGER, sebep TEXT, desi REAL, fee REAL, kapida REAL, tahsil TEXT, odeme TEXT, final INTEGER, gid TEXT, order_no TEXT, match TEXT, at TEXT)').run();
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_sr_iade1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_sr_iade1','1')`),
     env.DB.prepare(`UPDATE sr_ship SET live_und=1, iade_at=COALESCE(iade_at, live_at) WHERE (live_durum LIKE '%iade%' OR live_durum LIKE '%İade%' OR live_durum LIKE '%İADE%')`), /* 'İade teslim edildi' teslim sanılmıştı */
     env.DB.prepare(`UPDATE sr_ship SET live_at=NULL, live_durum=NULL, live_yer=NULL WHERE live_durum LIKE '%kabul bekleniyor%' AND COALESCE(tracking,'') <> ''`)]); } catch (e) {} } /* takılı 'kabul bekleniyor' durumları baştan sorulsun */
@@ -567,6 +569,34 @@ function bkDelivered(o) { const out = []; const walk = (x, d) => { if (!x || typ
 // Sürat kapıda tahsilatı: perşembe–çarşamba haftası; çarşambaya kadar (dahil) teslim edilenler 8 gün sonraki perşembe yatar
 // (ör. 21.10 çarşambaya kadar → 29.10; 22.10'dan sonra → 5.11). Ödeme günü resmi tatile denk gelirse önceki iş günü (29 Ekim → 28 Ekim)
 const TR_HOLI = new Set(['01-01', '04-23', '05-01', '05-19', '07-15', '08-30', '10-29', '2026-03-20', '2026-05-27', '2026-05-28', '2026-05-29', '2027-03-09', '2027-03-10', '2027-05-16', '2027-05-17', '2027-05-18', '2027-05-19']);
+const SR_DECL_UNTIL = '2026-11-12'; // bu gün dahil öncesi Sürat'ın beyanı; sonrası bizim entegrasyon
+// Sürat beyanı satırını Backstage gönderisine uygular: takip no, teslim / iade Sürat ne diyorsa o (bitmemişleri bizim sorgu sürdürür)
+async function srDeclApply(env, d, sh, how) {
+  const st = [env.DB.prepare('UPDATE sr_decl SET gid=?2, order_no=?3, match=?4 WHERE takip=?1').bind(d.takip, sh.gid, sh.order_no, how)];
+  if (d.kind !== 'mret') { const day = d.teslim ? d.teslim.slice(0, 10) : null, now = iso(), lab = (d.durum || '') + ' (Sürat beyanı)';
+    if (d.kind === 'iade') st.push(env.DB.prepare(`UPDATE sr_ship SET tracking=?2, live_durum=?3, live_yer=NULL, live_at=?4, live_und=1, iade_at=COALESCE(iade_at, ?5), live_teslim=?6 WHERE ref=?1`).bind(sh.ref, d.takip, d.final ? 'İade teslim edildi (Sürat beyanı)' : lab, d.final ? now : null, (d.fatura ? d.fatura.replace(' ', 'T') + ':00+03:00' : now), d.final ? day : null));
+    else if (d.final) st.push(env.DB.prepare(`UPDATE sr_ship SET tracking=?2, live_durum=?3, live_yer=NULL, live_at=?4, live_und=0, iade_at=NULL, live_teslim=?5 WHERE ref=?1`).bind(sh.ref, d.takip, 'Teslim edildi (Sürat beyanı)', now, day));
+    else st.push(env.DB.prepare(`UPDATE sr_ship SET tracking=?2, live_durum=?3, live_at=NULL WHERE ref=?1`).bind(sh.ref, d.takip, lab)); /* bitmemiş: bizim sorgu hemen sorar */ }
+  st.push(REV(env)); await env.DB.batch(st);
+}
+// Siparişe bağlama: web kodu (LH2208 → #2208), yoksa alıcı adı + il + tarih (tek aday ise)
+async function srDeclMatch(env, D) {
+  const { results: S } = await env.DB.prepare(`SELECT ref, gid, order_no, addr, at, tracking FROM sr_ship s WHERE s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind('2026-10-10').all();
+  const byNo = new Map(), nk = (t) => srToks(t);
+  for (const x of S) { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} x._n = nk(a.name); x._il = srNorm(a.il); x._t = Date.parse(x.at) || 0; byNo.set(String(x.order_no || '').replace(/\D/g, ''), x); }
+  let web = 0, auto = 0, un = 0, mret = 0; const used = new Set();
+  for (const d of D) { if (d.match === 'manual') { const sh = S.find(x => x.gid === d.gid); if (sh) await srDeclApply(env, d, sh, 'manual'); continue; }
+    let sh = null, how = '';
+    const w = String(d.web || '').replace(/\D/g, ''); if (w && byNo.has(w)) { sh = byNo.get(w); how = 'web'; }
+    if (!sh) { const nm = nk(d.kind === 'out' ? d.alici : d.gonderen), il = srNorm(d.il), ft = Date.parse((d.fatura || '').replace(' ', 'T') + ':00+03:00') || 0, D0 = 86400000;
+      const win = d.kind === 'mret' ? [ft - 60 * D0, ft] : [ft - 6 * D0, ft + D0];
+      const c = S.filter(x => nm && x._n === nm && (!il || !x._il || x._il === il) && x._t >= win[0] && x._t <= win[1] && !used.has(x.gid));
+      if (c.length === 1) { sh = c[0]; how = 'auto'; } }
+    if (d.kind === 'mret') { mret++; if (sh) await env.DB.batch([env.DB.prepare('UPDATE sr_decl SET gid=?2, order_no=?3, match=?4 WHERE takip=?1').bind(d.takip, sh.gid, sh.order_no, how)]); continue; }
+    if (!sh) { un++; continue; }
+    if (d.kind === 'out') used.add(sh.gid); await srDeclApply(env, d, sh, how); if (how === 'web') web++; else auto++; }
+  return { web, auto, unmatched: un, mret };
+}
 // Kapanış sonrası Sürat gönderileri: bizim hesabımız (kapıda tutar siparişten, ücret sözleşmeden: 102 TL + %2,35, kapıda ödeme bedeli, iadede 1,5 kat)
 async function srOwnSince(env, fromIso) {
   const { results: sh } = await env.DB.prepare(`SELECT s.gid, s.order_no, s.tracking, s.at, s.desi, s.live_teslim, s.live_und, s.iade_at FROM sr_ship s WHERE s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at`).bind(fromIso).all();
@@ -1409,7 +1439,7 @@ async function srLiveQuery(env, row, crs, max) { const refs = [row.ref]; try { f
   for (const ref of refs) for (const cr of cl) { if (n++ >= (max || 8)) return first; let q = null; try { q = await srQueryRest(cr, ref, row.tracking); } catch (e) { continue; }
     if (q && q.no && (!row.tracking || srDig(q.no) === srDig(row.tracking))) return q; if (row.tracking) continue; /* takip no tutmayan kayıt başka gönderidir: kullanılmaz */ if (q && q.no && !first) first = q; if (!first && q && q.durum && !/bulunamad/i.test(q.durum) && ref === row.ref && cr === cl[0]) first = q; }
   return first; }
-async function srLiveSave(env, ref, L) { await env.DB.prepare('UPDATE sr_ship SET live_durum=?2, live_yer=?3, live_at=?4, live_teslim=COALESCE(?5, live_teslim), live_und=?6, iade_at=CASE WHEN ?6=1 THEN COALESCE(iade_at, ?4) ELSE iade_at END, live_raw=COALESCE(?7, live_raw) WHERE ref=?1').bind(ref, L.durum || null, L.yer || null, iso(), L.teslim || null, L.und || 0, L.raw || null).run(); }
+async function srLiveSave(env, ref, L) { await env.DB.prepare('UPDATE sr_ship SET live_durum=?2, live_yer=?3, live_at=?4, live_teslim=COALESCE(?5, live_teslim), live_und=?6, iade_at=CASE WHEN ?6=1 THEN COALESCE(iade_at, ?4) ELSE iade_at END, live_raw=COALESCE(?7, live_raw) WHERE ref=?1 AND NOT EXISTS (SELECT 1 FROM sr_decl d WHERE d.takip = sr_ship.tracking AND d.final = 1)').bind(ref, L.durum || null, L.yer || null, iso(), L.teslim || null, L.und || 0, L.raw || null).run(); } /* Sürat beyanıyla bitmiş gönderinin durumu sorguyla değişmez */
 async function srLiveRefresh(env, lists, crs, dl) {
   const { results } = await env.DB.prepare(`SELECT s.* FROM sr_ship s WHERE COALESCE(s.tracking,'') <> '' AND s.live_teslim IS NULL AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) AND (s.live_at IS NULL OR s.live_at < ?2 OR (s.live_durum LIKE '%kabul bekleniyor%' AND s.live_at < ?3)) ORDER BY COALESCE(s.live_at,'') LIMIT 120`).bind(iso(Date.now() - 30 * 86400000), iso(Date.now() - 30 * 60000), iso(Date.now() - 5 * 60000)).all();
   let n = 0, solo = 0, winCalls = 0; const wins = {};
@@ -4095,17 +4125,43 @@ ${catalog}` });
     } catch (e) { return bad(shAddrErr(e)); }
   }
   if (path === '/api/shaddr/transit') { // Sürat yolda / teslim edildi: takip no'su olan Sürat gönderileri (son 30 gün); durum Sürat raporundan
-    const { results } = await env.DB.prepare(`SELECT s.gid, s.ref, s.acct, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, s.live_durum, s.live_yer, s.live_at, s.live_teslim, s.live_und, s.iade_at, i.at iade_in_at, i.lines iade_in_lines, c.durum cdurum, c.teslim, c.undelivered, c.cod_amount, r.durum rdurum, r.cod rcod, r.collected, r.iade
-      FROM sr_ship s LEFT JOIN sr_iade_in i ON i.gid = s.gid LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
+    const { results } = await env.DB.prepare(`SELECT s.gid, s.ref, s.acct, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, s.live_durum, s.live_yer, s.live_at, s.live_teslim, s.live_und, s.iade_at, d.takip decl_t, d.durum decl_durum, i.at iade_in_at, i.lines iade_in_lines, c.durum cdurum, c.teslim, c.undelivered, c.cod_amount, r.durum rdurum, r.cod rcod, r.collected, r.iade
+      FROM sr_ship s LEFT JOIN sr_iade_in i ON i.gid = s.gid LEFT JOIN sr_decl d ON d.takip = s.tracking LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
       WHERE COALESCE(s.tracking,'') <> '' AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at DESC LIMIT 10000`).all(); /* geçmişten bugüne hepsi: kayıtlar silinmez */
     const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim) || x.live_teslim || null, since = Date.parse(x.fulfilled_at || x.at) || now;
       const durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim(), und = (x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || '')))) || /iade/.test(srTrl(durum)); /* Sürat'tan canlı durum geldiyse eski rapor işaretleri yok sayılır */
       let inL = []; try { inL = JSON.parse(x.iade_in_lines || '[]'); } catch (e) {}
       /* bir kez 'teslim edilemedi / iade' denen gönderi iadedir; sonra gelen 'teslim edildi' bize geri teslimdir */
-      return { gid: x.gid, ref: x.ref, cod: x.acct === 'cod', orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, durum, yer: x.live_yer || '', liveAt: x.live_at || null, deliv: dl, und, back: !!dl && (!!x.iade_at || und), iade: !!x.iade_at || und, iadeAt: x.iade_at || null, inAt: x.iade_in_at || null, inLines: inL, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
+      return { gid: x.gid, ref: x.ref, cod: x.acct === 'cod', decl: !!x.decl_t, orderNo: x.order_no, name: a.name || '', il: a.il || '', ilce: a.ilce || '', tracking: x.tracking, durum, yer: x.live_yer || '', liveAt: x.live_at || null, deliv: dl, und, back: !!dl && (!!x.iade_at || und), iade: !!x.iade_at || und, iadeAt: x.iade_at || null, inAt: x.iade_in_at || null, inLines: inL, days: Math.floor((now - since) / 86400000), cod: Number(x.rcod || x.cod_amount || 0) || 0, collected: !!x.collected, at: x.fulfilled_at || x.at }; });
     const mark = items.filter(x => x.und && !x.iadeAt); /* rapordan gelen iade işaretleri de kalıcı olsun */
     if (mark.length) { try { const t = iso(), st = mark.map(x => env.DB.prepare('UPDATE sr_ship SET iade_at=COALESCE(iade_at, ?2) WHERE ref=?1').bind(x.ref, t)); for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); } catch (e) {} }
-    return json({ ok: true, transit: items.filter(x => !x.iade && !x.deliv), delivered: items.filter(x => !x.iade && x.deliv), iade: items.filter(x => x.iade) });
+    const dU = (await env.DB.prepare(`SELECT takip, acct, kind, web, alici, gonderen, il, ilce, fatura, teslim, durum, fee, gid, order_no FROM sr_decl WHERE gid IS NULL OR kind = 'mret' ORDER BY fatura DESC`).all()).results;
+    return json({ ok: true, transit: items.filter(x => !x.iade && !x.deliv), delivered: items.filter(x => !x.iade && x.deliv), iade: items.filter(x => x.iade), unmatched: dU.filter(x => x.kind !== 'mret'), mret: dU.filter(x => x.kind === 'mret') });
+  }
+  if (path === '/api/srdecl/upload') { // Sürat beyanı: Gönderilen Kargo raporu (12.11.2026 dahil öncesi)
+    const acct = body.acct === 'cod' ? 'cod' : 'online', rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 3000).filter(r => r && typeof r === 'object');
+    if (!rows.length) return bad('Dosyada satır bulunamadı.');
+    const g = (r, k) => String(r[k] ?? '').trim(), num = (t) => { const n = Number(String(t).replace(',', '.')); return Number.isFinite(n) ? n : 0; };
+    const dt = (t) => { t = String(t || '').trim(); if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 16); const m = /^(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}:\d{2}))?/.exec(t); return m ? `${m[3]}-${m[2]}-${m[1]}${m[4] ? ' ' + m[4] : ''}` : ''; };
+    const ex = new Map((await selectIn(env, 'SELECT takip, gid, order_no, match FROM sr_decl', 'takip', rows.map(r => g(r, 'takipno')).filter(Boolean))).map(x => [x.takip, x]));
+    let n = 0, skip = 0; const st = [], D = [];
+    for (const r of rows) { const takip = g(r, 'takipno').replace(/\D/g, ''); if (!takip) continue; const fatura = dt(g(r, 'faturatarihi')); if (fatura && fatura.slice(0, 10) > SR_DECL_UNTIL) { skip++; continue; }
+      const alici = g(r, 'alici'), us = /lilya/i.test(alici), iade = /^(evet|e|1|true)$/i.test(g(r, 'iadedurum')), durum = g(r, 'teslimatdurum') || g(r, 'bulunduguyer'), teslim = dt(g(r, 'teslimtarihi')), kind = iade ? 'iade' : us ? 'mret' : 'out';
+      const final = teslim && /teslim/i.test(srTrl(durum)) ? 1 : 0, gon = g(r, 'gonderen'), il = us ? g(r, 'cikisil') : g(r, 'varisil'), e = ex.get(takip) || {};
+      const d = { takip, acct, kind, web: g(r, 'websipariskodu'), alici, gonderen: gon, il, ilce: us ? '' : g(r, 'varisilce'), fatura, teslim, durum, iade: iade ? 1 : 0, sebep: [g(r, 'iadesebebi'), g(r, 'devirsebebi')].filter(Boolean).join(' · '), desi: num(g(r, 'toplamdesi')), fee: num(g(r, 'tutar')), kapida: num(g(r, 'kapidantahsilattutari')), tahsil: g(r, 'tahsiledildimi'), odeme: g(r, 'odemesekli'), final, gid: e.match === 'manual' ? e.gid : null, order_no: e.match === 'manual' ? e.order_no : null, match: e.match === 'manual' ? 'manual' : '' };
+      D.push(d); n++;
+      st.push(env.DB.prepare(`INSERT INTO sr_decl(takip, acct, kind, web, alici, gonderen, il, ilce, fatura, teslim, durum, iade, sebep, desi, fee, kapida, tahsil, odeme, final, gid, order_no, match, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)
+        ON CONFLICT(takip) DO UPDATE SET acct=excluded.acct, kind=excluded.kind, web=excluded.web, alici=excluded.alici, gonderen=excluded.gonderen, il=excluded.il, ilce=excluded.ilce, fatura=excluded.fatura, teslim=excluded.teslim, durum=excluded.durum, iade=excluded.iade, sebep=excluded.sebep, desi=excluded.desi, fee=excluded.fee, kapida=excluded.kapida, tahsil=excluded.tahsil, odeme=excluded.odeme, final=excluded.final, at=excluded.at`)
+        .bind(takip, acct, kind, d.web, alici, gon, il, d.ilce, fatura, teslim, durum, d.iade, d.sebep, d.desi, d.fee, d.kapida, d.tahsil, d.odeme, final, d.gid, d.order_no, d.match, iso())); }
+    for (let i = 0; i < st.length; i += 80) await env.DB.batch(st.slice(i, i + 80));
+    const res = await srDeclMatch(env, D);
+    return json({ ok: true, n, skip, ...res });
+  }
+  if (path === '/api/srdecl/link') { // Eşleşmeyen Sürat beyanı satırını siparişe elle bağla (boş no: bağı kaldır)
+    const takip = String(body.takip || '').replace(/\D/g, ''), no = String(body.no || '').replace(/\D/g, ''); const d = await env.DB.prepare('SELECT * FROM sr_decl WHERE takip=?1').bind(takip).first(); if (!d) return bad('Sürat kaydı bulunamadı.');
+    if (!no) { await env.DB.batch([env.DB.prepare(`UPDATE sr_decl SET gid=NULL, order_no=NULL, match='' WHERE takip=?1`).bind(takip), REV(env)]); return json({ ok: true }); }
+    const sh = await env.DB.prepare(`SELECT * FROM sr_ship WHERE replace(order_no,'#','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first(); if (!sh) return bad(`#${no} için Backstage'de Sürat kaydı yok.`);
+    await srDeclApply(env, d, sh, 'manual'); return json({ ok: true, orderNo: sh.order_no });
   }
   if (path === '/api/shaddr/iade-in') { // Sürat iadesi depoya ulaştı: siparişin ürünleri stoğa eklenir (geri alınabilir)
     const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
