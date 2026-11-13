@@ -4464,9 +4464,13 @@ function suratCard(){
     <label class="chk small"><input type="checkbox" id="sr-mode" ${d.mode === 'api' ? 'checked' : ''}><span><b>Otomatik gönderim:</b> barkod oluşturunca gönderi doğrudan Sürat'a kaydedilsin (Excel yüklemeye gerek kalmaz). Bağlantı testi geçtikten sonra aç.</span></label>
     <p class="muted small" style="margin:0">Barkodlar <b>Adres düzeltme</b> sekmesinden oluşturulur.</p>
     <div><button class="btn sm" data-act="sr-diag">🔎 Bağlantıyı test et</button></div>${S.srDiag ? srDiagHtml(S.srDiag) : ''}
+    <div><button class="btn sm" data-act="sr-probe">🧪 Sürat işlemlerini dene</button> <span class="small muted">KOdemeIslemleri, GonderilenKargoDetayi, IadeKargolar · son 7 gün · sadece okur, hiçbir şey kaydetmez</span></div>${S.srProbe ? srProbeHtml(S.srProbe) : ''}
     <form id="f-srtd" class="row" style="gap:6px;flex-wrap:wrap"><input class="input mono" id="srtd-no" value="${esc(S.srTdNo || '')}" placeholder="Sipariş no (ör. 2810)" inputmode="numeric" style="width:170px"><button class="btn sm" type="submit">Takip teşhisi</button></form>${S.srTd ? `<pre class="small mono" style="white-space:pre-wrap;max-height:320px;overflow:auto;margin:0;background:var(--surface-2);padding:8px;border-radius:8px">${esc(S.srTd)}</pre>` : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Son hata:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}</div>`;
 }
+function srProbeHtml(d){ if (d.loading) return loading(); if (d.err) return `<div class="banner bad" style="margin:0"><div>${esc(d.err)}</div></div>`;
+  return `<div class="srf small" style="gap:6px"><b>Deneme sonucu · ${esc(d.from)} – ${esc(d.to)}</b>${(d.out || []).map(x => `<div style="border-top:1px solid var(--line);padding-top:6px"><b>${esc(x.op)}</b> · ${x.acct === 'cod' ? 'kapıda ödeme carisi' : 'normal cari'} · ${x.err ? `<b style="color:var(--bad)">hata</b>: ${esc(x.err)}` : `<b style="color:${x.n ? 'var(--good)' : 'var(--muted)'}">${fmtN(x.n)} kayıt</b>`}
+    ${x.params ? `<div class="muted">İstediği bilgiler: ${esc(x.params.join(', '))}</div>` : ''}${x.cols && x.cols.length ? `<div>Gelen alanlar: <span class="mono">${esc(x.cols.join(', '))}</span></div>` : ''}${(x.sample || []).map(r => `<div class="mono" style="font-size:11px;word-break:break-all">${esc(Object.entries(r).map(([k, v]) => k + '=' + v).join(' | '))}</div>`).join('')}${x.text ? `<div class="muted">Sürat cevabı: ${esc(x.text)}</div>` : ''}</div>`).join('')}<div class="muted">Bu ekranın fotoğrafını Claude'a gönder.</div></div>`; }
 function srDiagHtml(d){
   if (d.loading) return loading();
   if (d.err) return `<div class="banner bad" style="margin:0"><div>${esc(d.err)}</div></div>`;
@@ -5238,6 +5242,7 @@ document.addEventListener('click', async e => {
       toast(`${fmtN(made.length)} barkod oluşturuldu${errs.length ? ` · ${fmtN(errs.length)} hata: ${errs.slice(0, 2).join(' · ')}` : ''}.`, !!errs.length);
       break; }
     case 'sr-edit': S.srEdit = id === '1'; renderSheet(false); break;
+    case 'sr-probe': S.srProbe = {loading: true}; renderSheet(false); try { S.srProbe = await api('/api/surat/probe', {}); } catch(err) { S.srProbe = {err: errText(err)}; } renderSheet(false); break;
     case 'sr-diag': S.srDiag = {loading: true}; renderSheet(false); try { S.srDiag = await api('/api/surat/diag', {acct: id === 'cod' ? 'cod' : ''}); } catch(err) { S.srDiag = {err: errText(err)}; } renderSheet(false); break;
     case 'sr-live': { S.srLive = {gid: id, loading: true}; render(); try { const r = await api('/api/surat/live', {gid: id}); const L = r.live; const wls = (r.wl || []).map(w => w.err ? `${w.acct}: hata` : `${w.acct}${w.all ? ' (tümü)' : ''} ${w.end}: ${w.n} gönderi${w.found ? ' ✓' : ''}${w.mesaj ? ' · ' + w.mesaj : ''}`).join(' | ');
       S.srLive = {gid: id, msg: (wls ? '[' + wls + '] ' : '') + (L ? `${L.teslim ? '✅ Teslim edildi (' + cDay(L.teslim) + ')' : L.und ? '⚠️ ' + (L.durum || 'Teslim edilemedi / iade') : (L.durum || 'Durum yok')}${L.yer && !L.teslim ? ' · 📍 ' + L.yer : ''}` : (r.err ? 'Sürat cevap vermedi: ' + r.err : 'Sürat henüz durum vermedi'))}; } catch (err) { S.srLive = {gid: id, msg: errText(err)}; } await loadTransit(); break; }
