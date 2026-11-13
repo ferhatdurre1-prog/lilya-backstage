@@ -513,7 +513,7 @@ const ICONS = {
   pay:'<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 9.5h19M6.5 15h4"/>',
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
-const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['pay','Ödemelerim'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
+const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Sürat Kargo'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['pay','Ödemelerim'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
 const NAV_MAIN = ['stock','value','orders','pay','profit']; // alt çubukta görünenler; diğerleri sol menüde
 const TAB_SHORT = {questions:'Soru', addr:'Adres', buy:'Sipariş ver', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket', pay:'Ödemeler'};
 
@@ -860,7 +860,7 @@ function renderDrawer(){
   root.innerHTML = `<div class="drawer-scrim" data-act="menu-close"></div><nav class="drawer" aria-label="Menü">
     <div class="dh"><div class="mark" aria-hidden="true">L</div><div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1 style="font-size:20px">Backstage</h1></div></div>
     ${item('home', 'Ana ekran')}
-    ${grp('Satış')}${item('orders', 'Siparişler')}${item('addr', 'Adres düzeltme')}${item('returns', 'İadeler', 'returns', pending)}${item('questions', 'Sorular', 'questions', (S.sync.trendyol || {}).qnaWaiting || 0)}
+    ${grp('Satış')}${item('orders', 'Siparişler')}${item('addr', 'Sürat Kargo')}${item('returns', 'İadeler', 'returns', pending)}${item('questions', 'Sorular', 'questions', (S.sync.trendyol || {}).qnaWaiting || 0)}
     ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
     ${grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
     ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
@@ -955,7 +955,7 @@ async function loadAddrMore(){
   try { const d = await api('/api/shaddr/list', {filter: A.filter, q: A.q.trim(), after: A.data.after}); const seen = new Set(A.data.orders.map(o => o.gid)); A.data.orders.push(...d.orders.filter(o => !seen.has(o.gid))); A.data.after = d.after; A.data.addrOk = [...(A.data.addrOk || []), ...(d.addrOk || [])]; A.at = Date.now(); addrLearnCodes(d.orders); } catch(e) { toast(errText(e), true); }
   A.loading = false; if (S.tab === 'addr') render();
 }
-// Adres düzeltme → Gönderilmiş: kargolanmış Shopify siparişleri, takip no girişi (Shopify'da da güncellenir)
+// Sürat Kargo → Gönderilmiş: kargolanmış Shopify siparişleri, takip no girişi (Shopify'da da güncellenir)
 async function loadSent(more){
   const A = aS(); if (A.sentLoading) return; if (!more && A.sent) return;
   A.sentLoading = true; if (more) render();
@@ -976,16 +976,17 @@ function sentHtml(A){
   if (A.sent.after) h += `<button class="btn" data-act="sent-more" ${A.sentLoading ? 'disabled' : ''} style="width:100%">${A.sentLoading ? 'Yükleniyor…' : 'Daha fazla yükle'}</button>`;
   return h;
 }
-// Adres düzeltme → Sürat yolda / Sürat teslim edildi (durumlar Sürat raporundan)
+// Sürat Kargo → Sürat yolda / Sürat teslim edildi (durumlar Sürat raporundan)
 async function loadTransit(){ const A = aS(); if (A.trLoading) return; A.trLoading = true;
   try { A.tr = await api('/api/shaddr/transit', {}); A.trErr = ''; } catch (e) { A.trErr = errText(e); A.tr = A.tr || null; } A.trLoading = false; if (S.tab === 'addr') render(); }
+// Sürat Kargo bölmesine (online / kapıda) ve sekmeye göre gönderiler
+function trList(A, v){ if (!A.tr) return null; const pk = (x) => !!x.cod === (A.part === 'cod');
+  if (v === 'iadeback') return (A.tr.iade || []).filter(x => pk(x) && !x.inAt); if (v === 'iade') return (A.tr.iade || []).filter(x => pk(x) && x.inAt); return (A.tr[v] || []).filter(pk); }
 function iadeHtml(A){
-  const q = A.q.trim().toLocaleLowerCase('tr'), f = A.iadeF === 'in' ? 'in' : 'back', all = A.tr.iade || [];
-  const nb = all.filter(x => !x.inAt).length, ni = all.length - nb;
-  let L = all.filter(x => (f === 'in') === !!x.inAt).filter(x => !q || String(x.orderNo).toLocaleLowerCase('tr').includes(q) || String(x.name).toLocaleLowerCase('tr').includes(q) || String(x.tracking).includes(q));
+  const q = A.q.trim().toLocaleLowerCase('tr'), f = A.view === 'iade' ? 'in' : 'back';
+  let L = trList(A, A.view).filter(x => !q || String(x.orderNo).toLocaleLowerCase('tr').includes(q) || String(x.name).toLocaleLowerCase('tr').includes(q) || String(x.tracking).includes(q));
   L = L.slice().sort((a, b) => f === 'in' ? String(b.inAt).localeCompare(String(a.inAt)) : String(b.iadeAt || b.at).localeCompare(String(a.iadeAt || a.at)));
-  let h = `<div class="chips" style="margin:0 0 10px">${[['back', 'Dönüyor · ' + fmtN(nb)], ['in', 'Depoya ulaştı · ' + fmtN(ni)]].map(([v, t]) => `<button class="chip" data-act="iade-f" data-id="${v}" aria-pressed="${f === v}">${t}</button>`).join('')}</div>
-  <p class="small muted" style="margin:0 0 10px">Sürat'ın "teslim edilemedi / iade" dediği gönderiler. Kayıtlar hiç silinmez. Paket eline geçince kontrol edip <b>Depoya ulaştı</b>'ya bas: siparişin ürünleri stoğa eklenir. <span role="button" data-act="tr-reload" style="text-decoration:underline;cursor:pointer">Yenile</span></p>`;
+  let h = `<p class="small muted" style="margin:0 0 10px">${f === 'in' ? 'Eline geçip <b>Depoya ulaştı</b> ile kontrol ettiğin iadeler; ürünleri stoğa eklendi.' : 'Sürat\'ın "teslim edilemedi / iade" dediği, dönüş yolundaki gönderiler. Sürat "iade teslim edildi" dese bile paket eline geçip sen <b>Depoya ulaştı</b>\'ya basana kadar burada kalır; basınca ürünler stoğa girer ve Sürat iade\'ye geçer.'} Kayıtlar hiç silinmez. <span role="button" data-act="tr-reload" style="text-decoration:underline;cursor:pointer">Yenile</span></p>`;
   if (!L.length) return h + `<div class="panel empty"><h4>${f === 'in' ? 'Depoya ulaşan iade yok' : 'Dönen iade yok'}</h4><p>${q ? 'Aramayla eşleşen gönderi bulunamadı.' : ''}</p></div>`;
   h += `<div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th>Alıcı</th><th>Takip no</th><th>${f === 'in' ? 'Depoya ulaştı' : 'Durum'}</th><th class="r"></th></tr></thead><tbody>${L.map(x => { const busy = A.busy[x.gid];
     return `<tr><td class="mono" style="white-space:nowrap">${esc(x.orderNo || '')}<div class="small muted">${esc(x.at ? cDay(localDay(new Date(x.at))) : '')}</div></td><td>${esc(x.name)}<div class="small muted">${esc([x.ilce, x.il].filter(Boolean).join(' / '))}</div></td><td class="mono small" style="white-space:nowrap">${esc(x.tracking)}<div class="row" style="gap:4px;margin-top:4px"><button class="btn sm" type="button" data-act="sr-live" data-id="${esc(x.gid)}">📍 Takip</button><button class="btn sm ghost" type="button" data-act="sr-copy" data-id="${esc(x.tracking)}" title="Takip numarasını kopyala">📋</button></div></td>
@@ -996,11 +997,11 @@ function iadeHtml(A){
 function transitHtml(A){
   if (A.trErr && !A.tr) return `<div class="banner bad"><div>${esc(A.trErr)}</div></div>`;
   if (!A.tr) return loading();
-  if (A.view === 'iade') return iadeHtml(A);
+  if (A.view === 'iade' || A.view === 'iadeback') return iadeHtml(A);
   const del = A.view === 'delivered', q = A.q.trim().toLocaleLowerCase('tr'), bad = x => x.und || x.days > 5;
-  let L = (A.tr[del ? 'delivered' : 'transit'] || []).filter(x => !q || String(x.orderNo).toLocaleLowerCase('tr').includes(q) || String(x.name).toLocaleLowerCase('tr').includes(q) || String(x.tracking).includes(q));
+  let L = trList(A, del ? 'delivered' : 'transit').filter(x => !q || String(x.orderNo).toLocaleLowerCase('tr').includes(q) || String(x.name).toLocaleLowerCase('tr').includes(q) || String(x.tracking).includes(q));
   if (!del) L = L.slice().sort((a, b) => (bad(b) - bad(a)) || (b.days - a.days)); else L = L.slice().sort((a, b) => String(b.deliv).localeCompare(String(a.deliv)));
-  let h = `<p class="small muted" style="margin:0 0 10px">${del ? 'Teslim edilen bütün Sürat gönderileri (geçmişten bugüne).' : 'Takip numarası gelmiş, henüz teslim edilmemiş Sürat gönderileri. 5 günden uzun yolda olanlar kırmızı ve en üstte.'} Durumlar Sürat'tan kendiliğinden (yarım saatte bir) güncellenir; teslim edilen Teslim edildi, teslim edilemeyen / iade olan Sürat iade sekmesine geçer. 📍 Takip anlık sorar. <span role="button" data-act="tr-reload" style="text-decoration:underline;cursor:pointer">Yenile</span></p>`;
+  let h = `<p class="small muted" style="margin:0 0 10px">${del ? 'Teslim edilen bütün Sürat gönderileri (geçmişten bugüne).' : 'Takip numarası gelmiş, henüz teslim edilmemiş Sürat gönderileri. 5 günden uzun yolda olanlar kırmızı ve en üstte.'} Durumlar Sürat'tan kendiliğinden (yarım saatte bir) güncellenir; teslim edilen Teslim edildi, teslim edilemeyen / iade olan Sürat iadeye dönüyor sekmesine geçer. 📍 Takip anlık sorar. <span role="button" data-act="tr-reload" style="text-decoration:underline;cursor:pointer">Yenile</span></p>`;
   if (!L.length) return h + `<div class="panel empty"><h4>${del ? 'Teslim edilen gönderi yok' : 'Yolda gönderi yok'}</h4><p>${q ? 'Aramayla eşleşen gönderi bulunamadı.' : ''}</p></div>`;
   h += `<div class="tbl-wrap"><table class="t"><thead><tr><th>Sipariş</th><th>Alıcı</th><th>Takip no</th><th>${del ? 'Teslim' : 'Durum'}</th>${del ? '<th class="r">Kapıda tahsilat</th>' : '<th class="r">Gün</th>'}</tr></thead><tbody>${L.map(x => { const red = !del && bad(x);
     return `<tr style="${red ? 'background:var(--bad-soft)' : ''}"><td class="mono" style="white-space:nowrap">${esc(x.orderNo || '')}<div class="small muted">${esc(x.at ? cDay(localDay(new Date(x.at))) : '')}</div></td><td>${esc(x.name)}<div class="small muted">${esc([x.ilce, x.il].filter(Boolean).join(' / '))}</div></td><td class="mono small" style="white-space:nowrap">${esc(x.tracking)}<div class="row" style="gap:4px;margin-top:4px"><button class="btn sm" type="button" data-act="sr-live" data-id="${esc(x.gid)}">📍 Takip</button><button class="btn sm ghost" type="button" data-act="sr-copy" data-id="${esc(x.tracking)}" title="Takip numarasını kopyala">📋</button></div></td>
@@ -1009,12 +1010,14 @@ function transitHtml(A){
 }
 const addrLine = a => a ? [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(' / '), a.zip].filter(Boolean).map(esc).join(' · ') : '<span class="muted">Adres yok</span>';
 function viewAddr(){
-  const A = aS(); if (!['bad', 'pending', 'done', 'printed', 'transit', 'iade', 'delivered'].includes(A.view)) A.view = 'bad'; /* açılışta Sürat sorunlu */ loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
-  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Adres düzeltme</h2><p class="lead small">Kargolanmamış bütün Shopify siparişlerinin teslimat adresleri. Hatalı görünenler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
-  <div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const cnt = {bad: 0, pending: 0, done: 0, printed: 0}; for (const o of ((A.data && A.data.orders) || [])) { const t = adTab(A, o); if (t) cnt[t]++; } return [['bad', 'Sürat sorunlu'], ['pending', 'Sürat bekleyen'], ['done', 'Sürat kayıtlı'], ['printed', 'Sürat yazdırıldı'], ['transit', 'Sürat yolda'], ['iade', 'Sürat iade'], ['delivered', 'Sürat teslim edildi']].map(([v, t]) => { const n = v === 'transit' || v === 'delivered' || v === 'iade' ? (A.tr ? (A.tr[v] || []).length : null) : (A.data ? cnt[v] : null); return `<button class="chip" data-act="ad-view" data-id="${v}" aria-pressed="${A.view === v}">${t}${n !== null ? ' · ' + fmtN(n) : ''}</button>`; }).join(''); })()}</div>
+  const A = aS(); if (!['bad', 'pending', 'done', 'printed', 'transit', 'delivered', 'iadeback', 'iade'].includes(A.view)) A.view = 'bad'; /* açılışta Sürat sorunlu */ if (!['online', 'cod', 'manual'].includes(A.part)) A.part = 'online'; loadAddr(false); if (!S.surat) suratCard(); // otomatik gönderim durumu için
+  let h = `<div style="margin:2px 0 14px"><h2 class="sec">Sürat Kargo</h2><p class="lead small">Shopify siparişlerinin Sürat gönderileri: adres kontrolü, barkod, yolda, teslim ve iade. Hatalı adresler işaretlenir; düzeltip kaydettiğinde adres doğrudan Shopify'da güncellenir.</p></div>
+  <div class="seg" role="tablist" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px">${[['online', '💳 Online ödeme'], ['cod', '💵 Kapıda ödeme'], ['manual', '↩️ Manuel iade']].map(([v, t]) => `<button class="btn ${A.part === v ? 'primary' : ''}" type="button" data-act="ad-part" data-id="${v}" aria-pressed="${A.part === v}">${t}</button>`).join('')}</div>`;
+  if (A.part === 'manual') return h + `<div class="panel empty"><h4>Manuel iade</h4><p>Bu bölmeyi birlikte tasarlayacağız.</p></div>`;
+  h += `<div class="filters" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><div class="chips">${(() => { const cnt = {bad: 0, pending: 0, done: 0, printed: 0}; for (const o of ((A.data && A.data.orders) || [])) { const t = adTab(A, o); if (t) cnt[t]++; } return [['bad', 'Sürat sorunlu'], ['pending', 'Sürat bekleyen'], ['done', 'Sürat kayıtlı'], ['printed', 'Sürat yazdırıldı'], ['transit', 'Sürat yolda'], ['delivered', 'Sürat teslim edildi'], ['iadeback', 'Sürat iadeye dönüyor'], ['iade', 'Sürat iade']].map(([v, t]) => { const n = ['transit', 'delivered', 'iadeback', 'iade'].includes(v) ? (A.tr ? trList(A, v).length : null) : (A.data ? cnt[v] : null); return `<button class="chip" data-act="ad-view" data-id="${v}" aria-pressed="${A.view === v}">${t}${n !== null ? ' · ' + fmtN(n) : ''}</button>`; }).join(''); })()}</div>
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
   if (!A.tr && !A.trLoading) loadTransit();
-  if (A.view === 'transit' || A.view === 'delivered' || A.view === 'iade') return h + transitHtml(A);
+  if (['transit', 'delivered', 'iadeback', 'iade'].includes(A.view)) return h + transitHtml(A);
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
   h += `<div class="srb" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px"><div class="small"><b>Sürat Kargo</b> · ${(() => { const pend = (A.data.ships || []).filter(x => x.mode !== 'api' && !x.exported_at).length; return pend ? `<b style="color:var(--orange)">${fmtN(pend)} gönderi Sürat'a yüklenmeyi bekliyor</b>` : 'Yüklenmeyi bekleyen gönderi yok'; })()}<div class="muted">Barkod bas → Sürat Excel indir → Sürat eKargo'da Gönderi Girişi Excel'e yükle. Takip no için: Sürat eKargo → Gönderi Raporu → Getir → Excel'e aktar → buraya "Sürat raporunu yükle".</div></div><div class="row" style="gap:6px;flex-wrap:wrap">${(() => { if (A.bulk) return `<button class="btn sm" disabled>Oluşturuluyor… ${A.bulk}</button>`;
@@ -1085,9 +1088,9 @@ async function srPrintSel(id, view){ const A = aS(), dl = srDoneList(A, view).fi
 }
 function srDoneList(A, view){ const ships = (A.data && A.data.ships) || [], last = new Map(); for (const x of ships) last.set(x.gid, x); const v = view || (A.view === 'printed' ? 'printed' : 'done');
   // takip no bağlanan gönderi listeden düşer; yazdırılmamışlar "Sürat kayıtlı", yazdırılmışlar "Sürat yazdırıldı"
-  return ((A.data && A.data.orders) || []).filter(o => last.has(o.gid)).map(o => last.get(o.gid)).filter(x => !x.tracking && (v === 'printed' ? !!x.printed_at : !x.printed_at)); }
-// Adres düzeltme sekmesi: sorunlu (barkodsuz + adres uyarısı) · bekleyen (barkodsuz, sorunsuz) · kayıtlı (barkodlu, yazdırılmadı) · yazdırıldı
-function adTab(A, o){ const last = ((A.data && A.data.ships) || []).filter(x => x.gid === o.gid).pop();
+  return ((A.data && A.data.orders) || []).filter(o => last.has(o.gid) && !!o.cod === (A.part === 'cod')).map(o => last.get(o.gid)).filter(x => !x.tracking && (v === 'printed' ? !!x.printed_at : !x.printed_at)); }
+// Sürat Kargo sekmesi: sorunlu (barkodsuz + adres uyarısı) · bekleyen (barkodsuz, sorunsuz) · kayıtlı (barkodlu, yazdırılmadı) · yazdırıldı
+function adTab(A, o){ if (A.part === 'manual' || !!o.cod !== (A.part === 'cod')) return null; /* Online / Kapıda ödeme bölmesi */ const last = ((A.data && A.data.ships) || []).filter(x => x.gid === o.gid).pop();
   if (!last) { const is = addrIssues(addrForm(o.addr || {}), o); if (!is.length) return 'pending'; const ok = ((A.data && A.data.addrOk) || []).includes(o.gid) && !is.some(i => i[0] === 'bad'); return ok ? 'pending' : 'bad'; } // sarı uyarı elle onaylandıysa bekleyende
   if (last.tracking) return null; return last.printed_at ? 'printed' : 'done'; }
 // gerçek barkod oluşunca aynı siparişin "elle kayıtlı" satırı listeden düşer
@@ -1317,7 +1320,7 @@ function viewCari(){
   const L = D.list || [], A = D.alerts || [], tlv = (x, k, kt) => x.cur && x.cur !== 'TL' ? (x[kt] || 0) : x[k], tb = L.reduce((t, x) => t + tlv(x, 'bal', 'balTL'), 0), tp = 0;
   const fxL = L.filter(x => x.cur && x.cur !== 'TL'), sum = (f) => A.filter(f).reduce((t, x) => t + tlv(x, 'left', 'leftTL'), 0), late = sum(x => x.st === 'late'), tod = sum(x => x.st === 'today'), wk = sum(x => x.st === 'week');
   h += `<div class="home-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:12px"><div class="kpi"><div class="k">Kalan borç${fxL.length ? ' (TL karşılığı dahil)' : ''}</div><div class="v" style="color:${tb - tp > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(tb - tp)}</div>${fxL.length ? `<div class="small muted">${fxL.map(x => `${esc(x.supplier)}: ${curAmt(x.bal, x.cur)}`).join(' · ')}${D.fx && D.fx.USD ? ` · 1$ = ${D.fx.USD.toLocaleString('tr-TR', {maximumFractionDigits: 4})} TL` : ''}</div>` : ''}</div><div class="kpi"><div class="k">Gecikmiş</div><div class="v" style="color:${late > 0.004 ? 'var(--bad)' : 'inherit'}">${tl2(late)}</div></div><div class="kpi"><div class="k">Bugün ödenecek</div><div class="v" style="color:${tod > 0.004 ? 'var(--warn, #b45309)' : 'inherit'}">${tl2(tod)}</div></div><div class="kpi"><div class="k">Önümüzdeki 7 gün</div><div class="v">${tl2(wk)}</div></div></div>`;
-  { const cards = tyNetCard() + srCariCard() + ptCariCard(); h += cariWeekCard(D) + cards; } // Trendyol: yalnız 'bugün ayrılsam alacağım' kartı
+  { const cards = tyNetCard() + ptCariCard(); /* Sürat kartı Cariler'den kaldırıldı: Sürat her şeyiyle Sürat Kargo sekmesinde (veriler saklı) */ h += cariWeekCard(D) + cards; } // Trendyol: yalnız 'bugün ayrılsam alacağım' kartı
   h += `<div class="row" style="justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn" data-act="cr-all">📊 Cari raporu (tümü)</button><button class="btn" data-act="cari-addnew">+ Cari ekle</button><label class="btn" style="cursor:pointer">📤 Excel'den cari yükle<input type="file" id="cari-xls" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="btn primary" data-act="cari-paynew">+ Ödeme gir</button><button class="btn ghost" data-act="cari-imps">${C.imps ? 'Yüklemeleri kapat' : '↩︎ Yüklemeler / geri al'}</button></div>`;
   if (C.imps) h += cariImpsHtml(C.imps);
   if (C.open === '__add') h += cariNewForm();
@@ -2163,7 +2166,7 @@ function viewHome(){
   h += `<div class="card h-sc"><h3 style="margin:0">Kısayollar</h3><div class="act-grid sc-grid">
     ${sc('Gelir / gider', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/>', 'add-expense')}
     ${sc('Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>', 'ws-open')}
-    ${(() => { const w = addrProb(); return sc(`Adres düzeltme${w ? ` <b style="color:var(--bad)" title="Adresinde kontrol edilecek bir şey olan sipariş">${fmtN(w)}</b>` : ''}`, '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', 'tab', 'addr', w > 0); })()}
+    ${(() => { const w = addrProb(); return sc(`Sürat Kargo${w ? ` <b style="color:var(--bad)" title="Adresinde kontrol edilecek bir şey olan sipariş">${fmtN(w)}</b>` : ''}`, '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', 'tab', 'addr', w > 0); })()}
     ${sc('Cariler', '<path d="M4 7h16M4 12h16M4 17h10"/>', 'tab', 'cari')}
     ${(() => { const n = ps.filter(needBuyP).length; return sc(`Alınacaklar${n ? ` <b style="color:var(--orange)">${fmtN(n)}</b>` : ''}`, '<path d="M6 6h15l-1.5 9h-12z"/><path d="M6 6L5 3H2"/><circle cx="9" cy="20" r="1.3"/><circle cx="18" cy="20" r="1.3"/>', 'need-open', '', n > 0); })()}
     ${sc('Barkodla giriş / çıkış', '<path d="M4 6v12M7 6v12M10 6v12M14 6v12M17 6v12M20 6v12"/>', 'scan-pick')}
@@ -3174,7 +3177,7 @@ function sheetKayitli(){
   return {title: 'Shopify Barkod', sub: `<span>${fmtN(ships.length)} sipariş</span>`, body: !ships.length ? `<div class="panel empty"><h4>Kayıtlı sipariş yok</h4><p>Barkodu oluşturulan siparişler burada görünür.</p></div>` : `
     <div class="card" style="gap:10px;flex-direction:row;align-items:center;flex-wrap:wrap"><button class="btn sm" type="button" data-act="ky-selall">${ns === ships.length ? 'Seçimi kaldır' : 'Tümünü seç'}</button><span class="small muted">${fmtN(ns)} / ${fmtN(ships.length)} seçili</span>${srSizeChips()}<button class="btn sm primary" type="button" data-act="ky-print" style="margin-left:auto" ${ns && !A.bulk ? '' : 'disabled'}>${A.bulk ? 'Barkod oluşturuluyor ' + esc(A.bulk) : '🖨 Seçilenleri yazdır (' + fmtN(ns) + ')'}</button></div>
     <div class="card" style="padding:0;gap:0;margin-top:12px;overflow:hidden">${rows}</div>
-    <p class="small muted" style="margin:10px 2px 0">Etiket Sürat ölçüsünde (100×150) basılır; Adres düzeltme → Sürat kayıtlı sekmesindeki yazdırmayla aynı.</p>`};
+    <p class="small muted" style="margin:10px 2px 0">Etiket Sürat ölçüsünde (100×150) basılır; Sürat Kargo → Sürat kayıtlı sekmesindeki yazdırmayla aynı.</p>`};
 }
 function sheetLabels(){
   const L = S.sheet;
@@ -4497,7 +4500,7 @@ function suratCard(){
     <dt>Son gönderi</dt><dd>${d.ok ? esc(ago(d.ok)) : 'Henüz yok'}</dd>
     <dt>Takip</dt><dd>Şube okutunca takip no her dakika sorulur, gelince Shopify'a işlenir ve müşteriye bildirim gider.${d.trackErr ? `<div style="color:var(--bad);font-size:12px">${esc(d.trackErr.slice(27) || d.trackErr)}</div>` : ''}</dd></dl>
     <label class="chk small"><input type="checkbox" id="sr-mode" ${d.mode === 'api' ? 'checked' : ''}><span><b>Otomatik gönderim:</b> barkod oluşturunca gönderi doğrudan Sürat'a kaydedilsin (Excel yüklemeye gerek kalmaz). Bağlantı testi geçtikten sonra aç.</span></label>
-    <p class="muted small" style="margin:0">Barkodlar <b>Adres düzeltme</b> sekmesinden oluşturulur.</p>
+    <p class="muted small" style="margin:0">Barkodlar <b>Sürat Kargo</b> sekmesinden oluşturulur.</p>
     <div><button class="btn sm" data-act="sr-diag">🔎 Bağlantıyı test et</button></div>${S.srDiag ? srDiagHtml(S.srDiag) : ''}
     <form id="f-srtd" class="row" style="gap:6px;flex-wrap:wrap"><input class="input mono" id="srtd-no" value="${esc(S.srTdNo || '')}" placeholder="Sipariş no (ör. 2810)" inputmode="numeric" style="width:170px"><button class="btn sm" type="submit">Takip teşhisi</button></form>${S.srTd ? `<pre class="small mono" style="white-space:pre-wrap;max-height:320px;overflow:auto;margin:0;background:var(--surface-2);padding:8px;border-radius:8px">${esc(S.srTd)}</pre>` : ''}
     ${d.err ? `<div class="banner bad" style="margin:0"><div><b>Son hata:</b> ${esc(d.err.slice(27) || d.err)}</div></div>` : ''}</div>`;
@@ -5158,7 +5161,7 @@ document.addEventListener('click', async e => {
     case 'ad-more': loadAddrMore(); break;
     case 'ad-addrok': { const A = aS(), on = b.dataset.on === '1'; try { await api('/api/shaddr/addrok', {gid: id, on}); A.data.addrOk = (A.data.addrOk || []).filter(x => x !== id); if (on) A.data.addrOk.push(id); toast(on ? 'Sipariş Sürat bekleyen\'e geçti.' : 'Onay geri alındı.'); render(); } catch (err) { toast(errText(err), true); } break; }
     case 'tr-reload': aS().tr = null; loadTransit(); render(); break;
-    case 'iade-f': aS().iadeF = id; render(); break;
+    case 'ad-part': aS().part = id; aS().sel = null; aS().sr = null; render(); window.scrollTo(0, 0); break;
     case 'iade-in': { const A = aS(), on = b.dataset.on === '1', x = A.tr && (A.tr.iade || []).find(z => z.gid === id); if (!x || A.busy[id]) break;
       if (!confirm(on ? `${x.orderNo} depoya ulaştı olarak işaretlensin mi? Siparişteki ürünler stoğa eklenecek.` : `${x.orderNo} için "Depoya ulaştı" geri alınsın mı? Eklenen stok geri düşülecek.`)) break;
       A.busy[id] = true; render();
