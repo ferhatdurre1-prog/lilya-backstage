@@ -1443,6 +1443,20 @@ async function srGkdSync(env, t0) {
   await env.DB.batch([setStmt(env, 'gkd_cursor', back ? next : (s.gkd_cursor || next)), setStmt(env, 'gkd_at', String(t0)), setStmt(env, 'gkd_err', ''), setStmt(env, 'gkd_last', JSON.stringify({ at: iso(), from: cur, res }).slice(0, 600)), REV(env)]);
   return res;
 }
+// Siparişe bağlı olmayan Sürat iadeleri için aday siparişler: Sürat gönderisindeki alıcı adı (Türkçe harf / büyük-küçük / sıra farkı yok, ara ad olabilir) ve ±10 gün. Tek aday varsa bağlanır
+async function srRetSuggest(env) {
+  const { results: U } = await env.DB.prepare(`SELECT * FROM sr_ret WHERE no IS NULL AND COALESCE(gonderen,'') <> ''`).all(); if (!U.length) return new Map();
+  const { results: S } = await env.DB.prepare(`SELECT order_no, addr, at FROM sr_ship WHERE at > '2026-10-01'`).all(), D = 86400000, C = [];
+  for (const x of S) { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const toks = String(a.name || '').split(/\s+/).map(srNorm).filter(t => t.length > 1); if (toks.length) C.push({ no: String(x.order_no || '').replace(/\D/g, ''), name: a.name || '', il: a.il || '', t: Date.parse(x.at) || 0, toks }); }
+  const out = new Map(), auto = [];
+  for (const r of U) { const tk = String(r.gonderen).split(/\s+/).map(srNorm).filter(t => t.length > 1), ft = Date.parse(String(r.fatura || '').replace(' ', 'T') + ':00+03:00') || 0; if (!tk.length) continue;
+    const sameSet = (a, b) => a.length === b.length && a.every(t => b.includes(t)), inc = (a, b) => a.every(t => b.includes(t)), fl = (a, b) => a[0] === b[0] && a[a.length - 1] === b[b.length - 1];
+    const cand = [...new Map(C.filter(c => (!ft || Math.abs(c.t - ft) <= 10 * D) && (sameSet(tk, c.toks) || inc(tk, c.toks) || inc(c.toks, tk) || fl(tk, c.toks))).map(c => [c.no, c])).values()].sort((a, b) => Math.abs(a.t - ft) - Math.abs(b.t - ft));
+    if (cand.length === 1) auto.push([r, cand[0].no]); else if (cand.length) out.set(r.takip, cand.slice(0, 5).map(c => ({ no: c.no, name: c.name, il: c.il, day: trDay(c.t) }))); }
+  for (const [r, no] of auto) { await env.DB.prepare(`UPDATE sr_ret SET no=?2, how='auto2' WHERE takip=?1 AND no IS NULL`).bind(r.takip, no).run();
+    const tes = String(r.teslim || '').slice(0, 10); if (tes && tes <= SR_RET_AUTO_UNTIL && !(await env.DB.prepare('SELECT 1 FROM sr_ret_in WHERE takip=?1').bind(r.takip).first())) { try { await srRetStock(env, r.takip, true, true); } catch (e) {} } }
+  return out;
+}
 // İade henüz depoya ulaşmadı: kâr hesabında satış geri gelir (Sürat iade işareti kalkar, kargo tarifeden)
 const srRetUnmark = (env, no) => env.DB.prepare(`UPDATE sr_cost SET undelivered=0, ret_real=NULL, cost=NULL, durum=NULL WHERE no=?1 AND ret_real=1`).bind(no);
 const srStatsReset = (env) => [env.DB.prepare(`DELETE FROM daily_stats WHERE day >= '2026-10-17'`), setStmt(env, 'home_cache', '')];
@@ -4427,7 +4441,7 @@ ${catalog}` });
     let stock = null; if (x.teslim && x.teslim.slice(0, 10) <= SR_RET_AUTO_UNTIL && !(await env.DB.prepare('SELECT 1 FROM sr_ret_in WHERE takip=?1').bind(takip).first())) stock = await srRetStock(env, takip, true, true);
     return json({ ok: true, stock });
   }
-  if (path === '/api/srret/list') { const gs = await getSettings(env, ['gkd_cursor', 'gkd_last', 'gkd_err']); let gl = null; try { gl = gs.gkd_last ? JSON.parse(gs.gkd_last) : null; } catch (e) {} const gkd = { cursor: gs.gkd_cursor || '2026-10-17', done: (gs.gkd_cursor || '2026-10-17') > trToday(), last: gl, err: gs.gkd_err || '' }; const { results } = await env.DB.prepare('SELECT r.*, i.at in_at, i.lines in_lines, i.auto in_auto FROM sr_ret r LEFT JOIN sr_ret_in i ON i.takip = r.takip ORDER BY COALESCE(r.teslim, r.fatura) DESC').all(); return json({ ok: true, rows: results.map(x => { let L = []; try { L = JSON.parse(x.in_lines || '[]'); } catch (e) {} return { ...x, in_lines: L }; }), gkd }); }
+  if (path === '/api/srret/list') { let sug = new Map(); try { sug = await srRetSuggest(env); } catch (e) {} const gs = await getSettings(env, ['gkd_cursor', 'gkd_last', 'gkd_err']); let gl = null; try { gl = gs.gkd_last ? JSON.parse(gs.gkd_last) : null; } catch (e) {} const gkd = { cursor: gs.gkd_cursor || '2026-10-17', done: (gs.gkd_cursor || '2026-10-17') > trToday(), last: gl, err: gs.gkd_err || '' }; const { results } = await env.DB.prepare('SELECT r.*, i.at in_at, i.lines in_lines, i.auto in_auto FROM sr_ret r LEFT JOIN sr_ret_in i ON i.takip = r.takip ORDER BY COALESCE(r.teslim, r.fatura) DESC').all(); return json({ ok: true, rows: results.map(x => { let L = []; try { L = JSON.parse(x.in_lines || '[]'); } catch (e) {} return { ...x, in_lines: L, sug: sug.get(x.takip) || null }; }), gkd }); }
   if (path === '/api/srret/live') { const x = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(String(body.takip || '').replace(/\D/g, '')).first(); if (!x) return bad('İade bulunamadı.'); let r; try { r = await srRetLive(env, x); } catch (e) { r = { err: String(e.message || e).slice(0, 200) }; } return json({ ok: true, ...r }); }
   if (path === '/api/srret/stock') { const r = await srRetStock(env, String(body.takip || '').replace(/\D/g, ''), body.on !== false, false); return r.err ? bad(r.err, 409) : json(r); }
   if (path === '/api/srcari/summary') {
