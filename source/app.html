@@ -701,7 +701,7 @@ function confirmBox(text, ok='Onayla', danger=false){
   });
 }
 function openSheet(type, data={}){ S.sheet = {type, ...data}; renderSheet(true); }
-function closeSheet(){ if (S.busy) return; if (S.sheet && S.sheet.type === 'scanout') { if (S.sheet.items && S.sheet.items.length && !S.sheet.saved && !confirm('Okutulan ürünler kaydedilmedi. Kapatılsın mı?')) return; scanStop(); } S.sheet = null; $('#sheet-root').innerHTML = ''; document.body.style.overflow = ''; }
+function closeSheet(){ if (S.busy) return; if (S.sheet && S.sheet.type === 'retscan') { rsStop(); const A = aS(); A.retList = null; loadRet(); } if (S.sheet && S.sheet.type === 'scanout') { if (S.sheet.items && S.sheet.items.length && !S.sheet.saved && !confirm('Okutulan ürünler kaydedilmedi. Kapatılsın mı?')) return; scanStop(); } S.sheet = null; $('#sheet-root').innerHTML = ''; document.body.style.overflow = ''; }
 function setTab(t){ if (t !== 'profit' && S.prof) S.prof.focus = null; S.tab = t; try{ sessionStorage.setItem('lb-tab', t); localStorage.removeItem('lb-tab'); }catch(e){} render(); window.scrollTo(0,0); }
 
 function viewLogin(){
@@ -1010,7 +1010,7 @@ function viewAddr(){
     <form id="f-adq" class="row" style="gap:6px;flex:1;min-width:220px"><input class="input" id="ad-q" placeholder="Sipariş no ya da müşteri adı" value="${esc(A.q)}" style="flex:1"><button class="btn sm" type="submit">Ara</button>${A.q ? '<button class="btn sm ghost" type="button" data-act="ad-clear">Temizle</button>' : ''}<button class="btn sm ghost" type="button" data-act="ad-sync">Yenile</button></form></div>`;
   if (!A.tr && !A.trLoading) loadTransit();
   if (!A.retList && !A.retLoading) loadRet();
-  if (A.view === 'iyol' || A.view === 'iin') return h + `<div class="row" style="gap:6px;flex-wrap:wrap;margin:0 0 10px"><label class="btn sm" style="cursor:pointer" title="Sürat eKargo → Gönderilen Kargo raporu">${A.retBusy ? 'İşleniyor…' : '↩️ Sürat iade listesi yükle'}<input type="file" id="sr-retup" accept=".xls,.xlsx,.csv" hidden ${A.retBusy ? 'disabled' : ''}></label><button class="btn sm ghost" type="button" data-act="srret-reload">Yenile</button></div>` + retHtml(A);
+  if (A.view === 'iyol' || A.view === 'iin') return h + `<div class="row" style="gap:6px;flex-wrap:wrap;margin:0 0 10px"><label class="btn sm" style="cursor:pointer" title="Sürat eKargo → Gönderilen Kargo raporu">${A.retBusy ? 'İşleniyor…' : '↩️ Sürat iade listesi yükle'}<input type="file" id="sr-retup" accept=".xls,.xlsx,.csv" hidden ${A.retBusy ? 'disabled' : ''}></label><button class="btn sm ghost" type="button" data-act="srret-reload">Yenile</button></div>` + (A.view === 'iyol' ? `<button class="btn primary" type="button" data-act="retscan-open" style="width:100%;margin:0 0 12px;padding:14px;font-size:16px">📷 İade teslim al <span class="small" style="opacity:.8">· paketin barkodunu okut</span></button>` : '') + retHtml(A);
   if (A.view === 'transit' || A.view === 'delivered') return h + transitHtml(A);
   if (A.err) return h + `<div class="banner bad"><div>${esc(A.err)}</div></div>`;
   if (!A.data) return h + loading();
@@ -2675,6 +2675,34 @@ function scanStop(){
 }
 function cariNames(sh){ if (!sh.sups && !sh.supLoading) { sh.supLoading = true; api('/api/cari/list', {}).then(d => { sh.sups = [...new Set([...(d.list || []).map(x => x.supplier), ...(d.suppliers || []).map(x => x.name || x)])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'tr')); const dl = $('#cari-dl'); if (dl) dl.innerHTML = sh.sups.map(n => `<option value="${esc(n)}"></option>`).join(''); }).catch(() => {}); }
   return `<datalist id="cari-dl">${(sh.sups || []).map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>`; }
+function sheetRetScan(){
+  return {title: '📷 İade teslim al', sub: '<span class="muted">Paketin etiketindeki barkodu okut (küçük "LH…" barkodu ya da büyük Sürat barkodu)</span>', body: `<div class="card" style="gap:8px"><div id="rs-cam" style="position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:4/3"><video id="rs-video" playsinline muted style="width:100%;height:100%;object-fit:cover"></video><div style="position:absolute;left:8%;right:8%;top:42%;height:16%;border:2px solid rgba(255,150,40,.9);border-radius:8px;pointer-events:none"></div></div><div class="row" style="gap:6px"><button class="btn sm" type="button" data-act="rs-cam" id="rs-cambtn">Kamerayı kapat</button></div></div><div id="rs-res" style="margin-top:10px">${rsResHtml()}</div>`};
+}
+function rsResHtml(){ const sh = S.sheet || {}, d = sh.res;
+  const log = (sh.done || []).length ? `<div class="small muted" style="margin-top:10px">Bu oturumda teslim alınan: ${sh.done.map(x => esc(x)).join(', ')}</div>` : '';
+  if (sh.busy) return `<div class="card">${loading()}</div>` + log;
+  if (!d) return `<div class="small muted">Kamerayı paketin barkoduna tut. Okununca sipariş burada görünür.</div>` + log;
+  if (!d.found) return `<div class="banner bad" style="margin:0"><div><b>${esc(d.msg || 'Bulunamadı')}</b><div class="small mono">Okunan: ${esc(d.code || '')}</div></div></div>` + log;
+  const ret = (d.rets || [])[0];
+  return `<div class="card" style="gap:8px;border:2px solid ${d.done ? 'var(--good)' : 'rgba(255,150,40,.8)'}"><div style="font-size:18px;font-weight:700">Bu sipariş mi? <span class="mono">${esc(d.orderNo)}</span></div>
+    <div><b>${esc(d.name || '—')}</b><span class="small muted"> · ${esc(d.il || '')}${d.total ? ' · ' + tl2(d.total) + (d.cod ? ' (kapıda)' : '') : ''}</span></div>
+    ${ret ? `<div class="small muted">Sürat: ${esc(ret.durum || '—')}${ret.teslim ? ' · teslim ' + esc(cDay(String(ret.teslim).slice(0, 10))) : ''}</div>` : '<div class="small muted">Bu iade Sürat listesinde henüz yok; onaylarsan listeye eklenip işlenir.</div>'}
+    <div class="list">${(d.lines || []).map(l => `<div class="item" style="align-items:center">${thumb({image: l.image, name: l.name})}<div class="main"><div class="ttl">${esc(l.name)}</div><div class="meta"><span class="mono">${esc(l.sku)}</span><span>· ${fmtN(l.qtyAll)} adet</span></div></div></div>`).join('') || '<div class="small muted">Siparişte ürün görünmüyor.</div>'}</div>
+    ${d.done ? '<div class="banner" style="margin:0"><div>✅ Bu iade zaten depoya ulaştı olarak işlenmiş. Tekrar stok eklenmez.</div></div><div class="row"><button class="btn" type="button" data-act="rs-next">Sonraki paket</button></div>' : `<div class="row" style="gap:8px"><button class="btn primary" type="button" data-act="rs-yes" style="flex:1;padding:12px;font-size:16px">✅ Evet, teslim aldım</button><button class="btn" type="button" data-act="rs-next" style="padding:12px">Hayır</button></div><div class="small muted">Evet: ürünler stoğa girer, sipariş kârda teslim edilemedi olur.</div>`}</div>` + log; }
+function rsPaint(){ const el = $('#rs-res'); if (el) el.innerHTML = rsResHtml(); }
+async function rsHandle(txt){ const sh = S.sheet; if (!sh || sh.type !== 'retscan' || sh.busy || (sh.res && sh.res.found && !sh.res.done)) return; sh.busy = true; rsPaint(); try { if (navigator.vibrate) navigator.vibrate(60); } catch(e) {}
+  try { sh.res = await api('/api/srret/find', {code: txt}); } catch (err) { sh.res = {found: false, msg: errText(err), code: txt}; } sh.busy = false; rsPaint(); }
+async function rsStart(){ const sh = S.sheet; if (!sh || sh.type !== 'retscan') return; const v = $('#rs-video'); if (!v) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('Bu tarayıcı kamerayı açamıyor.', true); return; }
+  sh.cam = true; const btn = $('#rs-cambtn'); if (btn) btn.textContent = 'Kamerayı kapat'; const box = $('#rs-cam'); if (box) box.style.display = '';
+  const hit = (t) => { const now = Date.now(); if (t === sh.lastCam && now - sh.lastCamAt < 2500) return; sh.lastCam = t; sh.lastCamAt = now; rsHandle(t); };
+  try { let fm = null; if ('BarcodeDetector' in window) { try { const ok = await BarcodeDetector.getSupportedFormats(); fm = ['code_128','code_39','ean_13','itf','data_matrix','qr_code'].filter(x => ok.includes(x)); if (!fm.length) fm = null; } catch(e) { fm = null; } }
+    if (fm) { sh.stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}, width: {ideal: 1280}}, audio: false}); v.srcObject = sh.stream; await v.play(); const det = new BarcodeDetector({formats: fm});
+      const loop = async () => { if (!sh.cam || S.sheet !== sh) return; try { const r = await det.detect(v); if (r && r.length) { const lh = r.find(x => /LH\s*\d/i.test(x.rawValue)); hit((lh || r[0]).rawValue); } } catch(e) {} sh.raf = setTimeout(loop, 60); }; loop(); }
+    else { await loadScript('https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js'); if (!sh.cam || S.sheet !== sh) return; const hints = new Map(); hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39, ZXing.BarcodeFormat.ITF, ZXing.BarcodeFormat.EAN_13]);
+      sh.zx = new ZXing.BrowserMultiFormatReader(hints, 80); await sh.zx.decodeFromConstraints({video: {facingMode: {ideal: 'environment'}}, audio: false}, v, (res) => { if (res && sh.cam) hit(res.getText()); }); }
+  } catch (e) { rsStop(); toast(/Permission|NotAllowed/i.test(String(e && (e.name || e.message))) ? 'Kamera izni verilmedi. Tarayıcı ayarlarından bu siteye kamera izni ver.' : 'Kamera açılamadı: ' + errText(e), true); } }
+function rsStop(){ const sh = S.sheet; if (!sh || sh.type !== 'retscan') return; sh.cam = false; clearTimeout(sh.raf); try { sh.zx && sh.zx.reset(); } catch(e) {} sh.zx = null; try { sh.stream && sh.stream.getTracks().forEach(t => t.stop()); } catch(e) {} sh.stream = null; const v = $('#rs-video'); if (v) { try { v.srcObject = null; } catch(e) {} } const box = $('#rs-cam'); if (box) box.style.display = 'none'; const btn = $('#rs-cambtn'); if (btn) btn.textContent = '📷 Kamerayı aç'; }
 function sheetScanOut(){
   const sh = S.sheet, R = ['Elden satış', 'Hasarlı / fire', 'Numune', 'Diğer'];
   const scanBox = `<div class="card" style="gap:8px">
@@ -4685,12 +4713,12 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
     if (sh.type === 'product' && r.live) { for (const sel in r.live) { const el = root.querySelector(sel); if (el && r.live[sel] !== null) el.innerHTML = r.live[sel]; } return; }
-    if (sh.type === 'orphan' || sh.type === 'scanout' || sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
+    if (sh.type === 'orphan' || sh.type === 'scanout' || sh.type === 'retscan' || sh.type === 'new-product' || sh.type === 'new-order' || sh.type === 'new-return' || (sh.type === 'ty-reject' && sh.reasons)) return;
     if (sh.type === 'labels' && document.activeElement && /^lbl-(w|h)$/.test(document.activeElement.id)) return; // formları bozma
     const b = root.querySelector('.sheet-b'); const st = existing.scrollTop; const hadFocus = document.activeElement && document.activeElement.id === 'bdq'; b.innerHTML = r.body; enhanceTables(b); applyBdFilter(); if (hadFocus) { const i = $('#bdq'); if (i) { i.focus(); const L = i.value.length; try { i.setSelectionRange(L, L); } catch(e){} } } existing.scrollTop = st; return;
   }
@@ -5149,6 +5177,13 @@ document.addEventListener('click', async e => {
     case 'ad-addrok': { const A = aS(), on = b.dataset.on === '1'; try { await api('/api/shaddr/addrok', {gid: id, on}); A.data.addrOk = (A.data.addrOk || []).filter(x => x !== id); if (on) A.data.addrOk.push(id); toast(on ? 'Sipariş Sürat bekleyen\'e geçti.' : 'Onay geri alındı.'); render(); } catch (err) { toast(errText(err), true); } break; }
     case 'srret-close': aS().retRes = null; render(); break;
     case 'srret-sug': { const inp = $('#rl-' + id); if (inp) { inp.value = b.dataset.no; inp.focus(); } break; }
+    case 'retscan-open': openSheet('retscan', {done: []}); setTimeout(rsStart, 80); break;
+    case 'rs-cam': { const sh = S.sheet; if (sh && sh.cam) rsStop(); else rsStart(); break; }
+    case 'rs-next': { const sh = S.sheet; if (sh) { sh.res = null; sh.lastCam = ''; rsPaint(); } break; }
+    case 'rs-yes': { const sh = S.sheet; if (!sh || !sh.res || !sh.res.found || sh.busy) break; const d = sh.res; sh.busy = true; rsPaint();
+      try { const r = await api('/api/srret/confirm', {no: d.no, takip: d.scanTakip || ''}); toast(`${d.orderNo}: ${r.lines && r.lines.length ? r.lines.reduce((t, l) => t + l.qty, 0) + ' ürün stoğa girdi' : 'teslim alındı (sipariş iptal edilmiş, stok zaten eklenmişti)'}.`); sh.done.push(d.orderNo); sh.res = null; sh.lastCam = ''; }
+      catch (err) { toast(errText(err), true); }
+      sh.busy = false; rsPaint(); break; }
     case 'srret-reload': aS().retList = null; loadRet(); render(); break;
     case 'srret-open': { const A = aS(); if (A.retList) { A.retList = null; render(); break; } try { A.retList = await api('/api/srret/list', {}); } catch (err) { toast(errText(err), true); } render(); break; }
     case 'srret-live': { const A = aS(); A.retLive = A.retLive || {}; A.retLive[id] = 'Sürat\'a soruluyor…'; render(); try { const r = await api('/api/srret/live', {takip: id}); A.retLive[id] = r.err ? '⚠️ ' + r.err : (r.teslim ? '✅ Sana teslim edildi (' + cDay(r.teslim) + ')' : (r.durum || 'Durum yok')); A.retList = await api('/api/srret/list', {}); } catch (err) { A.retLive[id] = errText(err); } render(); break; }
