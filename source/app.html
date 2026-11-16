@@ -2706,7 +2706,8 @@ async function rsHandle(txt, manual){ const sh = S.sheet; if (!sh || sh.type !==
 async function rsStart(){ const sh = S.sheet; if (!sh || sh.type !== 'retscan') return; const v = $('#rs-video'), cv = $('#rs-cv'); if (!v || !cv) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('Bu tarayıcı kamerayı açamıyor.', true); return; }
   sh.cam = true; const btn = $('#rs-cambtn'); if (btn) btn.textContent = 'Kamerayı kapat'; const box = $('#rs-cam'); if (box) box.style.display = '';
-  const hit = (t) => { const now = Date.now(); if (t === sh.lastCam && now - sh.lastCamAt < 2500) return; sh.lastCam = t; sh.lastCamAt = now; rsHandle(t); };
+  /* yarım okunan kısa kodlar (ör. 581232) yok sayılır: LH… ya da en az 10 haneli kodlar işlenir */
+  const hit = (t) => { t = String(t || '').trim(); if (!/LH\s*\d/i.test(t) && t.replace(/\D/g, '').length < 10) return; const now = Date.now(); if (t === sh.lastCam && now - sh.lastCamAt < 2500) return; sh.lastCam = t; sh.lastCamAt = now; rsHandle(t); };
   try {
     sh.stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}, audio: false}); v.srcObject = sh.stream; await v.play();
     let det = null; if ('BarcodeDetector' in window) { try { const ok = await BarcodeDetector.getSupportedFormats(); const fm = ['code_128','code_39','ean_13','itf'].filter(x => ok.includes(x)); if (fm.length) det = new BarcodeDetector({formats: fm}); } catch(e) {} }
