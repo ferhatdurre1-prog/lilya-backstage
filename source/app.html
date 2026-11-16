@@ -2707,11 +2707,14 @@ async function rsStart(){ const sh = S.sheet; if (!sh || sh.type !== 'retscan') 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('Bu tarayıcı kamerayı açamıyor.', true); return; }
   sh.cam = true; const btn = $('#rs-cambtn'); if (btn) btn.textContent = 'Kamerayı kapat'; const box = $('#rs-cam'); if (box) box.style.display = '';
   /* yarım okunan kısa kodlar (ör. 581232) yok sayılır: LH… ya da en az 10 haneli kodlar işlenir */
-  const hit = (t) => { t = String(t || '').trim(); if (!/LH\s*\d/i.test(t) && t.replace(/\D/g, '').length < 10) return; const now = Date.now(); if (t === sh.lastCam && now - sh.lastCamAt < 2500) return; sh.lastCam = t; sh.lastCamAt = now; rsHandle(t); };
+  /* Hatalı okumayı ele: sadece LH…, tamamı rakam (en az 10 hane) ya da TEX R… kodu kabul; LH dışındakiler art arda iki kez aynı okununca işlenir */
+  const hit = (t) => { t = String(t || '').trim().replace(/\s+/g, ''); const lh = /^LH\d{2,7}$/i.test(t); if (!lh && !/^\d{10,20}$/.test(t) && !/^R0\d{8,}$/i.test(t)) return;
+    if (!lh) { if (sh.cand !== t) { sh.cand = t; sh.candN = 1; return; } if (++sh.candN < 2) return; }
+    const now = Date.now(); if (t === sh.lastCam && now - sh.lastCamAt < 2500) return; sh.lastCam = t; sh.lastCamAt = now; sh.cand = ''; rsHandle(t); };
   try {
     sh.stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}, audio: false}); v.srcObject = sh.stream; await v.play();
-    let det = null; if ('BarcodeDetector' in window) { try { const ok = await BarcodeDetector.getSupportedFormats(); const fm = ['code_128','code_39','ean_13','itf'].filter(x => ok.includes(x)); if (fm.length) det = new BarcodeDetector({formats: fm}); } catch(e) {} }
-    let zr = null; if (!det) { await loadScript('https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js'); const hints = new Map(); hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39, ZXing.BarcodeFormat.ITF, ZXing.BarcodeFormat.EAN_13]); hints.set(ZXing.DecodeHintType.TRY_HARDER, true); zr = new ZXing.MultiFormatReader(); zr.setHints(hints); }
+    let det = null; if ('BarcodeDetector' in window) { try { const ok = await BarcodeDetector.getSupportedFormats(); const fm = ['code_128','ean_13','itf'].filter(x => ok.includes(x)); /* code_39 yanlış okuma yapıyordu (ör. :33003V…) */ if (fm.length) det = new BarcodeDetector({formats: fm}); } catch(e) {} }
+    let zr = null; if (!det) { await loadScript('https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js'); const hints = new Map(); hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.ITF, ZXing.BarcodeFormat.EAN_13]); hints.set(ZXing.DecodeHintType.TRY_HARDER, true); zr = new ZXing.MultiFormatReader(); zr.setHints(hints); }
     const ctx = cv.getContext('2d', {willReadFrequently: true}); let k = 0;
     /* sadece turuncu çerçevenin içi okunur (object-fit: cover hesaba katılarak); büyük barkod çerçeve dışında kalırsa küçük LH barkodu yakalanır */
     const frame = () => { const W = v.videoWidth, H = v.videoHeight, el = v.getBoundingClientRect(); if (!W || !H || !el.width) return null; const sc = Math.max(el.width / W, el.height / H), ox = (W * sc - el.width) / 2, oy = (H * sc - el.height) / 2;
