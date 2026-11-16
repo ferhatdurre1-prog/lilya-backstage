@@ -1852,6 +1852,11 @@ function cariPayForm(sup, sups, cur){
 function bS(){ if (!S.buy) S.buy = {sel: new Set(), qty: {}, inq: {}, sup: null, loading: false, all: false, q: ''}; return S.buy; }
 function loadBuySup(){ const B = bS(); if (B.sup || B.loading) return; B.loading = true;
   api('/api/buy/suppliers', {}).then(d => { B.sup = d.map || {}; B.loading = false; if (S.tab === 'buy') render(); }).catch(() => { B.sup = {}; B.loading = false; }); }
+/* Alınacaklar: tedarikçi sitesindeki ürün sayfası (ürüne girilen link) ya da Kartal'da arama (Google üzerinden, site içi) */
+function buyLinks(p, sup){ const kartal = /kartal/i.test(String(sup || '')) || /kartalistoc/i.test(p.buyUrl || '');
+  if (p.buyUrl) return `<div style="margin-top:4px"><a class="btn sm primary" href="${esc(p.buyUrl)}" target="_blank" rel="noopener">🔗 ${/kartalistoc/i.test(p.buyUrl) ? 'Kartal\'da aç' : 'Siteye git'}</a></div>`;
+  if (kartal) return `<div style="margin-top:4px"><a class="btn sm ghost" href="https://www.google.com/search?q=${encodeURIComponent('site:kartalistoc.com ' + p.name)}" target="_blank" rel="noopener">🔎 Kartal'da ara</a> <span class="small muted">linki ürün sayfasından bir kere gir, sonra doğrudan açılır</span></div>`;
+  return ''; }
 /* Alınacaklar: stoksuz satışta satılıp eksiye düşenler + stoğu biten (tükenen) ürünler; tükenende önerilen adet 10 */
 const isOutP = p => !p.mto && !p.set && p.qty <= 0, needBuyP = p => (p.mto && p.qty < 0) || isOutP(p);
 function buyRows(){ const B = bS(), q = trFold(B.q);
@@ -1877,7 +1882,7 @@ function viewBuy(){
     const on = B.sel.has(p.id);
     h += `<div class="card" style="gap:6px;padding:10px 12px;${on ? 'border-color:var(--accent)' : ''}"><div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:10px;align-items:center">
       <label class="chk"><input type="checkbox" data-buysel="${esc(p.id)}" ${on ? 'checked' : ''}></label>${thumb(p)}
-      <div style="min-width:0"><div class="ttl" style="font-weight:600;overflow-wrap:anywhere">${esc(p.name)}</div><div class="small muted"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span> · stok <b style="color:${p.qty < 0 ? 'var(--bad)' : 'inherit'}">${fmtN(p.qty)}</b>${r.out ? ' · <span class="pill p-warn">Tükendi</span>' : r.need ? ` · <b style="color:var(--orange)">${fmtN(r.need)} adet satıldı, alınmadı</b>` : ''}${r.unit ? ' · son alış ' + esc(tl2(r.unit)) : ''}</div>${r.ords.length ? `<div class="small muted">Siparişler: ${esc(r.ords.join(', '))}</div>` : ''}</div>
+      <div style="min-width:0"><div class="ttl" style="font-weight:600;overflow-wrap:anywhere">${esc(p.name)}</div><div class="small muted"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span> · stok <b style="color:${p.qty < 0 ? 'var(--bad)' : 'inherit'}">${fmtN(p.qty)}</b>${r.out ? ' · <span class="pill p-warn">Tükendi</span>' : r.need ? ` · <b style="color:var(--orange)">${fmtN(r.need)} adet satıldı, alınmadı</b>` : ''}${r.unit ? ' · son alış ' + esc(tl2(r.unit)) : ''}</div>${r.ords.length ? `<div class="small muted">Siparişler: ${esc(r.ords.join(', '))}</div>` : ''}${buyLinks(p, g)}</div>
       <label class="f" style="width:84px;margin:0"><span class="small">Sipariş</span><input class="input num" data-buyqty="${esc(p.id)}" value="${esc(String(r.qty))}" inputmode="numeric"></label></div>
       <div class="row" style="gap:8px;justify-content:flex-end;align-items:center;border-top:1px dashed var(--line);padding-top:6px"><span class="small muted">Ürün geldi mi?</span><input class="input num" data-buyin="${esc(p.id)}" value="${esc(B.inq[p.id] || '')}" inputmode="numeric" placeholder="Gelen adet" style="width:110px"><button class="btn sm primary" data-act="buy-in" data-id="${esc(p.id)}">📥 Giriş yap</button></div></div>`; }
   return h;
@@ -2385,6 +2390,7 @@ ${p.set ? `<div id="p-set">${setCard(p)}</div>` : `    <div class="seg" role="gr
       <label class="f">Birim alış fiyatı (TL)<input class="input num" id="pi-cost" inputmode="decimal" value="${p.cost!=null?esc(String(p.cost).replace('.',',')):''}" placeholder="Örn. 75,00"></label>
       <label class="f">Düşük stok sınırı<input class="input num" id="pi-min" inputmode="numeric" value="${esc(p.min)}"></label>
       <label class="f">Ürün desi bilgisi (gerçek, örn. 0,36)<input class="input num" id="pi-desi" inputmode="decimal" value="${p.desiM != null ? esc(String(p.desiM).replace('.', ',')) : ''}" placeholder="${p.desiTy ? 'Trendyol paketlerinden: ~' + esc(String(p.desiTy).replace('.', ',')) : 'Örn. 0,36'}"></label>
+      <label class="f">Tedarikçi linki <span class="muted">(drop yapılan sitedeki ürün sayfası; Alınacaklar'da 🔗 ile açılır)</span><input class="input" id="pi-buyurl" inputmode="url" value="${esc(p.buyUrl || '')}" placeholder="https://www.kartalistoc.com/..."></label>
       <fieldset style="grid-column:1/-1;border:0;padding:0;margin:0;display:grid;gap:6px"><legend class="small" style="color:var(--ink-2);font-weight:500;margin-bottom:6px">Satıldığı kanallar</legend><div class="chips">${Object.keys(CHANNELS).map(c => `<label class="chip" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" name="pi-ch" value="${c}" ${p.channels.includes(c)?'checked':''}>${esc(CHANNELS[c].name)}</label>`).join('')}</div></fieldset>
       <div style="grid-column:1/-1" class="row"><button class="btn primary" type="submit">Bilgileri kaydet</button></div>
     </form>
@@ -2935,7 +2941,7 @@ async function submitInfo(){
   const code = ($('#pi-code') || {}).value; if (code !== undefined && !code.trim()) return toast('Ürün kodu boş olamaz.', true);
   const dRaw = (($('#pi-desi') || {}).value || '').trim(), desi = dRaw ? num(dRaw) : null; if (dRaw && (!isFinite(desi) || desi < 0 || desi > 500)) return toast('Desiyi sayı olarak yaz. Örn. 0,36', true);
   const dChg = (desi || null) !== (p.desiM || null);
-  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), cost, min, channels, ...(dChg ? {desi: desi || 0} : {}), ...(code !== undefined && code.trim() !== (p.code || '') ? {code} : {})}); await refresh(true); if (dChg) { profS().cache = {}; profS().key = ''; } toast('Ürün bilgileri kaydedildi.'); });
+  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), cost, min, channels, ...($('#pi-buyurl') ? {buyUrl: $('#pi-buyurl').value.trim()} : {}), ...(dChg ? {desi: desi || 0} : {}), ...(code !== undefined && code.trim() !== (p.code || '') ? {code} : {})}); await refresh(true); if (dChg) { profS().cache = {}; profS().key = ''; } toast('Ürün bilgileri kaydedildi.'); });
 }
 
 /* ============ Siparişler ============ */
