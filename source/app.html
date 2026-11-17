@@ -2204,10 +2204,19 @@ function homeMaybeLoad(force){
   if (!force && H && H.pending && now - H.at < 3500) return;
   setTimeout(() => loadHome(force), 0);
 }
+function sheetFix1117(){ const r = S.sheet.rep || {}, D = r.deleted || [], R = r.reversed || [];
+  const body = `<p class="small">17 Kasım 22:25–22:45 arasındaki hatalı Shopify güncellemesinin yaptığı değişiklikler geri alındı. Stoklar o saatten önceki haline döndü.</p>
+  <h3 style="margin:14px 0 6px">Yeniden silinen ürünler (${D.length})</h3>${D.length ? `<table><tr><th>Ürün</th><th>Stok kodu</th></tr>${D.map(x => `<tr><td>${esc(x.name||'')}</td><td>${esc(x.sku||'')}</td></tr>`).join('')}</table>` : '<p class="small">Yok</p>'}
+  <h3 style="margin:14px 0 6px">Geri alınan stok hareketleri (${R.length})</h3>${R.length ? `<table><tr><th>Ürün</th><th>Stoğa</th></tr>${R.map(x => `<tr><td>${esc(x.name||x.sku||'')}</td><td>${x.d > 0 ? '+' : ''}${x.d}</td></tr>`).join('')}</table>` : '<p class="small">Yok</p>'}
+  <button class="btn" style="margin-top:16px;width:100%" data-act="fix1117-ok">Tamam, gördüm</button>`;
+  return { title: 'Stok onarımı yapıldı', body };
+}
+async function fix1117Check(){ if (S.fixChecked) return; S.fixChecked = true; try { const d = await api('/api/fix1117', {}); if (d && d.report) openSheet('fix1117', { rep: d.report }); } catch (e) {} }
 async function loadHome(force){
   if (S.homeLoading) return; S.homeLoading = true;
   const rev = S.rev;
   try { const data = await api('/api/home', force ? {force: true} : {});
+    if (!data.pending) setTimeout(fix1117Check, 300);
     if (data.pending) {
       // Sunucu arka planda hesaplıyor; birkaç saniye sonra tekrar sor
       S.home = S.home && S.home.data ? {...S.home, at: Date.now() - 55000} : {rev, at: Date.now(), pending: true, perr: data.err || ''};
@@ -4736,7 +4745,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts}[sh.type];
+  const fn = {payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts, fix1117:sheetFix1117}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -5426,6 +5435,7 @@ document.addEventListener('click', async e => {
       await refresh(true); toast(created ? `Tarama bitti · ${fmtN(created)} yeni ürün eklendi.` : 'Tarama bitti · yeni ürün yok (ürün Trendyol\'da onaylı mı, stok kodu başka bir ürünle aynı mı?).'); }); break;
     case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
     case 'close': closeSheet(); break;
+    case 'fix1117-ok': closeSheet(); api('/api/fix1117', {seen: 1}).catch(() => {}); break;
   }
 });
 document.addEventListener('submit', async e => {

@@ -123,6 +123,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret(takip TEXT PRIMARY KEY, web TEXT, gonderen TEXT, il TEXT, fatura TEXT, teslim TEXT, durum TEXT, fee REAL, desi REAL, cod REAL, no TEXT, how TEXT, at TEXT)').run();
   // Kural değişti (13.11): iade kârı sadece depoya ulaşınca etkiler; önceki yüklemede işaretlenen ama depoya ulaşmamış iadelerin kâr işareti kalkar
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_retcargo_all1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_retcargo_all1','1')`), env.DB.prepare('DELETE FROM daily_stats'), setStmt(env, 'home_cache', '')]); } catch (e) {} } // iade siparişlerinde gidiş kargosu da iade kargosuna: kâr günleri yeniden hesaplanır
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_fix1117'`).first())) { try { await fix1117(env); } catch (e) { try { await setSetting(env, 'fix1117_err', iso() + ' · ' + String(e.message || e).slice(0, 300)); } catch (e2) {} } }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_srret_profit1'`).first())) { try {
     await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_srret_profit1','1')`),
       env.DB.prepare(`UPDATE sr_cost SET undelivered=0, ret_real=NULL, cost=NULL, durum=NULL WHERE ret_real=1 AND no IN (SELECT no FROM sr_ret r WHERE no IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sr_ret_in i WHERE i.takip = r.takip))`),
@@ -1624,6 +1625,30 @@ async function shPayBackfill(env, maxPages = 4) {
   await env.DB.batch([setStmt(env, 'sh_pay_after', done ? '' : after || ''), ...(done ? [setStmt(env, 'sh_pay_done', '1'), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(from), setStmt(env, 'home_cache', ''), REV(env)] : [])]);
   return { n, done };
 }
+// 17.11 22:25–22:45: hatalı Shopify yeniden okuması eski siparişler yüzünden silinmiş ürünleri yeniden açtı ve stok hareketi yaptı → geri alınır, rapor saklanır
+async function fix1117(env) {
+  const A = '2026-11-17T19:20:00.000Z', B = '2026-11-17T19:50:00.000Z', TODAY = '2026-11-16T21:00:00.000Z', now = iso();
+  if (await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_fix1117'`).first()) return;
+  await env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_fix1117','1')`).run();
+  const { results: np } = await env.DB.prepare(`SELECT p.key, p.sku, p.name, p.qty FROM products p WHERE p.created_at >= ?1 AND p.created_at < ?2
+    AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.date >= ?3 AND instr(o.lines, '"pkey":"' || p.key || '"') > 0)
+    AND EXISTS (SELECT 1 FROM orders o WHERE o.channel = 'shopify' AND o.date < ?3 AND instr(o.lines, '"pkey":"' || p.key || '"') > 0)
+    AND NOT EXISTS (SELECT 1 FROM moves m WHERE m.pkey = p.key AND NOT (m.t >= ?1 AND m.t < ?2 AND m.channel = 'shopify' AND m.ref IN (SELECT order_no FROM orders WHERE channel='shopify' AND date < ?3)))`).bind(A, B, TODAY).all();
+  const del = new Set(np.map(x => x.key));
+  const { results: mv } = await env.DB.prepare(`SELECT m.pkey, SUM(m.delta) d, MAX(m.name) name, MAX(m.sku) sku, COUNT(*) n, GROUP_CONCAT(DISTINCT m.ref) refs FROM moves m
+    WHERE m.t >= ?1 AND m.t < ?2 AND m.channel = 'shopify' AND m.type IN ('sale','adjust','cancel') AND m.ref IN (SELECT order_no FROM orders WHERE channel='shopify' AND date < ?3) GROUP BY m.pkey`).bind(A, B, TODAY).all();
+  const rev = mv.filter(x => x.pkey && !del.has(x.pkey) && Number(x.d));
+  const st = [];
+  for (const x of rev) { const d = -Number(x.d);
+    st.push(env.DB.prepare('UPDATE products SET qty=qty+?1, updated_at=?2 WHERE key=?3').bind(d, now, x.pkey));
+    st.push(env.DB.prepare(`INSERT INTO moves(t,pkey,sku,name,delta,after,type,channel,ref,note) SELECT ?1,key,sku,name,?2,qty,'adjust','manuel','','Geri alındı: 17.11 hatalı Shopify yeniden okuması' FROM products WHERE key=?3`).bind(now, d, x.pkey)); }
+  for (const k of del) st.push(env.DB.prepare('DELETE FROM products WHERE key=?1').bind(k));
+  st.push(setStmt(env, 'sh_refin_done', '1'), setStmt(env, 'home_cache', ''), REV(env));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  const report = { at: now, deleted: np.map(x => ({ sku: x.sku, name: x.name, qty: x.qty })), reversed: rev.map(x => ({ sku: x.sku, name: x.name, d: -Number(x.d), refs: String(x.refs || '').split(',').slice(0, 6) })) };
+  await setSetting(env, 'fix1117_report', JSON.stringify(report).slice(0, 60000));
+}
+
 // Bir kerelik: rapor başlangıcından bu yana sistemdeki Shopify siparişleri yeniden okunur (düzenlemeyle çıkarılan ürünler ve iptal edilen siparişlerin silinmiş satırları düzelsin)
 async function shRefinBackfill(env, maxPages = 3) {
   const s = await getSettings(env, ['sh_refin_done', 'sh_refin_after', 'report_start']); if (s.sh_refin_done === '1') return null;
@@ -3601,6 +3626,7 @@ async function api(req, env, path, ctx) {
     await env.DB.batch([...ensureProduct(env, key, { sku, name, cost }, null), REV(env)]);
     return json({ ok: true, key });
   }
+  if (path === '/api/fix1117') { const r = await getSettings(env, ['fix1117_report', 'fix1117_seen', 'fix1117_err']); if (body.seen) { await setSetting(env, 'fix1117_seen', '1'); return json({ ok: true }); } return json({ report: r.fix1117_report && r.fix1117_seen !== '1' ? JSON.parse(r.fix1117_report) : null, err: r.fix1117_err || '' }); }
   if (path === '/api/products/delete') { await env.DB.batch([env.DB.prepare('DELETE FROM products WHERE key=?1').bind(String(body.key || '')), REV(env)]); return json({ ok: true }); }
   if (path === '/api/stock') {
     const key = String(body.key || ''), mode = body.mode, n = intOr(body.n, NaN), note = String(body.note || '').slice(0, 300);
