@@ -1441,6 +1441,24 @@ async function srGkdWindow(env, acct, d0) {
   if (st.length) { st.push(env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(a.toISOString().slice(0, 10)), setStmt(env, 'home_cache', '')); for (let k = 0; k < st.length; k += 80) await env.DB.batch(st.slice(k, k + 80)); }
   return { n: G.length, fee, ret, to: b.toISOString().slice(0, 10) };
 }
+// Giden gönderide Sürat "iade / teslim edilemedi" diyorsa (Sürat ayrı iade kaydı açmasa da) iade listesine düşer: aynı takip no ile; sonradan gelen Sürat iade kaydı aynı satırı günceller. Stok/kâr yine sadece Depoya ulaştı ile
+async function srRetFromOut(env) {
+  const { results } = await env.DB.prepare(`SELECT s.ref, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, s.live_durum, s.live_yer, s.live_at, s.live_und, c.undelivered, r.iade
+    FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
+    WHERE COALESCE(s.tracking,'') <> '' AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
+  const und = results.filter(x => x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || ''))));
+  if (!und.length) return 0;
+  const have = await env.DB.prepare('SELECT takip, no FROM sr_ret').all(), T = new Set(have.results.map(x => srDig(x.takip))), N = new Set(have.results.map(x => String(x.no || '')).filter(Boolean));
+  const st = [];
+  for (const x of und) { const takip = String(x.tracking).replace(/\D/g, ''), no = String(x.order_no || '').replace(/\D/g, ''); if (!takip || T.has(srDig(takip)) || (no && N.has(no))) continue;
+    let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const t = Date.parse(x.fulfilled_at || x.at) || Date.now(), f = new Date(t + 3 * 3600000).toISOString().slice(0, 16).replace('T', ' ');
+    st.push(env.DB.prepare(`INSERT INTO sr_ret(takip, web, gonderen, il, fatura, teslim, durum, fee, desi, cod, no, how, at) VALUES(?1,?2,?3,?4,?5,NULL,?6,NULL,NULL,0,?7,'giden',?8) ON CONFLICT(takip) DO NOTHING`)
+      .bind(takip, x.ref || '', String(a.name || '').slice(0, 80), String(a.il || '').slice(0, 40), f, [x.live_durum, x.live_yer].filter(Boolean).join(' · ').slice(0, 120) || 'Teslim edilemedi · iade', no || null, iso()));
+    T.add(srDig(takip)); if (no) N.add(no); }
+  for (let k = 0; k < st.length; k += 80) await env.DB.batch(st.slice(k, k + 80));
+  if (st.length) await env.DB.batch([REV(env)]);
+  return st.length;
+}
 // Geçmiş 17.10'dan 6'şar günlük parçalarla bir kez toplanır; sonra son 6 gün yarım saatte bir yenilenir
 async function srGkdSync(env, t0) {
   const s = await getSettings(env, ['gkd_cursor', 'gkd_at', 'gkd_err']), today = trToday(); let cur = s.gkd_cursor || '2026-10-17', back = cur <= today;
@@ -4496,7 +4514,7 @@ ${catalog}` });
     let stock = null; if (x.teslim && x.teslim.slice(0, 10) <= SR_RET_AUTO_UNTIL && !(await env.DB.prepare('SELECT 1 FROM sr_ret_in WHERE takip=?1').bind(takip).first())) stock = await srRetStock(env, takip, true, true);
     return json({ ok: true, stock });
   }
-  if (path === '/api/srret/list') { let sug = new Map(); try { sug = await srRetSuggest(env); } catch (e) {} const gs = await getSettings(env, ['gkd_cursor', 'gkd_last', 'gkd_err']); let gl = null; try { gl = gs.gkd_last ? JSON.parse(gs.gkd_last) : null; } catch (e) {} const gkd = { cursor: gs.gkd_cursor || '2026-10-17', done: (gs.gkd_cursor || '2026-10-17') > trToday(), last: gl, err: gs.gkd_err || '' }; const { results } = await env.DB.prepare('SELECT r.*, i.at in_at, i.lines in_lines, i.auto in_auto FROM sr_ret r LEFT JOIN sr_ret_in i ON i.takip = r.takip ORDER BY COALESCE(r.teslim, r.fatura) DESC').all(); return json({ ok: true, rows: results.map(x => { let L = []; try { L = JSON.parse(x.in_lines || '[]'); } catch (e) {} return { ...x, in_lines: L, sug: sug.get(x.takip) || null }; }), gkd }); }
+  if (path === '/api/srret/list') { try { await srRetFromOut(env); } catch (e) {} let sug = new Map(); try { sug = await srRetSuggest(env); } catch (e) {} const gs = await getSettings(env, ['gkd_cursor', 'gkd_last', 'gkd_err']); let gl = null; try { gl = gs.gkd_last ? JSON.parse(gs.gkd_last) : null; } catch (e) {} const gkd = { cursor: gs.gkd_cursor || '2026-10-17', done: (gs.gkd_cursor || '2026-10-17') > trToday(), last: gl, err: gs.gkd_err || '' }; const { results } = await env.DB.prepare('SELECT r.*, i.at in_at, i.lines in_lines, i.auto in_auto FROM sr_ret r LEFT JOIN sr_ret_in i ON i.takip = r.takip ORDER BY COALESCE(r.teslim, r.fatura) DESC').all(); return json({ ok: true, rows: results.map(x => { let L = []; try { L = JSON.parse(x.in_lines || '[]'); } catch (e) {} return { ...x, in_lines: L, sug: sug.get(x.takip) || null }; }), gkd }); }
   if (path === '/api/srret/live') { const x = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(String(body.takip || '').replace(/\D/g, '')).first(); if (!x) return bad('İade bulunamadı.'); let r; try { r = await srRetLive(env, x); } catch (e) { r = { err: String(e.message || e).slice(0, 200) }; } return json({ ok: true, ...r }); }
   if (path === '/api/srret/find') { // iade teslim al: okutulan barkoddan siparişi bul (LH sipariş kodu ya da Sürat takip / barkod no)
     const raw = String(body.code || '').trim(); if (!raw) return bad('Barkod okunamadı.'); let no = '', how = '';
@@ -4775,6 +4793,7 @@ ${catalog}` });
     await env.DB.batch([setStmt(env, 'sr_track_busy', String(t0)), setStmt(env, 'run_sr_app_at', String(t0)), setStmt(env, 'run_sr_at', String(t0))]);
     let r = null; try { r = await srTrackPending(env, 150, t0 + 25000); } catch (e) { await setSetting(env, 'sr_track_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); } finally { await setSetting(env, 'sr_track_busy', '0'); }
     try { if (Date.now() - t0 < 30000) await srGkdSync(env, t0); } catch (e) {}
+    try { await srRetFromOut(env); } catch (e) { await setSetting(env, 'sr_retout_err', iso() + ' · ' + String(e && e.message || e).slice(0, 200)); }
     /* Sürat iadeleri: depoya ulaşmamış ve 30 dakikadır sorulmamış olanlar, dakikada en çok 4 tane (sadece durum gösterimi) */
     try { const { results: RR } = await env.DB.prepare(`SELECT r.* FROM sr_ret r WHERE COALESCE(r.web,'') <> '' AND r.live_teslim IS NULL AND NOT EXISTS (SELECT 1 FROM sr_ret_in i WHERE i.takip = r.takip) AND (r.live_at IS NULL OR r.live_at < ?1) ORDER BY COALESCE(r.live_at,'') LIMIT 4`).bind(iso(Date.now() - 30 * 60000)).all();
       for (const x of RR) { if (Date.now() - t0 > 40000) break; try { await srRetLive(env, x); } catch (e) {} } if (RR.length) await env.DB.batch([REV(env)]); } catch (e) {}
