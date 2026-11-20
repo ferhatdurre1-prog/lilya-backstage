@@ -2984,6 +2984,7 @@ async function loadFees(env) {
 let RS_CACHE = { v: null, at: 0 };
 async function reportStart(env) { if (Date.now() - RS_CACHE.at > 60000) { RS_CACHE = { v: (await getSetting(env, 'report_start')) || '', at: Date.now() }; } return RS_CACHE.v; }
 async function computeProfit(env, from, to, ch0) {
+  const chAll = ch0 === '*'; if (chAll) ch0 = ''; // '*': Kristal Bardak dahil bütün kanallar (sipariş listesi, ana sayfa); boş: Lilya Home (Trendyol + Shopify), Kristal Bardak bağımsız
   { const rs = await reportStart(env); if (/^\d{4}-\d{2}-\d{2}$/.test(rs || '')) { const a = iso(dayStartTR(rs)); if (from < a) from = a; if (to < from) to = from; } }
   const T0 = Date.now(), TM = {}; const mark = (k) => { TM[k] = Date.now() - T0; };
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
@@ -3003,7 +3004,7 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT no, fee, cod_fee, handler, cod, cod_type FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10)),
     env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
-    env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
+    env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel IN ('shopify','kristal') AND date >= ?1 AND date < ?2)`).bind(from, to),
     env.DB.prepare(`SELECT * FROM paytr_tx WHERE tip='S' AND tarih >= ?1 AND tarih <= ?2`).bind(addDay(dayFrom, -1), addDay(dayTo, 1)),
     env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
   const ptLk = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, ptLinkNo = new Map(ptLk.filter(x => x.kind === 'match').map(x => [x.no, x.k])), ptSelf = new Set(ptLk.filter(x => x.kind === 'self').map(x => x.no)), ptLinkedK = new Set(ptLk.map(x => x.k));
@@ -3016,6 +3017,7 @@ async function computeProfit(env, from, to, ch0) {
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
   const bkMark = new Set((await env.DB.prepare(`SELECT no FROM sh_carrier WHERE carrier='basit'`).all()).results.map(x => x.no)); // Shopify'da Basit Kargo ile kargolandığı görülenler
   // Kanal seçiliyse sadece o kanalın siparişleri; Trendyol fatura kesintileri yalnız Trendyol'da, genel giderler kanal seçilince düşülmez
+  if (!ch0 && !chAll) o.results = o.results.filter(x => x.channel !== 'kristal');
   if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); expR.results = []; }
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
@@ -3136,6 +3138,17 @@ async function computeProfit(env, from, to, ch0) {
         cargo = r2(bk.fee + (bk.cod_fee || 0) + cc); shReal = true;
         cargoInfo.push(`Basit Kargo${bk.handler ? ' · ' + bk.handler : ''} · gerçek ücret${bk.cod_fee ? ' (kapıda ödeme bedeli ' + bk.cod_fee + ' TL dahil)' : ''}${cc ? ` + kart komisyonu %4,5 (${cc} TL)` : ''} · ${pm}${incTxt}`); }
       else { cargo = fee.cargoSh; cargoInfo.push(`Basit Kargo kaydı yok · sabit kargo ${fee.cargoSh} TL · ${pm}${incTxt}`); } }
+    else if (ch === 'kristal' && rows.some(x => x.qty > 0 || x.retQ > 0)) {
+      // Kristal Bardak: ciro = sipariş tutarı (kargo dahil, müşteriden ek ücret yok); her zaman kapıda nakit, anlaşmalı Sürat. PayTR ve Meta komisyonu yok
+      const no = String(ord.order_no || '').replace(/\D/g, ''), gross = rows.reduce((a, x) => a + x.full, 0);
+      let d = 0, miss = 0; for (const x of rows) { const q = x.qty + x.retQ, dz = x.pr && Number(x.pr.desi_m) > 0 ? Number(x.pr.desi_m) : (x.pr && Number(x.pr.desi) > 0 ? Number(x.pr.desi) : null); if (!dz) { miss++; d += q; } else d += dz * q; }
+      const sc = srCost.get(no), real = sc && sc.cost !== null && sc.cost > 0;
+      const desi = sc && sc.desi !== null ? Math.ceil(sc.desi) : dRound(d), base = real ? r2(sc.cost) : r2(suratDirectPrice(desi) * (1 + SURAT_POST_TAX) + srSmsFor(fee, ord.date, true));
+      if (sc && sc.undelivered) { undel = true; shReal = real;
+        if (real && sc.ret_real) { cargo = base; cargoInfo.push(`TESLİM EDİLEMEDİ · Sürat iade listesi · Sürat'ın kestiği ücret ${base} TL · ${sc.durum || ''}`); }
+        else { cargo = r2(base * 1.5); cargoInfo.push(`TESLİM EDİLEMEDİ · Sürat ${real ? 'gerçek ücret' : 'tarife'} ${base} TL + dönüş yarı fiyat ${r2(base / 2)} TL · ${sc.durum || ''}`); } }
+      else { const cf = !(real && sc.cost_all) ? suratDirectCod(gross) : 0; cargo = r2(base + cf); shReal = real;
+        cargoInfo.push(`Sürat (anlaşmalı) · ${desi} desi${!real && miss ? ` (${miss} ürünün desisi yok, 1 sayıldı)` : ''} · ${real ? `gerçek ücret ${base} TL (Sürat)` : `${suratDirectPrice(desi)} TL + %2,35 posta vergisi`}${cf ? ` + kapıda ödeme bedeli ${cf} TL` : ''} · kapıda nakit · Kristal Bardak`); } }
     // Platform hizmet bedeli: sipariş saat <kesim> (15:00) öncesi geldiyse indirimli (Bugün Kargoda), sonrası normal. Fatura detayı gelince gerçeği yazılır.
     /* Trendyol kuralı: "Bugün Kargoda" etiketli ve sipariş günü kargoya verilen paket indirimli (15.06.2026'dan beri 5,99; öncesi 8,39), diğerleri normal. Henüz kargoya verilmediyse saat kesimine göre tahmin */
     const oLoc = ord.date ? new Date(Date.parse(ord.date) + TY_TZ) : null, ordHour = oLoc ? oLoc.getUTCHours() : 23, ordDay = oLoc ? oLoc.toISOString().slice(0, 10) : '';
@@ -3190,7 +3203,7 @@ async function computeProfit(env, from, to, ch0) {
     if (ch === 'trendyol') { const SC = sum.stopChk = sum.stopChk || { act: 0, actTL: 0, estTL: 0, est: 0, estOnlyTL: 0 }; if (stopActual) { if (Math.abs(stopaj - stopEst0) >= 0.5) rc.stop = [r2(stopaj), stopEst0]; SC.act++; SC.actTL = r2(SC.actTL + stopaj); SC.estTL = r2(SC.estTL + stopEst0); } else if (stopaj) { SC.est++; SC.estOnlyTL = r2(SC.estOnlyTL + stopaj); } }
     const cost = undel ? 0 : rows.reduce((a, x) => a + x.cost, 0), units = rows.reduce((a, x) => a + x.qty, 0);
     // Paketleme: gönderilen her sipariş için sabit + gönderilen her ürün adedi için (iade dönse de düşmez)
-    const shipped = units + retUnits; const pack = shipped > 0 ? (ch === 'shopify' ? (fee.packOrderSh || 0) + (fee.packUnitSh || 0) * shipped : (fee.packOrder || 0) + (fee.packUnit || 0) * shipped) : 0; // Shopify ayrı paketleme ücreti
+    const shipped = units + retUnits; const pack = shipped > 0 && ch !== 'kristal' ? (ch === 'shopify' ? (fee.packOrderSh || 0) + (fee.packUnitSh || 0) * shipped : (fee.packOrder || 0) + (fee.packUnit || 0) * shipped) : 0; // Shopify ayrı paketleme ücreti
     const profit = revenue - commission - cargo - retCargo - penalty - service - stopaj - cost - pack;
     const oRes = { revenue, commission, cargo, retCargo, penalty, service, stopaj, cost, pack, profit, units, retUnits };
     add(sum, oRes); sum.orders++; if (actual) sum.actualOrders++; if (retUnits) { sum.retOrders++; if (retCargoEst && retCargo) sum.retCargoEst++; if (undelivered) sum.undOrders++; }
@@ -3402,11 +3415,14 @@ async function refreshStats(env, deadline, maxDays) {
    Geçmiş kısım (ve dün, geçen ay, önceki 30 gün) cron'da 10 dakikada bir ya da bir düzeltme özeti silince yeniden hesaplanır. */
 const HOME_FIX_TTL = 600000;
 function homeChOf(P) { if (!P) return null; const R2 = (n) => Math.round(n * 100) / 100, o = {};
-  for (const c of ['trendyol', 'shopify']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
+  for (const c of ['trendyol', 'shopify', 'kristal']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
     const prof = L.reduce((a, x) => a + (x.profit || 0), 0) - ads - (c === 'trendyol' ? (P.summary.otherFees || 0) - (P.summary.compensation || 0) : 0);
     o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; }
 function homeAddCh(a, b) { const R2 = (n) => Math.round(n * 100) / 100; if (!a) return b; if (!b) return a; const o = {};
-  for (const c of ['trendyol', 'shopify']) { const x = a[c] || {}, y = b[c] || {}, rev = (x.revenue || 0) + (y.revenue || 0), prof = (x.profit || 0) + (y.profit || 0); o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: (x.n || 0) + (y.n || 0) }; } return o; }
+  for (const c of ['trendyol', 'shopify', 'kristal']) { const x = a[c] || {}, y = b[c] || {}, rev = (x.revenue || 0) + (y.revenue || 0), prof = (x.profit || 0) + (y.profit || 0); o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: (x.n || 0) + (y.n || 0) }; } return o; }
+// Ana sayfa hesabı Kristal Bardak dahil yapılır (kendi sütunu için); toplamlar Kristal Bardak'sız (Lilya Home)
+function homeExKb(P) { if (!P) return P; const K = (P.orders || []).filter(x => x.channel === 'kristal'); if (!K.length) return P; const s = P.summary, S = (k) => K.reduce((a, x) => a + (Number(x[k]) || 0), 0);
+  return { ...P, summary: { ...s, revenue: s.revenue - S('revenue'), profit: s.profit - S('profit'), orders: s.orders - K.length, units: (s.units || 0) - S('units') } }; }
 // Geçmiş kısım parça parça hesaplanır (her parça tek bir kâr hesabı); bir düzeltme gelince eski değerler gösterilmeye devam eder, parçalar sırayla tazelenir
 const HOME_PARTS = ['mp', 'm30p', 'yd', 'pm', 'p30'];
 function homeFixOk(fx, today) { return !!(fx && fx.day === today && fx.parts && fx.parts.mp && fx.parts.m30p); }
@@ -3449,8 +3465,8 @@ async function homeFixPart(env, fx) {
       for (let d = fromD; d < today; d = addDay(d, 1)) if (!have.has(d) && snaps++ < 3) { try { await snapshotDay(env, d); } catch (e) {} } } catch (e) {} }
   const pm0 = (() => { const d = new Date(m0d + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); })(), pmEnd = Math.min(dayStartTR(m0d), dayStartTR(pm0) + (t00 - dayStartTR(m0d)));
   const rng = { mp: m0d < today ? [dayStartTR(m0d), t0] : null, m30p: [dayStartTR(f30), t0], yd: [t0 - 86400000, t0], pm: [dayStartTR(pm0), pmEnd], p30: [dayStartTR(addDay(f30, -30)), dayStartTR(f30)] }[k];
-  let P = null; if (rng) { try { P = await computeProfit(env, iso(rng[0]), iso(rng[1])); } catch (e) { if (k === 'mp' || k === 'm30p' || k === 'yd') throw e; } }
-  const part = { at: t00, ms: Date.now() - t00, sum: P ? { revenue: R2(P.summary.revenue), profit: R2(P.summary.profit), margin: P.summary.revenue ? R2(P.summary.profit / P.summary.revenue * 100) : null } : (k === 'pm' || k === 'p30' ? null : { revenue: 0, profit: 0, margin: null }), ch: homeChOf(P) };
+  let P = null, PA = null; if (rng) { try { PA = await computeProfit(env, iso(rng[0]), iso(rng[1]), '*'); P = homeExKb(PA); } catch (e) { if (k === 'mp' || k === 'm30p' || k === 'yd') throw e; } }
+  const part = { at: t00, ms: Date.now() - t00, sum: P ? { revenue: R2(P.summary.revenue), profit: R2(P.summary.profit), margin: P.summary.revenue ? R2(P.summary.profit / P.summary.revenue * 100) : null } : (k === 'pm' || k === 'p30' ? null : { revenue: 0, profit: 0, margin: null }), ch: homeChOf(PA) };
   // en son hali okunur (bu arada başka biri yazmış olabilir), sadece bu parça değişir
   const cur = await homeFixLoad(env, today); cur.parts[k] = part; cur.at = t00; await setSetting(env, 'home_fixed', JSON.stringify(cur)); return cur;
 }
@@ -3459,22 +3475,24 @@ async function computeHomeLive(env, fx, rev0) {
   const t00 = Date.now(), today = trDay(t00), t0 = dayStartTR(today), m0d = today.slice(0, 8) + '01', w0d = addDay(today, -6), R2 = (n) => Math.round(n * 100) / 100;
   if (rev0 === undefined) rev0 = String((await getSetting(env, 'rev')) || '');
   const ySame = Math.max(t0 - 86400000 + 1, t00 - 86400000);
-  const [T, YS, statsR, pdR] = await Promise.all([
-    computeProfit(env, iso(t0), iso(t0 + 86400000)),
-    computeProfit(env, iso(t0 - 86400000), iso(ySame)),
+  const [TA, YSA, statsR, pdR] = await Promise.all([
+    computeProfit(env, iso(t0), iso(t0 + 86400000), '*'),
+    computeProfit(env, iso(t0 - 86400000), iso(ySame), '*'),
     env.DB.prepare('SELECT day, data FROM daily_stats WHERE day >= ?1 AND day < ?2').bind(w0d, today).all(),
     env.DB.prepare('SELECT pkey, SUM(profit) p FROM product_daily WHERE day >= ?1 AND day < ?2 GROUP BY pkey').bind(m0d, today).all()]);
+  const T = homeExKb(TA), YS = homeExKb(YSA);
   const byDay = new Map(statsR.results.map(x => [x.day, JSON.parse(x.data || '{}')]));
   const days = [];
   for (let i = 6; i >= 0; i--) { const d = addDay(today, -i); const x = i === 0 ? T.summary : (byDay.get(d) || {}); days.push({ d, rev: Number(x.revenue) || 0, prof: Number(x.profit) || 0, n: Number(x.orders) || 0, u: Number(x.units) || 0 }); }
-  const pp = new Map(pdR.results.map(x => [x.pkey, x.p || 0])); for (const x of T.products) pp.set(x.key, (pp.get(x.key) || 0) + (x.profit || 0));
+  const pp = new Map(pdR.results.map(x => [x.pkey, x.p || 0])); for (const x of TA.products) pp.set(x.key, (pp.get(x.key) || 0) + (x.profit || 0));
   const F = fx.parts || {}, pt = (k) => F[k] || { sum: null, ch: null }, mp = pt('mp').sum || { revenue: 0, profit: 0 }, m30p = pt('m30p').sum || { revenue: 0, profit: 0 };
-  const tCh = homeChOf(T), mRev = mp.revenue + T.summary.revenue, mProf = mp.profit + T.summary.profit, dRev = m30p.revenue + T.summary.revenue, dProf = m30p.profit + T.summary.profit;
-  const out = { day: today, rev: rev0, at: Date.now(), fxAt: fx.at, ch: { today: tCh, ys: homeChOf(YS), yday: pt('yd').ch, month: homeAddCh(pt('mp').ch, tCh), d30: homeAddCh(pt('m30p').ch, tCh), pm: pt('pm').ch, p30: pt('p30').ch }, todayN: T.summary.orders, ysN: YS.summary.orders,
+  const tCh = homeChOf(TA), mRev = mp.revenue + T.summary.revenue, mProf = mp.profit + T.summary.profit, dRev = m30p.revenue + T.summary.revenue, dProf = m30p.profit + T.summary.profit;
+  const out = { day: today, rev: rev0, at: Date.now(), fxAt: fx.at, ch: { today: tCh, ys: homeChOf(YSA), yday: pt('yd').ch, month: homeAddCh(pt('mp').ch, tCh), d30: homeAddCh(pt('m30p').ch, tCh), pm: pt('pm').ch, p30: pt('p30').ch }, todayN: T.summary.orders, ysN: YS.summary.orders,
     pm: pt('pm').sum ? { revenue: pt('pm').sum.revenue, profit: pt('pm').sum.profit } : null, p30: pt('p30').sum ? { revenue: pt('p30').sum.revenue, profit: pt('p30').sum.profit } : null, ms: Date.now() - t00, ySame: { at: ySame, rev: YS.summary.revenue, prof: YS.summary.profit, n: YS.summary.orders, u: YS.summary.units }, days,
     month: { revenue: R2(mRev), profit: R2(mProf), margin: mRev ? R2(mProf / mRev * 100) : null },
     yday: pt('yd').sum || { revenue: 0, profit: 0, margin: null },
     last30: { revenue: R2(dRev), profit: R2(dProf), margin: dRev ? R2(dProf / dRev * 100) : null }, losers: [...pp.values()].filter(v => v < 0).length };
+  try { const k = await env.DB.prepare(`SELECT COUNT(*) n FROM kb_orders k WHERE COALESCE(test,0)=0 AND cancelled_at IS NULL AND NOT EXISTS (SELECT 1 FROM sr_ship s WHERE s.gid = 'kb:' || k.no AND s.fulfilled_at IS NOT NULL)`).first(); out.kbPend = (k && k.n) || 0; } catch (e) {} // Kristal Bardak: gönderilmemiş sipariş
   const js = JSON.stringify(out); await env.DB.batch([setStmt(env, 'home_cache', js), setStmt(env, 'home_last', js), setStmt(env, 'home_err', '')]);
   return out;
 }
@@ -5401,7 +5419,7 @@ ${catalog}` });
     if (!from || !to || to <= from || to - from > 400 * 86400000) return bad('Tarih aralığı geçersiz.');
     // Hız ölçümü: veritabanı bekleme süresi (ping) ve toplam süre Bağlantılar'da görünür
     const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-    const ch = ['trendyol', 'shopify'].includes(body.channel) ? body.channel : '';
+    const ch = ['trendyol', 'shopify', 'kristal'].includes(body.channel) ? body.channel : '';
     const out = await computeProfit(env, iso(from), iso(to), ch); const ms = Date.now() - t0;
     try { await setSetting(env, 'perf_profit', JSON.stringify({ at: iso(), days: Math.round((to - from) / 86400000), orders: out.orders.length, ms, ping, ph: PERF_LAST, cold: COLD_MS })); } catch (e) {}
     return json(out);
@@ -5477,7 +5495,7 @@ ${catalog}` });
     try {
       const ds = results.map(r => Date.parse(r.date)).filter(Number.isFinite);
       if (ds.length) {
-        const pr = await computeProfit(env, iso(Math.min(...ds) - 1000), iso(Math.max(...ds) + 1000)) /* Shopify tarihleri milisaniyesiz ('…12Z'); metin karşılaştırmasında dışarıda kalmasın */;
+        const pr = await computeProfit(env, iso(Math.min(...ds) - 1000), iso(Math.max(...ds) + 1000), '*') /* Shopify tarihleri milisaniyesiz ('…12Z'); metin karşılaştırmasında dışarıda kalmasın */;
         const ids = new Set(results.map(r => r.id));
         for (const x of pr.orders) if (ids.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual };
       }
@@ -5487,7 +5505,7 @@ ${catalog}` });
   if (path === '/api/orders/profdet') {
     // Tek siparişin kâr dökümü (sipariş detayında gelir / gider kalemleri; Kâr ekranıyla aynı hesap)
     const id = String(body.id || ''); const r = await env.DB.prepare('SELECT date FROM orders WHERE id=?1').bind(id).first(); if (!r) return bad('Sipariş bulunamadı.', 404);
-    const d = Date.parse(r.date); const pr = await computeProfit(env, iso(d - 1000), iso(d + 1000)); const x = (pr.orders || []).find(y => y.id === id);
+    const d = Date.parse(r.date); const pr = await computeProfit(env, iso(d - 1000), iso(d + 1000), '*'); const x = (pr.orders || []).find(y => y.id === id);
     return json({ ok: true, x: x || null, outOfRange: !x });
   }
   if (path === '/api/orders/prof') {
@@ -5496,7 +5514,7 @@ ${catalog}` });
     if (ids.length) {
       const rows = await selectIn(env, 'SELECT id, date FROM orders', 'id', ids);
       const ds = rows.map(r => Date.parse(r.date)).filter(Number.isFinite);
-      if (ds.length) { const pr = await computeProfit(env, iso(Math.min(...ds) - 1000), iso(Math.max(...ds) + 1000)) /* Shopify tarihleri milisaniyesiz ('…12Z'); metin karşılaştırmasında dışarıda kalmasın */; const want = new Set(ids); for (const x of pr.orders) if (want.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual }; }
+      if (ds.length) { const pr = await computeProfit(env, iso(Math.min(...ds) - 1000), iso(Math.max(...ds) + 1000), '*') /* Shopify tarihleri milisaniyesiz ('…12Z'); metin karşılaştırmasında dışarıda kalmasın */; const want = new Set(ids); for (const x of pr.orders) if (want.has(x.id)) prof[x.id] = { p: x.profit, r: x.revenue, a: !!x.actual }; }
     }
     return json({ ok: true, prof });
   }

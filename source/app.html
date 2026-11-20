@@ -309,13 +309,14 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .sheet-h .tt{flex:1;min-width:0}
 .sheet-h h2{margin:0;font-family:var(--f-display);font-weight:800;font-size:20px;letter-spacing:-.02em;line-height:1.15;overflow-wrap:anywhere}
 .sheet-b{padding:16px 16px calc(28px + env(safe-area-inset-bottom,0px));display:grid;gap:18px}
-.hk-grid{display:grid;grid-template-columns:58px repeat(3,minmax(0,1fr));gap:0;margin-bottom:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+.hk-grid{display:grid;grid-template-columns:58px repeat(4,minmax(97px,1fr));gap:0;margin-bottom:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;box-shadow:var(--shadow)}
+.hk-grid>.hk-row,.hk-grid>span:first-child,.hk-grid>button.hk-eye{position:sticky;left:0;z-index:1;background:var(--surface)} /* yana kaydırınca dönem sütunu sabit */
 .hk-ch{font-weight:700;font-size:11.5px;padding:4px 2px;text-align:center;border-bottom:1px solid var(--line)}
 .hk-grid>span:first-child{border-bottom:1px solid var(--line)}
-.hk-ch.hk-ty{background:var(--ty-soft);color:var(--ty)}.hk-ch.hk-sh{background:var(--sh-soft);color:var(--sh)}.hk-ch.hk-all{background:var(--violet-soft);color:var(--violet)}
+.hk-ch.hk-ty{background:var(--ty-soft);color:var(--ty)}.hk-ch.hk-sh{background:var(--sh-soft);color:var(--sh)}.hk-ch.hk-all{background:var(--violet-soft);color:var(--violet)}.hk-ch.hk-kb{background:var(--kb-soft);color:var(--kb)}
 .hk-row{font-size:10px;font-weight:600;color:var(--ink-3);padding:6px 3px 0 6px;overflow:hidden;border-bottom:1px solid var(--line);line-height:1.2}
 .hk{height:39px;box-sizing:border-box;overflow:hidden;border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:4px 6px;cursor:pointer;min-width:0}
-.hk-grid>:nth-last-child(-n+4){border-bottom:0}
+.hk-grid>:nth-last-child(-n+5){border-bottom:0}
 .hk .v{font-size:14.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--good);line-height:1.2}.hk .v .x{font-size:10px;margin-left:2px;font-weight:600}
 .hk .s{font-size:9.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
 .hk .up{color:var(--good)}.hk .dn{color:var(--bad)}
@@ -434,7 +435,7 @@ body[data-tab="home"] main{flex:1;min-height:0;padding-bottom:88px!important;mar
 body[data-tab="home"] #view{height:100%;display:grid;grid-template-columns:minmax(0,62fr) minmax(0,38fr);grid-template-rows:auto minmax(0,1.65fr) minmax(0,.75fr) minmax(0,.85fr);gap:12px}
 body[data-tab="home"] #view>*{margin:0!important;min-height:0}
 body[data-tab="home"] #view>.h-ban{grid-column:1/-1;grid-row:1}
-body[data-tab="home"] #view>.hk-grid{grid-column:1;grid-row:2;grid-template-columns:96px repeat(3,minmax(0,1fr));grid-template-rows:auto repeat(4,minmax(0,1fr));height:100%}
+body[data-tab="home"] #view>.hk-grid{grid-column:1;grid-row:2;grid-template-columns:96px repeat(4,minmax(104px,1fr));grid-template-rows:auto repeat(4,minmax(0,1fr));height:100%}
 body[data-tab="home"] #view>.h-rec{grid-column:2;grid-row:2/5}
 body[data-tab="home"] #view>.h-act{grid-column:1;grid-row:3}
 body[data-tab="home"] #view>.h-sc{grid-column:1;grid-row:4}
@@ -2110,14 +2111,14 @@ function viewHome(){
     const ar = (a, b) => { if (!b || !isFinite(a) || !isFinite(b)) return ''; const up = a >= b; return `<span class="${up ? 'up' : 'dn'}">${up ? '▲' : '▼'}</span>`; };
     // 12 kutu: Bugün / Bu ay / Son 30 gün / Bekleyen × Trendyol · Shopify · Toplam; aralarında boşluk yok (tablo gibi)
     const cell = (key, cls) => { const src = key === 'all' ? all : null, get = (per) => src ? (src[per] || {}) : cel(C[per], key), act = key === 'all' ? 'home-go' : 'home-go2', id = (per) => key === 'all' ? `${per}-products` : `${per}|${key}`;
-      const t = get('today'), y = get('ys'), m = get('month'), d = get('d30'), pm = (src ? src.pm : C.pm && C.pm[key]) || {}, p3 = (src ? src.p30 : C.p30 && C.p30[key]) || {}, pend = key === 'all' ? (nw.n || 0) + (nw.sh || 0) : key === 'trendyol' ? nw.n || 0 : nw.sh || 0;
+      const t = get('today'), y = get('ys'), m = get('month'), d = get('d30'), pm = (src ? src.pm : C.pm && C.pm[key]) || {}, p3 = (src ? src.p30 : C.p30 && C.p30[key]) || {}, pend = key === 'all' ? (nw.n || 0) + (nw.sh || 0) : key === 'trendyol' ? nw.n || 0 : key === 'kristal' ? H.kbPend || 0 : nw.sh || 0;
       return [box(cls, t0(t.profit), `${tk(t.revenue)}${ar(t.revenue, y.revenue)} · ${mg(t.margin)}`, prof(t.profit), act, id('today'), ar(t.profit, y.profit)),
         box(cls, t0(m.profit), `${tk(m.revenue)}${ar(m.revenue, pm.revenue)} · ${mg(m.margin)}`, prof(m.profit), act, id('month'), ar(m.profit, pm.profit)),
         box(cls, t0(d.profit), `${tk(d.revenue)}${ar(d.revenue, p3.revenue)} · ${mg(d.margin)}`, prof(d.profit), act, id('d30'), ar(d.profit, p3.profit)),
         box0(cls, fmtN(pend), `bugün ${fmtN(t.n || 0)} sip. ${ar(t.n || 0, y.n || 0)}`, 'color:var(--orange)', 'orders-new', '')]; };
-    const A = cell('trendyol', 'hk-ty'), B = cell('shopify', 'hk-sh'), Z = cell('all', 'hk-all'), rows = ['Bugün', 'Bu ay', 'Son 30 gün', 'Bekleyen'];
-    h += `<div class="hk-grid"><button type="button" class="hk-eye" data-act="hk-eye" aria-label="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" title="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" style="border:0;background:none;cursor:pointer;color:var(--ink-2);display:flex;align-items:center;justify-content:center;padding:6px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>${HID ? '' : '<path d="M3 3l18 18"/>'}</svg></button><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span><span class="hk-ch hk-all">Toplam</span>
-      ${rows.map((r, i) => `<div class="hk-row">${r}</div>${A[i]}${B[i]}${Z[i]}`).join('')}</div>` + homeRecent();
+    const A = cell('trendyol', 'hk-ty'), B = cell('shopify', 'hk-sh'), Z = cell('all', 'hk-all'), K = cell('kristal', 'hk-kb'), rows = ['Bugün', 'Bu ay', 'Son 30 gün', 'Bekleyen'];
+    h += `<div class="hk-grid"><button type="button" class="hk-eye" data-act="hk-eye" aria-label="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" title="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" style="border:0;background:none;cursor:pointer;color:var(--ink-2);display:flex;align-items:center;justify-content:center;padding:6px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>${HID ? '' : '<path d="M3 3l18 18"/>'}</svg></button><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span><span class="hk-ch hk-all">Toplam</span><span class="hk-ch hk-kb">Kristal Bardak</span>
+      ${rows.map((r, i) => `<div class="hk-row">${r}</div>${A[i]}${B[i]}${Z[i]}${K[i]}`).join('')}</div>` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
@@ -3828,7 +3829,7 @@ function viewProfit(){
   const fees = (S.settings && S.settings.fees) || {cargoT1:46.49, cargoT2:84.49, cargoT3:98.35, desiMode:true, desiTables:{tex:[],ptt:[]}, desiTable:[], serviceTy:13.19, cargoSh:0, stopaj:1};
   let h = `<div class="spread"><div><h2 class="sec">Kâr analizi</h2><p class="lead small">Satış − komisyon − kargo − hizmet bedeli − %${esc(String(fees.stopaj).replace('.',','))} stopaj − ürün maliyeti − ceza ve kesintiler. İadesi onaylanan ürünler siparişin verildiği günden düşülür.</p></div></div>
   <div class="filters" style="margin-top:14px"><div class="chips">${PERIODS.map(([id,l]) => `<button class="chip" data-act="period" data-id="${id}" aria-pressed="${P.period===id}">${l}</button>`).join('')}</div></div>
-  <div class="filters" style="margin-top:8px"><div class="chips">${[['','Tüm kanallar'],['trendyol','Trendyol'],['shopify','Shopify']].map(([id,l]) => `<button class="chip" data-act="pch" data-id="${id}" aria-pressed="${(P.ch||'')===id}">${l}</button>`).join('')}</div>${P.ch ? '<span class="small muted">Kanal seçiliyken elle girilen genel giderler ve günlük sabit giderler düşülmez.</span>' : ''}</div>
+  <div class="filters" style="margin-top:8px"><div class="chips">${[['','Lilya Home (Trendyol + Shopify)'],['trendyol','Trendyol'],['shopify','Shopify'],['kristal','Kristal Bardak']].map(([id,l]) => `<button class="chip" data-act="pch" data-id="${id}" aria-pressed="${(P.ch||'')===id}">${l}</button>`).join('')}</div>${P.ch ? '<span class="small muted">Kanal seçiliyken elle girilen genel giderler ve günlük sabit giderler düşülmez.</span>' : ''}</div>
   ${P.period==='custom' ? (() => { const td = todayTR(), rs = ((S.settings && S.settings.reportStart) || '2026-10-01').slice(0, 7), MN = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'], ms = [], ys = new Set();
       for (let y = Number(rs.slice(0, 4)), m = Number(rs.slice(5, 7)); `${y}-${String(m).padStart(2, '0')}` <= td.slice(0, 7); m === 12 ? (y++, m = 1) : m++) { ms.push([y, m]); ys.add(y); }
       const last = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate(), mk = (y, m) => [`${y}-${String(m).padStart(2, '0')}-01`, `${y}-${String(m).padStart(2, '0')}-${last(y, m)}`];
