@@ -4224,11 +4224,12 @@ function kbOrderCard(o){
       : `<p class="muted small">İptal edersen stoktan düşülen bardaklar geri eklenir, sipariş ciroya girmez.</p><button class="btn danger sm" data-act="kb-cancel" data-id="${esc(o.orderNo)}" data-on="1">Siparişi iptal et</button>`}</div>`;
 }
 function kbCard(){
+  if (S.kbSheet !== S.sheet) { S.kbSheet = S.sheet; S.kb = undefined; } /* ekran her açılışta tazelenir */
   const K = S.kb;
   if (K === undefined) { S.kb = null; api('/api/kb/info', {}).then(r => { S.kb = r; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }).catch(e => { S.kb = {err: errText(e)}; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }); }
   if (!K) return `<div class="card"><h3 style="margin:0">${chBadge('kristal')} Sipariş bağlantısı</h3><p class="muted small">Yükleniyor…</p></div>`;
   if (K.err) return `<div class="card"><h3 style="margin:0">${chBadge('kristal')} Sipariş bağlantısı</h3><p class="small" style="color:var(--bad)">${esc(K.err)}</p></div>`;
-  const pr = (K.products || []).map(p => `<li>${esc(p.name)} <span class="mono muted">${esc(p.code || '')}</span> · stok <b>${fmtN(p.qty)}</b>${p.cost == null ? ' · <span style="color:var(--warn)">alış fiyatı yok</span>' : ''}${!(p.desi > 0) ? ' · <span style="color:var(--warn)">desi yok</span>' : ''}</li>`).join('');
+  const pr = (K.products || []).map(p => `<li>${esc(p.name)} <span class="mono muted">${esc(p.code || '')}</span> · stok <b>${fmtN(p.qty)}</b>${p.cost == null ? ' · <span style="color:var(--warn)">alış fiyatı yok</span>' : ''}${!(p.desi_m > 0 || p.desi > 0) ? ' · <span style="color:var(--warn)">desi yok</span>' : ` · ${String(p.desi_m > 0 ? p.desi_m : p.desi).replace('.', ',')} desi`}</li>`).join('');
   return `<div class="card"><h3 style="margin:0 0 8px">${chBadge('kristal')} Sipariş bağlantısı</h3>
     <p class="small" style="margin:0 0 6px">Google Apps Script siparişleri bu adrese POST eder (başlık: <span class="mono">X-KB-Secret</span>):</p>
     <div class="row" style="gap:6px;align-items:center"><input class="input mono" readonly value="${esc(K.url)}" id="kb-url" style="flex:1;min-width:0;font-size:12px"><button class="btn sm" data-act="kb-copy">Kopyala</button></div>

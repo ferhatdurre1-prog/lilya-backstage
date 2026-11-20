@@ -5466,7 +5466,7 @@ ${catalog}` });
   }
   if (path === '/api/kb/info') {
     const [c, t, l] = await env.DB.batch([env.DB.prepare(`SELECT COUNT(*) n, MAX(created_at) last FROM kb_orders WHERE COALESCE(test,0)=0`), env.DB.prepare(`SELECT no, src, created_at FROM kb_orders WHERE test=1 ORDER BY created_at DESC LIMIT 20`), env.DB.prepare(`SELECT no, src, at, tutar, cancelled_at FROM kb_orders WHERE COALESCE(test,0)=0 ORDER BY at DESC LIMIT 5`)]);
-    const pk = await kbProducts(env), pr = (await selectIn(env, 'SELECT key, code, name, qty, cost, desi FROM products', 'key', [pk.elmas, pk.kristal]));
+    const pk = await kbProducts(env), pr = (await selectIn(env, 'SELECT key, code, name, qty, cost, desi, desi_m FROM products', 'key', [pk.elmas, pk.kristal]));
     return json({ ok: true, url: new URL(req.url).origin + '/api/kristal-bardak/order', secret: !!env.KB_WEBHOOK_SECRET, n: (c.results[0] || {}).n || 0, last: (c.results[0] || {}).last || null, tests: t.results, recent: l.results, products: pr });
   }
   if (path === '/api/kb/test') { const now = new Date(Date.now() + 3 * 3600000), id = 'TEST-' + now.toISOString().replace(/\D/g, '').slice(0, 14);
