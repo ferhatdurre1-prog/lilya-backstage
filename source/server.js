@@ -5013,7 +5013,7 @@ ${catalog}` });
     const codes = new Map((await selectIn(env, 'SELECT key, code FROM products', 'key', [...new Set([...lm.values()].map(v => v.pkey).filter(Boolean))])).map(r => [r.key, r.code]));
     let L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
     if (kb) { const pk = await kbProducts(env), cs = new Map((await selectIn(env, 'SELECT key, code, image FROM products', 'key', [pk.elmas, pk.kristal])).map(r => [r.key, r]));
-      L = kbItems(kbD).map(i => { const p = cs.get(pk[i.k]) || {}; return { name: i.n, sku: i.k === 'elmas' ? 'KB-ELMAS' : 'KB-KRISTAL', qty: i.q, code: p.code || '', factor: 1, unit: 0, image: p.image || '' }; }); }
+      const tq = kbItems(kbD).reduce((t, i) => t + i.q, 0); L = kbItems(kbD).map(i => { const p = cs.get(pk[i.k]) || {}; return { name: i.n, sku: i.k === 'elmas' ? 'KB-ELMAS' : 'KB-KRISTAL', qty: i.q, code: p.code || '', factor: 1, unit: tq ? r2((Number(kbD.tutar) || 0) / tq) : 0, image: p.image || '' }; }); }
     const icerik = L.map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ').slice(0, 100);
     // Kapıda ödeme: Shopify'daki ödeme yönteminden; formda değiştirildiyse o geçerli
     const cd = kb ? { tip: 1, amt: r2(Number(kbD.tutar) || 0) } : shCod(o); let codTip = cd.tip, cod = cd.amt; // Kristal Bardak: her zaman kapıda nakit, tutar = sipariş tutarı
