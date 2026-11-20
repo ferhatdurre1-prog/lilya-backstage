@@ -3942,27 +3942,29 @@ async function importDetails(files){
   }
 }
 function todayTR(){ return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10); }
+const kbB = (b) => b === 'kb' ? ' ' + chBadge('kristal') : '';
+const brChips = (act, cur) => `<div class="chips" role="radiogroup" aria-label="Marka">${[['lh', 'Lilya Home'], ['kb', 'Kristal Bardak']].map(([v, t]) => `<button class="chip" type="button" data-act="${act}" data-id="${v}" aria-pressed="${cur === v}">${t}</button>`).join('')}</div>`;
 function recurringCard(D){
-  const R = D.recurring || [], RK = S.recKind || 'gider', isI = RK === 'gelir';
+  const R = D.recurring || [], RK = S.recKind || 'gider', isI = RK === 'gelir', RB = S.recBrand || (D.channel === 'kristal' ? 'kb' : 'lh');
   const all = (S.recAll || []);
   return `<div class="card" style="gap:10px"><div class="spread"><h3 style="margin:0">Günlük sabit gider / gelir</h3><span class="muted small">Her güne aynı tutar yazılır</span></div>
-    <div class="chips"><button class="chip" type="button" data-act="rec-kind" data-id="gider" aria-pressed="${!isI}">Günlük gider</button><button class="chip" type="button" data-act="rec-kind" data-id="gelir" aria-pressed="${isI}">Günlük gelir</button></div>
+    <div class="chips"><button class="chip" type="button" data-act="rec-kind" data-id="gider" aria-pressed="${!isI}">Günlük gider</button><button class="chip" type="button" data-act="rec-kind" data-id="gelir" aria-pressed="${isI}">Günlük gelir</button></div>${brChips('rec-brand', RB)}
     <form id="f-rec" style="display:grid;gap:10px">
       <label class="f">${isI ? 'Gelir adı' : 'Gider adı'}<input class="input" id="rc-name" maxlength="80" required autocomplete="off" placeholder="${isI ? 'Örn: Kira geliri' : 'Örn: Personel, depo kirası, elektrik'}"></label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label class="f">Günlük tutar (₺)<input class="input num" id="rc-amt" inputmode="decimal" placeholder="0,00" required autocomplete="off"></label><label class="f">Başlangıç<input class="input" id="rc-start" type="date" value="${todayTR()}" required></label></div>
       <button class="btn primary" type="submit">${isI ? 'Günlük geliri ekle' : 'Günlük gideri ekle'}</button></form>
-    ${R.length ? `<div class="list" style="box-shadow:none">${R.map(x => `<div class="item" style="cursor:default"><div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="pill ${x.kind === 'gelir' ? 'p-good' : 'p-bad'}">${x.kind === 'gelir' ? 'Günlük gelir' : 'Günlük gider'}</span><span>${esc(fmtDate(x.start, false))}${x.end ? ' – ' + esc(fmtDate(x.end, false)) : ' itibaren'}</span><span>bu dönemde ${fmtN(x.days)} gün</span></div></div><div class="end" style="display:flex;align-items:center;gap:6px"><b class="num" style="white-space:nowrap;color:var(${x.kind === 'gelir' ? '--good' : '--bad'})">${fmtTL(x.daily)}/gün</b>${x.end ? '' : `<button class="btn sm" data-act="rec-stop" data-id="${x.id}">Durdur</button>`}<button class="btn sm ghost" data-act="rec-del" data-id="${x.id}" style="color:var(--bad)">Sil</button></div></div>`).join('')}</div>` : '<p class="muted small" style="margin:0">Bu dönemde günlük sabit kalem yok.</p>'}
+    ${R.length ? `<div class="list" style="box-shadow:none">${R.map(x => `<div class="item" style="cursor:default"><div class="main"><div class="ttl">${esc(x.name)}${kbB(x.brand)}</div><div class="meta"><span class="pill ${x.kind === 'gelir' ? 'p-good' : 'p-bad'}">${x.kind === 'gelir' ? 'Günlük gelir' : 'Günlük gider'}</span><span>${esc(fmtDate(x.start, false))}${x.end ? ' – ' + esc(fmtDate(x.end, false)) : ' itibaren'}</span><span>bu dönemde ${fmtN(x.days)} gün</span></div></div><div class="end" style="display:flex;align-items:center;gap:6px"><b class="num" style="white-space:nowrap;color:var(${x.kind === 'gelir' ? '--good' : '--bad'})">${fmtTL(x.daily)}/gün</b>${x.end ? '' : `<button class="btn sm" data-act="rec-stop" data-id="${x.id}">Durdur</button>`}<button class="btn sm ghost" data-act="rec-del" data-id="${x.id}" style="color:var(--bad)">Sil</button></div></div>`).join('')}</div>` : '<p class="muted small" style="margin:0">Bu dönemde günlük sabit kalem yok.</p>'}
     <p class="muted small" style="margin:0">"Durdur" bugünden sonrasını keser, geçmiş günler kalır. "Sil" kalemi geçmiş günler dahil tamamen kaldırır.</p></div>`;
 }
 function expensesCard(D, inSheet){
-  const ALL = D.expenses || [], L = ALL.filter(x => !x.recurring), gid = ALL.filter(x => x.kind !== 'gelir'), gel = ALL.filter(x => x.kind === 'gelir');
+  const myB = D.channel === 'kristal' ? 'kb' : 'lh', ALL = D.expenses || [], L = ALL.filter(x => !x.recurring), gid = ALL.filter(x => x.kind !== 'gelir' && (x.brand || 'lh') === myB), gel = ALL.filter(x => x.kind === 'gelir' && (x.brand || 'lh') === myB); // toplamlar bu ekranın markasına göre
   const tG = gid.reduce((a, x) => a + x.amount, 0), tI = gel.reduce((a, x) => a + x.amount, 0);
   const dfmt = (d) => new Date(d + 'T12:00:00').toLocaleDateString('tr-TR', {day:'numeric', month:'long', weekday:'short'});
   const E = S.expEdit; const amtStr = (n) => String(n).replace('.', ',');
-  const kind = E ? (E.kind || 'gider') : (S.expKind || 'gider'), isI = kind === 'gelir';
-  const row = x => { const inc = x.kind === 'gelir'; return `<div class="item" style="cursor:default"><div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="pill ${inc ? 'p-good' : 'p-bad'}">${inc ? 'Gelir' : 'Gider'}</span><span>${esc(dfmt(x.day))}</span></div></div><div class="end" style="display:flex;align-items:center;gap:6px"><b class="num" style="white-space:nowrap;color:var(${inc ? '--good' : '--bad'})">${inc ? '+' : '−'}${fmtTL(x.amount)}</b><button class="btn sm" data-act="exp-edit" data-id="${x.id}">Düzenle</button><button class="btn sm ghost" data-act="exp-del" data-id="${x.id}" aria-label="Sil" style="color:var(--bad)">Sil</button></div></div>`; };
+  const kind = E ? (E.kind || 'gider') : (S.expKind || 'gider'), isI = kind === 'gelir', EB = E ? (E.brand || 'lh') : (S.expBrand || myB);
+  const row = x => { const inc = x.kind === 'gelir'; return `<div class="item" style="cursor:default${(x.brand || 'lh') !== myB ? ';opacity:.6' : ''}"><div class="main"><div class="ttl">${esc(x.name)}${kbB(x.brand)}</div><div class="meta"><span class="pill ${inc ? 'p-good' : 'p-bad'}">${inc ? 'Gelir' : 'Gider'}</span><span>${esc(dfmt(x.day))}</span></div></div><div class="end" style="display:flex;align-items:center;gap:6px"><b class="num" style="white-space:nowrap;color:var(${inc ? '--good' : '--bad'})">${inc ? '+' : '−'}${fmtTL(x.amount)}</b><button class="btn sm" data-act="exp-edit" data-id="${x.id}">Düzenle</button><button class="btn sm ghost" data-act="exp-del" data-id="${x.id}" aria-label="Sil" style="color:var(--bad)">Sil</button></div></div>`; };
   return `<div class="card" id="exp-form" style="${inSheet ? '' : 'margin-top:14px'}${E ? ';border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)' : ''}"><div class="spread"><h3 style="margin:0">${E ? (isI ? 'Geliri düzenle' : 'Gideri düzenle') : 'Gider / gelir ekle'}</h3><span class="muted small">Girildiği günün kârına ${isI ? 'eklenir' : 'düşer'}</span></div>
-    <div class="chips" role="radiogroup"><button class="chip" type="button" data-act="exp-kind" data-id="gider" aria-pressed="${!isI}">Gider</button><button class="chip" type="button" data-act="exp-kind" data-id="gelir" aria-pressed="${isI}">Gelir</button></div>
+    <div class="chips" role="radiogroup"><button class="chip" type="button" data-act="exp-kind" data-id="gider" aria-pressed="${!isI}">Gider</button><button class="chip" type="button" data-act="exp-kind" data-id="gelir" aria-pressed="${isI}">Gelir</button></div>${brChips('exp-brand', EB)}
     <form id="f-exp" style="display:grid;gap:10px">
       <label class="f">${isI ? 'Gelir adı' : 'Gider adı'}<input class="input" id="ex-name" type="text" placeholder="${isI ? 'Örn: Kargo tazminatı, hurda karton satışı' : 'Örn: 2 top poşet, patpat'}" maxlength="80" required autocomplete="off" value="${E ? esc(E.name) : ''}"></label>
       <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -3971,7 +3973,7 @@ function expensesCard(D, inSheet){
       </div>
       ${E ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><button class="btn" type="button" data-act="exp-cancel">Vazgeç</button><button class="btn primary" type="submit">Kaydet</button></div>` : `<button class="btn primary" type="submit">${isI ? 'Geliri ekle' : 'Gideri ekle'}</button>`}
     </form></div>
-    <div class="card"><div class="spread"><h3 style="margin:0">Bu dönemin giderleri ve gelirleri</h3></div>
+    <div class="card"><div class="spread"><h3 style="margin:0">Bu dönemin giderleri ve gelirleri</h3><span class="muted small">${myB === 'kb' ? 'Toplamlar: Kristal Bardak' : 'Toplamlar: Lilya Home'}</span></div>
     <dl class="kv" style="margin:0"><dt>Giderler</dt><dd style="color:var(--bad)">${tG ? '−' + fmtTL(tG) : fmtTL(0)}</dd><dt>Gelirler</dt><dd style="color:var(--good)">${tI ? '+' + fmtTL(tI) : fmtTL(0)}</dd></dl>
     ${L.length ? `<div class="list" style="box-shadow:none">${L.map(row).join('')}</div>` : '<p class="muted small" style="margin:0">Bu dönemde kayıt yok.</p>'}
     ${ALL.some(x => x.recurring) ? `<p class="muted small" style="margin:0">Toplamlara günlük sabit kalemler de dahil: ${ALL.filter(x => x.recurring).map(x => esc(x.name) + ' ' + (x.kind === 'gelir' ? '+' : '−') + fmtTL(x.amount)).join(', ')}.</p>` : ''}
@@ -5206,6 +5208,8 @@ document.addEventListener('click', async e => {
     case 'cancel-order': await cancelOrder(); break;
     case 'kb-cancel': { const on = b.dataset.on === '1'; if (on && !confirm('Kristal Bardak siparişi iptal edilsin mi? Bardaklar stoğa geri eklenir.')) break; await run(async () => { await api('/api/kb/cancel', {no: id, on}); delete KBO[id]; S.rev = (S.rev||0) + 1; toast(on ? 'Sipariş iptal edildi, stok geri eklendi.' : 'İptal geri alındı.'); }); break; }
     case 'merges-open': openSheet('merges'); break;
+    case 'exp-brand': { if (S.expEdit) S.expEdit.brand = id; else S.expBrand = id; if (S.sheet) renderSheet(false); else render(); break; }
+    case 'rec-brand': { S.recBrand = id; if (S.sheet) renderSheet(false); else render(); break; }
     case 'ad-brand': { S.adBrand = id === 'kb' ? 'kb' : 'lh'; try { localStorage.setItem('lb_adbrand', S.adBrand); } catch (e) {} const A = aS(); if (A.sel) A.sel.clear(); render(); break; }
     case 'unmerge': { const it = (S.sheet.list || []).find(x => x.key === id); if (!it || !confirm(`"${it.name}" ürününün birleştirmesi geri alınsın mı?`)) break; S.sheet.busy = id; renderSheet(true);
       await run(async () => { try { await api('/api/products/unmerge', {key: id}); toast('Birleştirme geri alındı.'); S.sheet.list = (S.sheet.list || []).filter(x => x.key !== id); S.kb = undefined; } finally { if (S.sheet) { S.sheet.busy = null; renderSheet(true); } } }); break; }
@@ -5543,7 +5547,7 @@ document.addEventListener('submit', async e => {
   if (id === 'f-rec') {
     const name = $('#rc-name').value.trim(), amount = num($('#rc-amt').value), start = $('#rc-start').value, kind = S.recKind || 'gider';
     if (!name) return toast('Adını yaz.', true); if (!isFinite(amount) || amount <= 0) return toast('Geçerli bir günlük tutar yaz.', true);
-    await run(async () => { await api('/api/recurring/add', {name, amount, kind, start}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(`${name}: günlük ${fmtTL(amount)} ${kind === 'gelir' ? 'gelir' : 'gider'} eklendi.`); });
+    await run(async () => { await api('/api/recurring/add', {name, amount, kind, start, brand: S.recBrand || (profS().ch === 'kristal' ? 'kb' : 'lh')}); profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(`${name}: günlük ${fmtTL(amount)} ${kind === 'gelir' ? 'gelir' : 'gider'} eklendi.`); });
     return;
   }
   if (id === 'f-exp') {
@@ -5552,7 +5556,7 @@ document.addEventListener('submit', async e => {
     if (!name) return toast(isI ? 'Gelir adını yaz.' : 'Gider adını yaz.', true);
     if (!isFinite(amount) || amount <= 0) return toast('Geçerli bir tutar yaz.', true);
     const E = S.expEdit;
-    await run(async () => { await api(E ? '/api/expenses/update' : '/api/expenses/add', {id: E && E.id, name, amount, day, kind}); S.expEdit = null; profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(E ? (isI ? 'Gelir güncellendi.' : 'Gider güncellendi.') : `${name}: ${fmtTL(amount)} ${isI ? 'gelir' : 'gider'} olarak eklendi.`); });
+    await run(async () => { await api(E ? '/api/expenses/update' : '/api/expenses/add', {id: E && E.id, name, amount, day, kind, brand: E ? (E.brand || 'lh') : (S.expBrand || (profS().ch === 'kristal' ? 'kb' : 'lh'))}); S.expEdit = null; profS().key = ''; profS().cache = {}; S.home && (S.home.at = 0); await refresh(true); toast(E ? (isI ? 'Gelir güncellendi.' : 'Gider güncellendi.') : `${name}: ${fmtTL(amount)} ${isI ? 'gelir' : 'gider'} olarak eklendi.`); });
     return;
   }
   if (id === 'f-new') submitNewProduct();

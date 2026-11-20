@@ -255,8 +255,10 @@ async function init0(env) {
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, name TEXT, amount REAL, created_at TEXT)').run();
   try { await env.DB.prepare("ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'gider'").run(); } catch (e) {}
+  try { await env.DB.prepare('ALTER TABLE expenses ADD COLUMN brand TEXT').run(); } catch (e) {} // 'kb' = Kristal Bardak, boş = Lilya Home
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS label_printed(pkg_id TEXT PRIMARY KEY, order_no TEXT, printed_at TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS recurring(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL, kind TEXT, start_day TEXT, end_day TEXT, created_at TEXT)').run();
+  try { await env.DB.prepare('ALTER TABLE recurring ADD COLUMN brand TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
@@ -3002,7 +3004,7 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare('SELECT type, SUM(amount) amount, COUNT(*) n FROM fin_misc WHERE (order_no IS NULL OR type LIKE ?3) AND date >= ?1 AND date < ?2 GROUP BY type ORDER BY 2 DESC').bind(from, to, '%azmin%'),
     env.DB.prepare('SELECT day, channel, amount, source FROM ad_spend WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT COUNT(*) n FROM ad_spend'),
-    env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
+    env.DB.prepare('SELECT id, day, name, amount, created_at, kind, brand FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT no, fee, cod_fee, handler, cod, cod_type FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10)),
     env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
     env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel IN ('shopify','kristal') AND date >= ?1 AND date < ?2)`).bind(from, to),
@@ -3019,7 +3021,7 @@ async function computeProfit(env, from, to, ch0) {
   const bkMark = new Set((await env.DB.prepare(`SELECT no FROM sh_carrier WHERE carrier='basit'`).all()).results.map(x => x.no)); // Shopify'da Basit Kargo ile kargolandığı görülenler
   // Kanal seçiliyse sadece o kanalın siparişleri; Trendyol fatura kesintileri yalnız Trendyol'da, genel giderler kanal seçilince düşülmez
   if (!ch0 && !chAll) o.results = o.results.filter(x => x.channel !== 'kristal');
-  if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); expR.results = []; }
+  if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); if (ch0 !== 'kristal') expR.results = []; }
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
   const defOrd = new Map(), PEN_TTL = 45 * 86400000 /* 45 günde Trendyol faturası gelmezse tahmini ceza düşer */, defAt = new Map(), defNote = new Map(), rets = new Map(), pend = new Map(), defQ = new Map(), keptQ = new Map(), brokeQ = new Map(), missQ = new Map(), undOrders = new Set();
@@ -3242,20 +3244,24 @@ async function computeProfit(env, from, to, ch0) {
   const otherFees = miscFree.filter(x => !(adTracked && isAd(x.type))).map(x => ({ type: x.type, amount: R2(x.amount || 0), n: x.n }));
   sum.otherFees = otherFees.reduce((a, x) => a + x.amount, 0); sum.adInvoices = R2(adInvoices);
   // Elle girilen işletme giderleri (paketleme malzemesi vb.): girildiği günün gideri
-  const expenses = expR.results.map(x => ({ id: x.id, day: x.day, name: x.name, amount: R2(x.amount || 0), kind: x.kind === 'gelir' ? 'gelir' : 'gider' }));
+  // Marka: Kristal Bardak giderleri sadece Kristal Bardak'tan, Lilya Home giderleri sadece Lilya Home'dan düşer (liste ikisini de gösterir)
+  const myB = ch0 === 'kristal' ? 'kb' : 'lh';
+  const expenses = expR.results.map(x => ({ id: x.id, day: x.day, name: x.name, amount: R2(x.amount || 0), kind: x.kind === 'gelir' ? 'gelir' : 'gider', brand: x.brand === 'kb' ? 'kb' : 'lh' }));
   // Günlük sabit gider / gelir: dönemdeki her güne (başlangıç–bitiş arası) yazılır
   let recurring = [];
   try {
-    if (ch0) throw 0; // kanal seçiliyken günlük sabit giderler yazılmaz
+    if (ch0 && ch0 !== 'kristal') throw 0; // kanal seçiliyken günlük sabit giderler yazılmaz (Kristal Bardak: kendi sabit giderleri)
     const { results: rr } = await env.DB.prepare('SELECT * FROM recurring WHERE start_day <= ?2 AND (end_day IS NULL OR end_day >= ?1) ORDER BY id').bind(dayFrom, dayTo).all();
     for (const x of rr) { const a = x.start_day > dayFrom ? x.start_day : dayFrom, b = x.end_day && x.end_day < dayTo ? x.end_day : dayTo;
       const days = Math.max(0, Math.round((dayStartTR(b) - dayStartTR(a)) / 86400000) + 1); if (!days) continue;
       const kind = x.kind === 'gelir' ? 'gelir' : 'gider';
-      recurring.push({ id: x.id, name: x.name, daily: R2(x.amount || 0), kind, start: x.start_day, end: x.end_day || null, days });
-      expenses.push({ id: 'r' + x.id, day: b, name: `${x.name} (günlük × ${days} gün)`, amount: R2((x.amount || 0) * days), kind, recurring: true }); }
+      const br = x.brand === 'kb' ? 'kb' : 'lh';
+      recurring.push({ id: x.id, name: x.name, daily: R2(x.amount || 0), kind, start: x.start_day, end: x.end_day || null, days, brand: br });
+      expenses.push({ id: 'r' + x.id, day: b, name: `${x.name} (günlük × ${days} gün)`, amount: R2((x.amount || 0) * days), kind, recurring: true, brand: br }); }
   } catch (e) {}
-  sum.expenses = expenses.filter(x => x.kind === 'gider').reduce((a, x) => a + x.amount, 0);
-  sum.extraIncome = R2(expenses.filter(x => x.kind === 'gelir').reduce((a, x) => a + x.amount, 0));
+  sum.expenses = expenses.filter(x => x.kind === 'gider' && x.brand === myB).reduce((a, x) => a + x.amount, 0);
+  sum.extraIncome = R2(expenses.filter(x => x.kind === 'gelir' && x.brand === myB).reduce((a, x) => a + x.amount, 0));
+  sum.kbExp = R2(expenses.filter(x => x.brand === 'kb').reduce((a, x) => a + (x.kind === 'gelir' ? -x.amount : x.amount), 0)); // ana sayfa Kristal Bardak sütunu için (net gider)
   /* Kusurlu / ziyan: 'Kusurlu ürün düş' ile stoktan düşülenlerin alış maliyeti, düşüldüğü gün gider (geri alınanlar düşülür) */
   sum.waste = 0; sum.wasteList = []; if (!ch0) try { const { results: W } = await env.DB.prepare(`SELECT t, pkey, sku, name, delta, note FROM moves WHERE t >= ?1 AND t < ?2 AND ((note LIKE 'Kusurlu/ziyan%' AND delta < 0) OR (note LIKE 'Kusurlu düşümü geri alındı%' AND delta > 0)) ORDER BY t DESC LIMIT 2000`).bind(from, to).all();
     for (const m of W) { const pr = prods.get(m.pkey), uc = pr && pr.cost !== null && pr.cost !== undefined ? Number(pr.cost) : 0, v = R2(-m.delta * uc); sum.waste += v; if (sum.wasteList.length < 300) sum.wasteList.push({ t: m.t, name: (pr && pr.name) || m.name || m.sku || '', qty: -m.delta, unit: uc, amount: v, note: String(m.note || '').replace(/^Kusurlu\/ziyan · /, '').slice(0, 120), noCost: !uc }); } sum.waste = R2(sum.waste); } catch (e) {}
@@ -3418,7 +3424,8 @@ const HOME_FIX_TTL = 600000;
 function homeChOf(P) { if (!P) return null; const R2 = (n) => Math.round(n * 100) / 100, o = {};
   for (const c of ['trendyol', 'shopify', 'kristal']) { const L = (P.orders || []).filter(x => x.channel === c), rev = L.reduce((a, x) => a + (x.revenue || 0), 0), ads = (P.ads || []).filter(x => (x.channel || 'trendyol') === c).reduce((a, x) => a + (x.amount || 0), 0);
     const prof = L.reduce((a, x) => a + (x.profit || 0), 0) - ads - (c === 'trendyol' ? (P.summary.otherFees || 0) - (P.summary.compensation || 0) : 0);
-    o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; }
+    const prof2 = c === 'kristal' ? prof - ((P.summary && P.summary.kbExp) || 0) : prof; // Kristal Bardak: kendi giderleri
+    o[c] = { revenue: R2(rev), profit: R2(prof2), margin: rev ? R2(prof2 / rev * 100) : null, n: L.filter(x => (x.units || 0) + (x.retUnits || 0) > 0).length }; } return o; }
 function homeAddCh(a, b) { const R2 = (n) => Math.round(n * 100) / 100; if (!a) return b; if (!b) return a; const o = {};
   for (const c of ['trendyol', 'shopify', 'kristal']) { const x = a[c] || {}, y = b[c] || {}, rev = (x.revenue || 0) + (y.revenue || 0), prof = (x.profit || 0) + (y.profit || 0); o[c] = { revenue: R2(rev), profit: R2(prof), margin: rev ? R2(prof / rev * 100) : null, n: (x.n || 0) + (y.n || 0) }; } return o; }
 // Ana sayfa hesabı Kristal Bardak dahil yapılır (kendi sütunu için); toplamlar Kristal Bardak'sız (Lilya Home)
@@ -3555,13 +3562,13 @@ async function api(req, env, path, ctx) {
   if (path === '/api/passkey/list') return json({ user: await authUser(env), items: (await env.DB.prepare('SELECT id, label, created_at, used_at FROM wa_creds ORDER BY created_at DESC').all()).results });
   if (path === '/api/passkey/delete') { if (body.all) await env.DB.prepare('DELETE FROM wa_creds').run(); else await env.DB.prepare('DELETE FROM wa_creds WHERE id=?1').bind(String(body.id || '')).run(); return json({ ok: true }); }
   if (path === '/api/expenses/add' || path === '/api/expenses/update') {
-    const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), day = String(body.day || trDay(Date.now())), kind = body.kind === 'gelir' ? 'gelir' : 'gider';
+    const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), day = String(body.day || trDay(Date.now())), kind = body.kind === 'gelir' ? 'gelir' : 'gider', brand = body.brand === 'kb' ? 'kb' : null;
     if (!name) return bad(kind === 'gelir' ? 'Gelir adını yaz.' : 'Gider adını yaz.');
     if (!isFinite(amount) || amount <= 0 || amount > 1e8) return bad('Geçerli bir tutar yaz.');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return bad('Tarih geçersiz.');
     const st = path === '/api/expenses/update'
-      ? env.DB.prepare('UPDATE expenses SET day=?1, name=?2, amount=?3, kind=?5 WHERE id=?4').bind(day, name, Math.round(amount * 100) / 100, Number(body.id) || 0, kind)
-      : env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at, kind) VALUES(?1,?2,?3,?4,?5)').bind(day, name, Math.round(amount * 100) / 100, iso(), kind);
+      ? env.DB.prepare('UPDATE expenses SET day=?1, name=?2, amount=?3, kind=?5, brand=?6 WHERE id=?4').bind(day, name, Math.round(amount * 100) / 100, Number(body.id) || 0, kind, brand)
+      : env.DB.prepare('INSERT INTO expenses(day, name, amount, created_at, kind, brand) VALUES(?1,?2,?3,?4,?5,?6)').bind(day, name, Math.round(amount * 100) / 100, iso(), kind, brand);
     const old = path === '/api/expenses/update' ? await env.DB.prepare('SELECT day FROM expenses WHERE id=?1').bind(Number(body.id) || 0).first() : null;
     await env.DB.batch([st, setStmt(env, 'home_cache', ''), REV(env)]);
     // Raporlar ve ana ekran hemen güncel olsun
@@ -3571,7 +3578,7 @@ async function api(req, env, path, ctx) {
   if (path === '/api/recurring/add') {
     const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), kind = body.kind === 'gelir' ? 'gelir' : 'gider', start = String(body.start || trDay(Date.now()));
     if (!name) return bad('Adını yaz.'); if (!isFinite(amount) || amount <= 0 || amount > 1e7) return bad('Geçerli bir günlük tutar yaz.'); if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return bad('Tarih geçersiz.');
-    await env.DB.batch([env.DB.prepare('INSERT INTO recurring(name, amount, kind, start_day, end_day, created_at) VALUES(?1,?2,?3,?4,NULL,?5)').bind(name, Math.round(amount * 100) / 100, kind, start, iso()),
+    await env.DB.batch([env.DB.prepare('INSERT INTO recurring(name, amount, kind, start_day, end_day, created_at, brand) VALUES(?1,?2,?3,?4,NULL,?5,?6)').bind(name, Math.round(amount * 100) / 100, kind, start, iso(), body.brand === 'kb' ? 'kb' : null),
       env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(start), setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true });
   }
