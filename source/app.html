@@ -19,7 +19,7 @@
   --good:#0ea371; --good-soft:#dcf7ec; --warn:#f08a12; --warn-soft:#fff2e0; --bad:#ef4444; --bad-soft:#fde7e7;
   --blue:#3b6ef6; --blue-soft:#e6edff; --violet:#7c5cf6; --violet-soft:#f0ebff; --orange:#f97316;
   --hero:radial-gradient(120% 90% at 100% 0%,rgba(99,102,241,.38) 0%,rgba(99,102,241,0) 55%),radial-gradient(80% 70% at 0% 100%,rgba(56,189,248,.14) 0%,rgba(56,189,248,0) 60%),linear-gradient(160deg,#0a0b10 0%,#131622 60%,#1a1e2d 100%);
-  --ty:#e8650f; --ty-soft:#fdeadb; --sh:#5a8a2a; --sh-soft:#e7f2da; --hb:#e07812; --hb-soft:#fdecd8; --tm:#e2522f; --tm-soft:#fde4dc; --mn:#5d6475; --mn-soft:#eceef3;
+  --ty:#e8650f; --ty-soft:#fdeadb; --sh:#5a8a2a; --sh-soft:#e7f2da; --hb:#e07812; --hb-soft:#fdecd8; --tm:#e2522f; --tm-soft:#fde4dc; --mn:#5d6475; --mn-soft:#eceef3; --kb:#6d3fd6; --kb-soft:#efe7ff;
   --shadow:0 1px 2px rgba(15,18,30,.04),0 8px 24px rgba(15,18,30,.07);
   --f-display:"Plus Jakarta Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --f-body:"Plus Jakarta Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -35,7 +35,7 @@
   --good:#34d399; --good-soft:#123327; --warn:#fbab4b; --warn-soft:#3d2a12; --bad:#f87171; --bad-soft:#421e1e;
   --blue:#7aa2ff; --blue-soft:#1b2646; --violet:#a78bfa; --violet-soft:#2a2148; --orange:#fb923c;
   --hero:radial-gradient(120% 90% at 100% 0%,rgba(99,102,241,.32) 0%,rgba(99,102,241,0) 55%),linear-gradient(160deg,#07080c 0%,#10121b 60%,#161a27 100%);
-  --ty:#fb923c; --ty-soft:#3d2614; --sh:#a3d977; --sh-soft:#26361b; --hb:#fbab4b; --hb-soft:#3d2a12; --tm:#f8826a; --tm-soft:#42231c; --mn:#a5acbb; --mn-soft:#232735;
+  --ty:#fb923c; --ty-soft:#3d2614; --sh:#a3d977; --sh-soft:#26361b; --hb:#fbab4b; --hb-soft:#3d2a12; --tm:#f8826a; --tm-soft:#42231c; --mn:#a5acbb; --mn-soft:#232735; --kb:#c4a6ff; --kb-soft:#2e2445;
   --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.3); color-scheme:dark;}}
 :root[data-theme="dark"]{
   --bg:#0a0b0f; --surface:#13151c; --surface-2:#1a1d26; --line:#252935; --line-strong:#343a49;
@@ -46,7 +46,7 @@
   --good:#34d399; --good-soft:#123327; --warn:#fbab4b; --warn-soft:#3d2a12; --bad:#f87171; --bad-soft:#421e1e;
   --blue:#7aa2ff; --blue-soft:#1b2646; --violet:#a78bfa; --violet-soft:#2a2148; --orange:#fb923c;
   --hero:radial-gradient(120% 90% at 100% 0%,rgba(99,102,241,.32) 0%,rgba(99,102,241,0) 55%),linear-gradient(160deg,#07080c 0%,#10121b 60%,#161a27 100%);
-  --ty:#fb923c; --ty-soft:#3d2614; --sh:#a3d977; --sh-soft:#26361b; --hb:#fbab4b; --hb-soft:#3d2a12; --tm:#f8826a; --tm-soft:#42231c; --mn:#a5acbb; --mn-soft:#232735;
+  --ty:#fb923c; --ty-soft:#3d2614; --sh:#a3d977; --sh-soft:#26361b; --hb:#fbab4b; --hb-soft:#3d2a12; --tm:#f8826a; --tm-soft:#42231c; --mn:#a5acbb; --mn-soft:#232735; --kb:#c4a6ff; --kb-soft:#2e2445;
   --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.3); color-scheme:dark;}
 *{box-sizing:border-box}
 html,body{background:var(--bg);color:var(--ink)}
@@ -219,7 +219,7 @@ select{color-scheme:inherit}
 .pill{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 8px;font-size:11.5px;font-weight:600;white-space:nowrap}
 .p-good{background:var(--good-soft);color:var(--good)} .p-warn{background:var(--warn-soft);color:var(--warn)} .p-bad{background:var(--bad-soft);color:var(--bad)} .p-mute{background:var(--surface-2);color:var(--ink-3);border:1px solid var(--line)} .p-brass{background:var(--brass-soft);color:var(--brass)}
 .ch{display:inline-block;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:600;letter-spacing:.01em}
-.ch-trendyol{background:var(--ty-soft);color:var(--ty)} .ch-shopify{background:var(--sh-soft);color:var(--sh)} .ch-hepsiburada{background:var(--hb-soft);color:var(--hb)} .ch-temu{background:var(--tm-soft);color:var(--tm)} .ch-manuel{background:var(--mn-soft);color:var(--mn)}
+.ch-trendyol{background:var(--ty-soft);color:var(--ty)} .ch-kristal{background:var(--kb-soft);color:var(--kb)} .ch-shopify{background:var(--sh-soft);color:var(--sh)} .ch-hepsiburada{background:var(--hb-soft);color:var(--hb)} .ch-temu{background:var(--tm-soft);color:var(--tm)} .ch-manuel{background:var(--mn-soft);color:var(--mn)}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
 .banner{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;padding:12px 14px;border-radius:12px;background:var(--brass-soft);color:var(--ink);margin-bottom:16px;font-size:14px}
 .banner.bad{background:var(--bad-soft)}
@@ -491,7 +491,7 @@ const trParse = (v) => new Date(String(v).length <= 16 ? v + ':00+03:00' : v + '
 "use strict";
 /* ============ Sabitler ============ */
 const CHANNELS = {
-  trendyol:{name:'Trendyol'}, shopify:{name:'Shopify'}, hepsiburada:{name:'Hepsiburada'}, temu:{name:'Temu'}, manuel:{name:'Depo / Manuel'}
+  trendyol:{name:'Trendyol'}, shopify:{name:'Shopify'}, hepsiburada:{name:'Hepsiburada'}, temu:{name:'Temu'}, manuel:{name:'Depo / Manuel'}, kristal:{name:'Kristal Bardak'}
 };
 const ACTIVE_CHANNELS = ['trendyol','shopify']; // ilk aşamada bağlanan kanallar
 const MT = {sale:'Satış', cancel:'İptal · geri eklendi', ret:'İade kabul', in:'Giriş', out:'Çıkış', count:'Sayım düzeltme', initial:'Başlangıç stoğu', adjust:'Sipariş düzeltme'};
@@ -3014,11 +3014,12 @@ function sheetOrder(){
     <div>${l.status !== 'cancelled' && !l.ret && l.applied > 0 ? `<button class="btn sm" data-act="line-return" data-key="${esc(l.key)}">İade talebi</button>` : ''}</div></div>`; }).join('');
   const body = `<div class="card"><dl class="kv"><dt>Kanal</dt><dd>${chBadge(o.channel)}</dd><dt>Sipariş tarihi</dt><dd>${esc(fmtDate(o.date))}</dd><dt>Durum</dt><dd><span class="pill ${st[1]}">${st[0]}</span></dd><dt>Kaynak</dt><dd>${o.source==='manual'?'Elle girildi':o.source==='trendyol'?'Trendyol (otomatik)':'Dosyadan aktarıldı'}</dd>${o.baseline?'<dt>Not</dt><dd>Başlangıç tarihinden önce; stoğu etkilemedi</dd>':''}</dl></div>
   ${customerCard(o)}
+  ${o.channel === 'kristal' ? kbOrderCard(o) : ''}
   ${orderProfitCard(o)}
   ${o.channel === 'shopify' ? shRetCard(o) : ''}
   ${o.channel === 'trendyol' ? tyDiagCard(o) : ''}
   <div class="card"><h3>Kalemler</h3><div class="lines">${rows}</div></div>
-  ${anyActive ? `<div class="card"><h3>İptal</h3><p class="muted small" style="margin:0">Siparişi iptal edersen, stoktan düşülmüş bütün adetler ortak stoğa geri eklenir.</p><div class="row"><button class="btn danger" data-act="cancel-order">Siparişi iptal et</button></div></div>` : ''}`;
+  ${anyActive && o.channel !== 'kristal' ? `<div class="card"><h3>İptal</h3><p class="muted small" style="margin:0">Siparişi iptal edersen, stoktan düşülmüş bütün adetler ortak stoğa geri eklenir.</p><div class="row"><button class="btn danger" data-act="cancel-order">Siparişi iptal et</button></div></div>` : ''}`;
   return {title:`${esc(oNo(o))}`, sub: chBadge(o.channel), body};
 }
 function sheetNewOrder(){
@@ -4196,6 +4197,34 @@ function sheetBreakdown(){
     <p class="muted small" style="margin:0">Bir satıra dokununca sipariş açılır. Sütun başlıklarıyla sıralayabilirsin.</p></div>`};
 }
 const CUST = {};
+const KBO = {};
+function kbOrderCard(o){
+  const x = KBO[o.orderNo];
+  if (x === undefined) { KBO[o.orderNo] = null; api('/api/kb/order', {no:o.orderNo}).then(r => { KBO[o.orderNo] = r.order || false; if (S.sheet && S.sheet.type === 'order') renderSheet(false); }).catch(() => { delete KBO[o.orderNo]; }); }
+  if (!x) return `<div class="card"><h3>Kristal Bardak siparişi</h3><p class="muted small" style="margin:0">${x === false ? 'Sipariş kaydı bulunamadı.' : 'Yükleniyor…'}</p></div>`;
+  const d = x.data || {}, A = d.addr || {}, ad = A.ad || d.ad, adres = A.adres || d.adres, il = A.il || d.il, ilce = A.ilce || d.ilce, tel = A.telefon || d.telefon;
+  return `<div class="card"><h3>Kristal Bardak siparişi</h3><dl class="kv">
+    <dt>Site sipariş no</dt><dd class="mono">${esc(x.src)}</dd><dt>Müşteri</dt><dd>${esc(ad)}</dd><dt>Telefon</dt><dd class="mono">${esc(tel)}</dd>
+    <dt>Adres</dt><dd>${esc(adres)}<br>${esc(ilce)} / ${esc(il)}${d.addr ? ' <span class="pill p-warn">düzeltildi</span>' : ''}</dd>${d.not ? `<dt>Not</dt><dd>${esc(d.not)}</dd>` : ''}
+    <dt>Model</dt><dd>${esc(d.model)} · ${d.adet} adet${d.model === 'Karışık' ? ` (${d.elmas} Elmas + ${d.kristal} Kristal)` : ''}</dd><dt>Tutar</dt><dd><b>${tl2(d.tutar)}</b> · kapıda ödeme</dd></dl>
+    ${x.cancelled_at ? `<p class="small" style="color:var(--bad)">İptal edildi: ${esc(fmtDate(x.cancelled_at))}</p><button class="btn sm" data-act="kb-cancel" data-id="${esc(o.orderNo)}" data-on="0">İptali geri al</button>`
+      : `<p class="muted small">İptal edersen stoktan düşülen bardaklar geri eklenir, sipariş ciroya girmez.</p><button class="btn danger sm" data-act="kb-cancel" data-id="${esc(o.orderNo)}" data-on="1">Siparişi iptal et</button>`}</div>`;
+}
+function kbCard(){
+  const K = S.kb;
+  if (K === undefined) { S.kb = null; api('/api/kb/info', {}).then(r => { S.kb = r; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }).catch(e => { S.kb = {err: errText(e)}; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }); }
+  if (!K) return `<div class="card"><h3 style="margin:0">${chBadge('kristal')} Sipariş bağlantısı</h3><p class="muted small">Yükleniyor…</p></div>`;
+  if (K.err) return `<div class="card"><h3 style="margin:0">${chBadge('kristal')} Sipariş bağlantısı</h3><p class="small" style="color:var(--bad)">${esc(K.err)}</p></div>`;
+  const pr = (K.products || []).map(p => `<li>${esc(p.name)} <span class="mono muted">${esc(p.code || '')}</span> · stok <b>${fmtN(p.qty)}</b>${p.cost == null ? ' · <span style="color:var(--warn)">alış fiyatı yok</span>' : ''}${!(p.desi > 0) ? ' · <span style="color:var(--warn)">desi yok</span>' : ''}</li>`).join('');
+  return `<div class="card"><h3 style="margin:0 0 8px">${chBadge('kristal')} Sipariş bağlantısı</h3>
+    <p class="small" style="margin:0 0 6px">Google Apps Script siparişleri bu adrese POST eder (başlık: <span class="mono">X-KB-Secret</span>):</p>
+    <div class="row" style="gap:6px;align-items:center"><input class="input mono" readonly value="${esc(K.url)}" id="kb-url" style="flex:1;min-width:0;font-size:12px"><button class="btn sm" data-act="kb-copy">Kopyala</button></div>
+    <p class="small" style="margin:8px 0">${K.secret ? '✅ Gizli anahtar (KB_WEBHOOK_SECRET) tanımlı.' : '⚠️ Gizli anahtar (KB_WEBHOOK_SECRET) henüz tanımlı değil; tanımlanana kadar bağlantı hiçbir siparişi kabul etmez.'}</p>
+    <p class="small muted" style="margin:0 0 6px">${K.n} sipariş geldi${K.last ? ' · son: ' + esc(fmtDate(K.last)) : ''}</p>
+    <ul class="small" style="margin:0 0 8px;padding-left:18px">${pr}</ul>
+    <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="kb-test">Test siparişi gönder</button>${(K.tests || []).length ? `<button class="btn sm" data-act="kb-test-clear">Test siparişlerini sil (${K.tests.length})</button>` : ''}</div>
+    ${(K.tests || []).length ? `<p class="small muted" style="margin:6px 0 0">Test siparişleri stoğa ve ciroya girmez: ${K.tests.slice(0, 5).map(t => `<span class="mono">${esc(t.no)}</span> (${esc(t.src)})`).join(', ')}</p>` : ''}</div>`;
+}
 function customerCard(o){
   if (o.channel !== 'trendyol') return '';
   const c = CUST[o.orderNo];
@@ -4614,6 +4643,7 @@ function sheetImport(){
   </div>
   ${shopifyCard()}
   ${suratCard()}
+  ${kbCard()}
   ${bkCard()}
   ${ptCard()}
   <div class="card"><h3>Dosyadan aktar</h3>
@@ -5149,6 +5179,10 @@ document.addEventListener('click', async e => {
     case 'new-order': openSheet('new-order'); break;
     case 'order-addline': { const wrap = $('#no-lines'); wrap.insertAdjacentHTML('beforeend', `<div class="grid2" style="grid-template-columns:1fr 70px 100px"><label class="f">Stok kodu<input class="input mono" name="no-sku" list="sku-list" autocomplete="off"></label><label class="f">Adet<input class="input num" name="no-qty" inputmode="numeric" value="1"></label><label class="f">Birim fiyat<input class="input num" name="no-price" inputmode="decimal" placeholder="TL"></label></div>`); wrap.lastElementChild.querySelector('input').focus(); break; }
     case 'cancel-order': await cancelOrder(); break;
+    case 'kb-cancel': { const on = b.dataset.on === '1'; if (on && !confirm('Kristal Bardak siparişi iptal edilsin mi? Bardaklar stoğa geri eklenir.')) break; await run(async () => { await api('/api/kb/cancel', {no: id, on}); delete KBO[id]; S.rev = (S.rev||0) + 1; toast(on ? 'Sipariş iptal edildi, stok geri eklendi.' : 'İptal geri alındı.'); }); break; }
+    case 'kb-copy': { const i = $('#kb-url'); try { await navigator.clipboard.writeText(i.value); toast('Adres kopyalandı.'); } catch (e) { i.select(); } break; }
+    case 'kb-test': await run(async () => { const r = await api('/api/kb/test', {}); toast('Test siparişi geldi: ' + r.id); S.kb = undefined; }); break;
+    case 'kb-test-clear': await run(async () => { const r = await api('/api/kb/test-clear', {}); toast(r.n + ' test siparişi silindi.'); S.kb = undefined; }); break;
     case 'ret-kept': { const kept = b.dataset.kept === '1';
       if (!(await confirmBox(kept ? 'Ürün müşteride kaldı olarak işaretlenecek: iade stoğa eklenmez (eklendiyse geri alınır), kârda ürün maliyeti zarar sayılır, dönüş kargosu düşülmez.' : 'Ürün geri geldi olarak işaretlenecek: iade adedi stoğa eklenir.', 'Onayla'))) break;
       await run(async () => { await api('/api/returns/kept', {id, kept}); await refresh(true); const no = S.tyDiag && S.tyDiag.no; if (no) { try { S.tyDiag.data = await api('/api/orders/ty-diag', {orderNo: no}); } catch(e) {} } if (S.prof) { S.prof.data = null; S.prof.key = ''; } renderSheet(true); toast('Kaydedildi.'); }); break; }

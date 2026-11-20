@@ -119,6 +119,7 @@ async function init0(env) {
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN ret_real INTEGER').run(); } catch (e) {}
   try { await env.DB.prepare('ALTER TABLE sr_cost ADD COLUMN cost_all INTEGER').run(); } catch (e) {} // ücret Sürat servisinden (GonderilenKargoDetayi): kapıda ödeme bedeli dahil toplam // Sürat iade listesinden: iade kesin, ücret Sürat'ın kestiği (×1,5 yok)
   for (const c of ['live_durum TEXT', 'live_at TEXT', 'live_teslim TEXT']) { try { await env.DB.prepare('ALTER TABLE sr_ret ADD COLUMN ' + c).run(); } catch (e) {} } // Sürat iadesinin anlık durumu (sadece gösterim; stok ve kâr sadece Depoya ulaştı ile)
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS kb_orders(no TEXT PRIMARY KEY, src TEXT UNIQUE, at TEXT, data TEXT, tutar REAL, test INTEGER, cancelled_at TEXT, created_at TEXT)').run(); // Kristal Bardak siparişleri (kristalbardak.com)
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret_in(takip TEXT PRIMARY KEY, no TEXT, at TEXT, lines TEXT, auto INTEGER)').run(); // Sürat iadesi depoya ulaştı: stoğa eklenen adetler
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret(takip TEXT PRIMARY KEY, web TEXT, gonderen TEXT, il TEXT, fatura TEXT, teslim TEXT, durum TEXT, fee REAL, desi REAL, cod REAL, no TEXT, how TEXT, at TEXT)').run();
   // Kural değişti (13.11): iade kârı sadece depoya ulaşınca etkiler; önceki yüklemede işaretlenen ama depoya ulaşmamış iadelerin kâr işareti kalkar
@@ -1610,6 +1611,61 @@ function shOrdersToInput(nodes) {
     if (lines.length || o.cancelledAt) out.push({ orderNo: String(o.name || '').trim(), date: o.createdAt, lines, ...(o.cancelledAt ? { cancelled: true } : {}) });
   }
   return out;
+}
+
+/* ---------- Kristal Bardak (kristalbardak.com): Google Apps Script siparişi POST eder ----------
+   Sipariş Backstage'de saklanır (kb_orders) ve 'kristal' kanalı olarak sipariş listesine girer. Numara: KB900001… (Shopify numaralarıyla çakışmaz). */
+const KB_CH = 'kristal';
+const kbIsGid = (g) => /^kb:KB\d{6,}$/.test(String(g || ''));
+const kbGid = (no) => 'kb:' + no;
+async function kbProducts(env) {
+  const s = await getSettings(env, ['kb_pk_e', 'kb_pk_k']); const out = {};
+  for (const [k, sku, name] of [['kb_pk_e', 'KB-ELMAS', 'Kristal Bardak - Elmas'], ['kb_pk_k', 'KB-KRISTAL', 'Kristal Bardak - Kristal']]) {
+    let key = s[k] || '';
+    if (key) { const r = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(key).first(); if (r && r.merged_into) { key = r.merged_into; await setSetting(env, k, key); } else if (!r) key = ''; }
+    if (!key) { key = skuKey(sku); const ex = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(key).first(); if (ex && ex.merged_into) key = ex.merged_into; else if (!ex) await env.DB.batch(ensureProduct(env, key, { sku, name, channels: [KB_CH] }, KB_CH)); await setSetting(env, k, key); }
+    out[k === 'kb_pk_e' ? 'elmas' : 'kristal'] = key;
+  }
+  return out;
+}
+function kbParse(b) {
+  const t = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n);
+  const o = { siparisNo: t(b.siparisNo, 60), tarih: t(b.tarih, 40), ad: t(b.ad, 80), telefon: String(b.telefon == null ? '' : b.telefon).replace(/\D/g, '').slice(0, 15), il: t(b.il, 40), ilce: t(b.ilce, 60), adres: t(b.adres, 300), not: t(b.not, 300), model: t(b.model, 20), odeme: t(b.odeme, 20) || 'kapida' };
+  const n = (v) => { const x = Number(String(v == null ? '' : v).replace(',', '.')); return Number.isFinite(x) ? x : NaN; };
+  o.adet = n(b.adet); o.elmasAdet = n(b.elmasAdet); o.kristalAdet = n(b.kristalAdet); o.tutar = n(b.tutar);
+  const e = [];
+  if (!o.siparisNo) e.push('siparisNo boş');
+  if (![1, 2, 6].includes(o.adet)) e.push('adet 1, 2 ya da 6 olmalı');
+  if (!Number.isInteger(o.elmasAdet) || o.elmasAdet < 0 || !Number.isInteger(o.kristalAdet) || o.kristalAdet < 0) e.push('elmasAdet ve kristalAdet 0 ya da pozitif tam sayı olmalı');
+  else if (o.elmasAdet + o.kristalAdet !== o.adet) e.push('elmasAdet + kristalAdet, adet ile aynı olmalı');
+  if (!['Elmas', 'Kristal', 'Karışık'].includes(o.model)) e.push('model Elmas, Kristal ya da Karışık olmalı');
+  else if (o.model === 'Karışık' && o.adet === 1) e.push('Karışık model 1 adet olamaz');
+  if (!(o.tutar > 0)) e.push('tutar 0\'dan büyük olmalı');
+  for (const [k, l] of [['ad', 'ad'], ['il', 'il'], ['ilce', 'ilçe'], ['adres', 'adres']]) if (!o[k]) e.push(l + ' boş');
+  if (o.telefon.length < 10) e.push('telefon eksik');
+  const d = Date.parse(o.tarih); o.at = Number.isFinite(d) ? new Date(d).toISOString() : iso();
+  return { o, err: e.join(', ') };
+}
+// Siparişi kaydeder; aynı siparisNo ikinci kez gelirse yeni kayıt açılmaz. Test siparişi (TEST… numaralı) stoğa ve ciroya girmez.
+async function kbSave(env, o, test) {
+  const ex = await env.DB.prepare('SELECT no, at, data, test, cancelled_at FROM kb_orders WHERE src=?1').bind(o.siparisNo).first();
+  if (ex) { // önceki denemede kayıt açıldı ama stok işlenemediyse şimdi işlenir
+    if (!ex.test && !ex.cancelled_at && !(await env.DB.prepare('SELECT 1 FROM orders WHERE id=?1').bind(orderId(KB_CH, ex.no)).first())) await kbIngest(env, ex.no, ex.at, JSON.parse(ex.data || '{}'), false);
+    return { id: ex.no, tekrar: true }; }
+  const data = { ad: o.ad, telefon: o.telefon, il: o.il, ilce: o.ilce, adres: o.adres, not: o.not, model: o.model, adet: o.adet, elmas: o.elmasAdet, kristal: o.kristalAdet, tutar: o.tutar, odeme: o.odeme, src: o.siparisNo };
+  await env.DB.prepare(`INSERT INTO kb_orders(no, src, at, data, tutar, test, created_at) VALUES((SELECT 'KB' || (COALESCE(MAX(CAST(substr(no,3) AS INTEGER)), 900000) + 1) FROM kb_orders WHERE no GLOB 'KB[0-9]*'), ?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(src) DO NOTHING`)
+    .bind(o.siparisNo, o.at, JSON.stringify(data), o.tutar, test ? 1 : 0, iso()).run();
+  const r = await env.DB.prepare('SELECT no FROM kb_orders WHERE src=?1').bind(o.siparisNo).first(); if (!r) throw new Error('Sipariş kaydedilemedi.');
+  if (!test) await kbIngest(env, r.no, o.at, data, false);
+  return { id: r.no };
+}
+async function kbIngest(env, no, at, d, cancelled) {
+  const pk = await kbProducts(env), tot = (d.elmas || 0) + (d.kristal || 0), st = cancelled ? 'cancelled' : 'active';
+  const lines = [['elmas', 'KB-ELMAS', 'Kristal Bardak - Elmas'], ['kristal', 'KB-KRISTAL', 'Kristal Bardak - Kristal']].filter(([k]) => d[k] > 0)
+    .map(([k, sku, name]) => ({ key: '|' + pk[k], pkey: pk[k], sku, name, qty: d[k], status: st, fin: { revenue: cancelled ? 0 : Math.round(d.tutar * d[k] / tot * 100) / 100, rate: 0, vat: 20 } }));
+  await env.DB.prepare(`INSERT INTO order_cust(order_no,channel,data,updated_at,sname) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(order_no) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at, sname=excluded.sname`)
+    .bind(no, KB_CH, JSON.stringify({ name: d.ad, il: d.il, ilce: d.ilce }), iso(), String(d.ad || '').toLocaleLowerCase('tr-TR')).run();
+  return ingestOrders(env, KB_CH, [{ orderNo: no, date: at, lines }], { source: 'kristal', start: '' });
 }
 // Stok kodu eşleştirmesi Türkçe İ/ı ve büyük-küçük harf farkını önemsemez (Trendyol'da "LİLYAHOME1652", Shopify'da "LILYAHOME1652" olabilir)
 const skuFold = (x) => String(x || '').trim().replace(/İ/g, 'I').replace(/ı/g, 'i').toUpperCase();
@@ -5337,6 +5393,22 @@ ${catalog}` });
     else await env.DB.batch([env.DB.prepare('UPDATE products SET same_day=?1').bind(v), REV(env)]);
     return json({ ok: true });
   }
+  if (path === '/api/kb/info') {
+    const [c, t, l] = await env.DB.batch([env.DB.prepare(`SELECT COUNT(*) n, MAX(created_at) last FROM kb_orders WHERE COALESCE(test,0)=0`), env.DB.prepare(`SELECT no, src, created_at FROM kb_orders WHERE test=1 ORDER BY created_at DESC LIMIT 20`), env.DB.prepare(`SELECT no, src, at, tutar, cancelled_at FROM kb_orders WHERE COALESCE(test,0)=0 ORDER BY at DESC LIMIT 5`)]);
+    const pk = await kbProducts(env), pr = (await selectIn(env, 'SELECT key, code, name, qty, cost, desi FROM products', 'key', [pk.elmas, pk.kristal]));
+    return json({ ok: true, url: new URL(req.url).origin + '/api/kristal-bardak/order', secret: !!env.KB_WEBHOOK_SECRET, n: (c.results[0] || {}).n || 0, last: (c.results[0] || {}).last || null, tests: t.results, recent: l.results, products: pr });
+  }
+  if (path === '/api/kb/test') { const now = new Date(Date.now() + 3 * 3600000), id = 'TEST-' + now.toISOString().replace(/\D/g, '').slice(0, 14);
+    const { o, err } = kbParse({ siparisNo: id, tarih: iso(), ad: 'Test Müşteri', telefon: '05321234567', il: 'Ankara', ilce: 'Çankaya', adres: 'Test adresi', not: 'test', model: 'Karışık', adet: 2, elmasAdet: 1, kristalAdet: 1, tutar: 800, odeme: 'kapida' }); if (err) return bad(err);
+    const r = await kbSave(env, o, true); return json({ ok: true, id: r.id }); }
+  if (path === '/api/kb/test-clear') { const r = await env.DB.prepare('DELETE FROM kb_orders WHERE test=1').run(); return json({ ok: true, n: (r.meta && r.meta.changes) || 0 }); }
+  if (path === '/api/kb/cancel') { // iptal / geri al: stok geri eklenir (ya da yeniden düşülür), sipariş ciroya girmez
+    const no = String(body.no || ''), x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1 AND COALESCE(test,0)=0').bind(no).first(); if (!x) return bad('Sipariş bulunamadı.');
+    const on = body.on !== false, d = JSON.parse(x.data || '{}');
+    await kbIngest(env, x.no, x.at, d, on);
+    await env.DB.batch([env.DB.prepare('UPDATE kb_orders SET cancelled_at=?2 WHERE no=?1').bind(no, on ? iso() : null), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(trDay(Date.parse(x.at))), setStmt(env, 'home_cache', ''), REV(env)]);
+    return json({ ok: true }); }
+  if (path === '/api/kb/order') { const x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1').bind(String(body.no || '')).first(); if (!x) return bad('Sipariş bulunamadı.'); return json({ ok: true, order: { ...x, data: JSON.parse(x.data || '{}') } }); }
   if (path === '/api/orders/page') {
     // Sipariş ekranı: sayfa başına 100 sipariş; durum, kanal ve arama süzgeci sunucuda
     const size = Math.max(1, Math.min(100, intOr(body.size, 100))), page = Math.max(1, intOr(body.page, 1));
@@ -5359,7 +5431,7 @@ ${catalog}` });
       where.push(`(o.order_no LIKE ?${a1} OR c.sname LIKE ?${a2} OR o.lines LIKE ?${a1}${extra})`);
     }
     const W = where.length ? 'WHERE ' + where.join(' AND ') : '';
-    const J = `FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel='trendyol' ${W}`;
+    const J = `FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel IN ('trendyol','kristal') ${W}`;
     const [totR, listR] = await env.DB.batch([env.DB.prepare(`SELECT COUNT(*) n ${J}`).bind(...args), env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname ${J} ORDER BY o.date DESC LIMIT ${size} OFFSET ${(page - 1) * size}`).bind(...args)]);
     const tot = totR.results[0], results = listR.results;
     // Kâr ayrı istekle gelir (liste beklemeden açılsın)
@@ -5510,6 +5582,16 @@ export default {
         if (sig !== (req.headers.get('x-shopify-hmac-sha256') || '')) return new Response('yetkisiz', { status: 401 });
         ctx.waitUntil((async () => { await sleep(1500); try { const r = await syncShopifyOrders(env, { pages: 1 }); await setSetting(env, 'sh_hook_at', iso() + ' · ' + (r ? r.orders + ' sipariş' : '')); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } })());
         return new Response('ok');
+      }
+      if (path === '/api/kristal-bardak/order') {
+        if (req.method !== 'POST') return json({ ok: false, hata: 'POST kullanılmalı' }, 405);
+        const want = env.KB_WEBHOOK_SECRET, got = req.headers.get('x-kb-secret') || '';
+        if (!want || !got || (await hmac('cmp', got)) !== (await hmac('cmp', want))) return json({ ok: false, hata: 'yetkisiz' }, 401);
+        await init(env); USE.req++;
+        const b = await req.json().catch(() => null); if (!b || typeof b !== 'object') return json({ ok: false, hata: 'JSON okunamadı' }, 400);
+        const { o, err } = kbParse(b); if (err) return json({ ok: false, hata: err }, 400);
+        try { const r = await kbSave(env, o, /^TEST/i.test(o.siparisNo)); return json({ ok: true, id: r.id, ...(r.tekrar ? { tekrar: true } : {}) }); }
+        catch (e) { return json({ ok: false, hata: String(e.message || e).slice(0, 200) }, 500); }
       }
       if (path === '/hook/ty') {
         // Trendyol sipariş bildirimi: anahtar doğrulanır, yeni sipariş hemen işlenir
