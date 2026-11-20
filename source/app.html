@@ -309,8 +309,9 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .sheet-h .tt{flex:1;min-width:0}
 .sheet-h h2{margin:0;font-family:var(--f-display);font-weight:800;font-size:20px;letter-spacing:-.02em;line-height:1.15;overflow-wrap:anywhere}
 .sheet-b{padding:16px 16px calc(28px + env(safe-area-inset-bottom,0px));display:grid;gap:18px}
-.hk-grid{display:grid;grid-template-columns:58px repeat(4,minmax(97px,1fr));gap:0;margin-bottom:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;box-shadow:var(--shadow)}
-.hk-grid>.hk-row,.hk-grid>span:first-child,.hk-grid>button.hk-eye{position:sticky;left:0;z-index:1;background:var(--surface)} /* yana kaydırınca dönem sütunu sabit */
+.hk-grid{display:grid;grid-template-columns:58px repeat(4,minmax(0,1fr));gap:0;margin-bottom:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+.hk-ch .sh{display:none}
+@media (max-width:520px){.hk-grid{grid-template-columns:42px repeat(4,minmax(0,1fr))}.hk-grid .hk{padding:4px 3px}.hk-grid .hk .v{font-size:11.5px;letter-spacing:-.02em}.hk-grid .hk .v .x{font-size:7.5px;margin-left:1px}.hk-grid .hk .s{font-size:7.8px;letter-spacing:-.02em}.hk-grid .hk-ch{font-size:10px;white-space:nowrap;overflow:hidden}.hk-ch .lg{display:none}.hk-ch .sh{display:inline}.hk-grid .hk-row{font-size:8.5px;padding:6px 1px 0 3px;letter-spacing:-.02em}} /* telefonda 4 sütun sığsın */
 .hk-ch{font-weight:700;font-size:11.5px;padding:4px 2px;text-align:center;border-bottom:1px solid var(--line)}
 .hk-grid>span:first-child{border-bottom:1px solid var(--line)}
 .hk-ch.hk-ty{background:var(--ty-soft);color:var(--ty)}.hk-ch.hk-sh{background:var(--sh-soft);color:var(--sh)}.hk-ch.hk-all{background:var(--violet-soft);color:var(--violet)}.hk-ch.hk-kb{background:var(--kb-soft);color:var(--kb)}
@@ -435,7 +436,7 @@ body[data-tab="home"] main{flex:1;min-height:0;padding-bottom:88px!important;mar
 body[data-tab="home"] #view{height:100%;display:grid;grid-template-columns:minmax(0,62fr) minmax(0,38fr);grid-template-rows:auto minmax(0,1.65fr) minmax(0,.75fr) minmax(0,.85fr);gap:12px}
 body[data-tab="home"] #view>*{margin:0!important;min-height:0}
 body[data-tab="home"] #view>.h-ban{grid-column:1/-1;grid-row:1}
-body[data-tab="home"] #view>.hk-grid{grid-column:1;grid-row:2;grid-template-columns:96px repeat(4,minmax(104px,1fr));grid-template-rows:auto repeat(4,minmax(0,1fr));height:100%}
+body[data-tab="home"] #view>.hk-grid{grid-column:1;grid-row:2;grid-template-columns:96px repeat(4,minmax(0,1fr));grid-template-rows:auto repeat(4,minmax(0,1fr));height:100%}
 body[data-tab="home"] #view>.h-rec{grid-column:2;grid-row:2/5}
 body[data-tab="home"] #view>.h-act{grid-column:1;grid-row:3}
 body[data-tab="home"] #view>.h-sc{grid-column:1;grid-row:4}
@@ -2125,8 +2126,8 @@ function viewHome(){
         box(cls, t0(d.profit), `${tk(d.revenue)}${ar(d.revenue, p3.revenue)} · ${mg(d.margin)}`, prof(d.profit), act, id('d30'), ar(d.profit, p3.profit)),
         box0(cls, fmtN(pend), `bugün ${fmtN(t.n || 0)} sip. ${ar(t.n || 0, y.n || 0)}`, 'color:var(--orange)', 'orders-new', '')]; };
     const A = cell('trendyol', 'hk-ty'), B = cell('shopify', 'hk-sh'), Z = cell('all', 'hk-all'), K = cell('kristal', 'hk-kb'), rows = ['Bugün', 'Bu ay', 'Son 30 gün', 'Bekleyen'];
-    h += `<div class="hk-grid"><button type="button" class="hk-eye" data-act="hk-eye" aria-label="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" title="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" style="border:0;background:none;cursor:pointer;color:var(--ink-2);display:flex;align-items:center;justify-content:center;padding:6px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>${HID ? '' : '<path d="M3 3l18 18"/>'}</svg></button><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span><span class="hk-ch hk-all">Toplam</span><span class="hk-ch hk-kb">Kristal Bardak</span>
-      ${rows.map((r, i) => `<div class="hk-row">${r}</div>${A[i]}${B[i]}${Z[i]}${K[i]}`).join('')}</div>` + homeRecent();
+    h += `<div class="hk-grid"><button type="button" class="hk-eye" data-act="hk-eye" aria-label="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" title="${HID ? 'Tutarları göster' : 'Tutarları gizle'}" style="border:0;background:none;cursor:pointer;color:var(--ink-2);display:flex;align-items:center;justify-content:center;padding:6px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>${HID ? '' : '<path d="M3 3l18 18"/>'}</svg></button><span class="hk-ch hk-ty">Trendyol</span><span class="hk-ch hk-sh">Shopify</span><span class="hk-ch hk-kb"><span class="lg">Kristal Bardak</span><span class="sh">K. Bardak</span></span><span class="hk-ch hk-all">Toplam</span>
+      ${rows.map((r, i) => `<div class="hk-row">${r}</div>${A[i]}${B[i]}${K[i]}${Z[i]}`).join('')}</div>` + homeRecent();
   } else if (S.home && S.home.err) h += `<div class="card"><b>Özet alınamadı</b><p class="muted small">${esc(S.home.err)}</p><button class="btn" data-act="home-retry">Tekrar dene</button></div>`;
   else h += `<div class="home-grid">${'<div class="kpi skel" style="height:96px;border-radius:14px"></div>'.repeat(4)}</div><p class="muted small" style="margin:-6px 0 14px">${S.home && S.home.perr ? 'Son hesaplama hatası: ' + esc(S.home.perr) : 'Bu ayın özeti hesaplanıyor…'}</p>`;
   // Dikkat gerektirenler (özet gelmeden de gösterilir)
