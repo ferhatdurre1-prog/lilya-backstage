@@ -173,6 +173,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS listings(channel TEXT, ext TEXT, pkey TEXT, orig_pkey TEXT, factor INTEGER DEFAULT 1, sku TEXT, barcode TEXT, name TEXT, image TEXT, ext_qty INTEGER, passive INTEGER, updated_at TEXT, PRIMARY KEY(channel, ext))').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS listings_pkey ON listings(pkey)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS match_skip(a TEXT, b TEXT, PRIMARY KEY(a, b))').run();
+  try { await env.DB.prepare('ALTER TABLE products ADD COLUMN merged_at TEXT').run(); } catch (e) {} // birleştirme saati (geri almak için)
   // Shopify siparişlerinde henüz kargolanmamış adetler (varyant → adet); sayımda raftaki ama satılmış ürünü ayırmak için
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sh_unf(order_no TEXT PRIMARY KEY, data TEXT, updated_at TEXT)').run();
   // Shopify adres düzeltmeleri: eski / yeni adres saklanır (geri alma için)
@@ -5157,10 +5158,27 @@ ${catalog}` });
     const chs = [...new Set([...JSON.parse(b.channels || '[]'), ...JSON.parse(a.channels || '[]')])];
     await env.DB.batch([
       env.DB.prepare('UPDATE listings SET pkey=?2, factor=CASE WHEN pkey=?1 THEN ?3 * COALESCE(factor,1) ELSE factor END WHERE pkey=?1').bind(from, into, factor),
-      env.DB.prepare('UPDATE products SET merged_into=?2 WHERE key=?1').bind(from, into),
+      env.DB.prepare('UPDATE products SET merged_into=?2, merged_at=?3 WHERE key=?1').bind(from, into, iso()),
       env.DB.prepare('UPDATE products SET merged_into=?2 WHERE merged_into=?1').bind(from, into),
       env.DB.prepare(`UPDATE products SET channels=?2, cost=COALESCE(cost, ?3), image=CASE WHEN image='' THEN ?4 ELSE image END, ty_passive=CASE WHEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=?1 AND l.channel='trendyol' AND COALESCE(l.passive,0)=0) OR NOT EXISTS(SELECT 1 FROM listings l WHERE l.pkey=?1 AND l.channel='trendyol') THEN 0 ELSE 1 END WHERE key=?1`).bind(into, JSON.stringify(chs), a.cost, a.image || ''),
       env.DB.prepare('INSERT OR IGNORE INTO match_skip(a,b) VALUES(?1,?2)').bind(from, into), REV(env)]);
+    return json({ ok: true });
+  }
+  if (path === '/api/products/merges') { // son birleştirmeler: en yeni üstte (saat kaydı yoksa birleştirme sırasına göre)
+    const { results } = await env.DB.prepare(`SELECT p.key, p.code, p.name, p.image, p.qty, p.merged_into, p.merged_at, t.code tcode, t.name tname, t.image timage, t.qty tqty,
+      (SELECT MAX(m.rowid) FROM match_skip m WHERE m.a = p.key AND m.b = p.merged_into) rid, (SELECT COUNT(*) FROM listings l WHERE l.orig_pkey = p.key AND l.pkey = p.merged_into) nl
+      FROM products p LEFT JOIN products t ON t.key = p.merged_into WHERE p.merged_into IS NOT NULL ORDER BY COALESCE(p.merged_at, '') DESC, COALESCE(rid, 0) DESC LIMIT 40`).all();
+    return json({ ok: true, merges: results });
+  }
+  if (path === '/api/products/unmerge') { // birleştirmeyi geri al: ürün geri gelir, kendi ilanları ona döner; stok adetlerine dokunulmaz
+    const key = String(body.key || ''), p = await env.DB.prepare('SELECT key, merged_into FROM products WHERE key=?1').bind(key).first();
+    if (!p) return bad('Ürün bulunamadı.', 404); if (!p.merged_into) return bad('Bu ürün birleştirilmiş değil.');
+    const into = p.merged_into, st = [
+      env.DB.prepare('UPDATE listings SET pkey=?1, factor=1 WHERE orig_pkey=?1 AND pkey=?2').bind(key, into),
+      env.DB.prepare('UPDATE products SET merged_into=NULL, merged_at=NULL WHERE key=?1').bind(key),
+      env.DB.prepare('DELETE FROM match_skip WHERE (a=?1 AND b=?2) OR (a=?2 AND b=?1)').bind(key, into)];
+    for (const [k, sku] of [['kb_pk_e', 'KB-ELMAS'], ['kb_pk_k', 'KB-KRISTAL']]) if (key === skuKey(sku)) st.push(setStmt(env, k, key)); // Kristal Bardak siparişleri yeniden bu ürüne
+    st.push(REV(env)); await env.DB.batch(st);
     return json({ ok: true });
   }
   if (path === '/api/products/factor') {
