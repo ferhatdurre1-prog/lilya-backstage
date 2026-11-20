@@ -1374,7 +1374,7 @@ async function srTrackOne(env, row, cr, c, restOnly) {
     tr = q.no; msg = q.no ? (q.durum || q.raw) : (q.raw || '') + (restOnly ? ` [${cr.acct === 'cod' ? 'kapıda ödeme carisi' : 'normal cari'} ${String(cr.cari || '').slice(-2)}]` : ''); }
   const st = [env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_at=?3, track_msg=?4 WHERE ref=?1').bind(row.ref, tr || null, iso(), String(msg || '').slice(0, 600))];
   let fulfilled = false, ferr = '';
-  if (tr && !row.fulfilled_at && shConfigured(c)) { try { const fr = await shFulfill(env, c, row.gid, tr); if (fr && fr.already) await shFixTracking(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } } // Shopify'da zaten kargolanmışsa takip no güncellenir
+  if (tr && !row.fulfilled_at && kbIsGid(row.gid)) fulfilled = true; /* Kristal Bardak: Shopify'a yazılmaz, takip no gelince gönderildi sayılır */ else if (tr && !row.fulfilled_at && shConfigured(c)) { try { const fr = await shFulfill(env, c, row.gid, tr); if (fr && fr.already) await shFixTracking(env, c, row.gid, tr); fulfilled = true; } catch (e) { ferr = String(e.message || e).slice(0, 300); } } // Shopify'da zaten kargolanmışsa takip no güncellenir
   if (fulfilled) st.push(env.DB.prepare('UPDATE sr_ship SET fulfilled_at=?2, fulfill_err=NULL WHERE gid=?1').bind(row.gid, iso()));
   if (tr && (tr !== row.tracking || row._fresh)) st.push(REV(env)); /* takip no geldi: açık ekranlar kendini yeniler */
   else if (ferr) st.push(env.DB.prepare('UPDATE sr_ship SET fulfill_err=?2 WHERE ref=?1').bind(row.ref, ferr));
@@ -1387,7 +1387,7 @@ async function srRetStock(env, takip, on, auto) {
   const r = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(takip).first(); if (!r) return { err: 'İade bulunamadı.' }; if (!r.no) return { err: 'Bu iade bir siparişe bağlı değil; önce bağla.' };
   const ex = await env.DB.prepare('SELECT * FROM sr_ret_in WHERE takip=?1').bind(takip).first();
   if (on && ex) return { err: 'Bu iade zaten stoğa eklenmiş.' }; if (!on && !ex) return { err: 'Bu iade stoğa eklenmemiş.' };
-  const o = await env.DB.prepare(`SELECT id, order_no, lines, version FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(r.no).first(); if (!o) return { err: `#${r.no} siparişlerde bulunamadı.` };
+  const o = await env.DB.prepare(`SELECT id, order_no, lines, version FROM orders WHERE channel IN ('shopify','kristal') AND replace(replace(order_no,'#',''),'KB','')=?1`).bind(r.no).first(); if (!o) return { err: `#${r.no} siparişlerde bulunamadı.` };
   const lines = JSON.parse(o.lines || '[]'), st = [guardStmt(env, `(SELECT version FROM orders WHERE id=?1)=?2`, o.id, o.version)], L = [];
   if (on) { for (const l of lines) { const q = l.status === 'cancelled' ? 0 : Math.max(0, (Number(l.applied) || 0) - (Number(l.rin) || 0)); if (!q || !l.pkey) continue; /* iptal edilmiş satırın stoğu iptalde zaten geri eklendi */
       st.push(...changeQty(env, l.pkey, q, { type: 'ret', channel: 'shopify', ref: o.order_no, note: auto ? 'Sürat iadesi (13.11 öncesi, kabul sayıldı)' : 'Sürat iadesi depoya ulaştı' })); l.rin = (Number(l.rin) || 0) + q; L.push({ key: l.key, pkey: l.pkey, name: l.name || l.sku || '', qty: q }); }
@@ -1430,7 +1430,7 @@ async function srGkdWindow(env, acct, d0) {
   const num = (v) => { const n = Number(String(v ?? '').replace(',', '.')); return Number.isFinite(n) ? n : 0; };
   const takips = G.map(x => String(x.TakipNo).replace(/\D/g, '')), webNos = [...new Set(G.map(x => String(x.WebSiparisKodu || '').replace(/^LH/i, '').replace(/\D/g, '')).filter(Boolean))];
   const byTrk = new Map((await selectIn(env, 'SELECT tracking, order_no FROM sr_ship', 'tracking', takips)).map(x => [x.tracking, String(x.order_no).replace(/\D/g, '')]));
-  const shNo = new Set((webNos.length ? (await selectIn(env, `SELECT order_no, channel FROM orders`, 'order_no', webNos.map(n => '#' + n))).filter(x => x.channel === 'shopify') : []).map(x => String(x.order_no).replace(/\D/g, '')));
+  const shNo = new Set((webNos.length ? (await selectIn(env, `SELECT order_no, channel FROM orders`, 'order_no', webNos.flatMap(n => ['#' + n, 'KB' + n]))).filter(x => x.channel === 'shopify' || x.channel === 'kristal') : []).map(x => String(x.order_no).replace(/\D/g, '')));
   const st = []; let fee = 0, ret = 0;
   for (const x of G) { const takip = String(x.TakipNo).replace(/\D/g, ''), w = String(x.WebSiparisKodu || '').replace(/^LH/i, '').replace(/\D/g, ''), no = (w && shNo.has(w)) ? w : (byTrk.get(takip) || ''), us = /lilya/i.test(String(x.AliciUnvan || '')), ua = /^(üa|ua)$/i.test(String(x.OdemeSekli || '').replace(/\s/g, ''));
     const tut = num(x.Tutar), tes = dt(x.TeslimTarihi), durum = [x.Durum || x.TeslimatDurum, x.SonBulunduguYer].filter(Boolean).join(' · ').slice(0, 120);
@@ -1445,7 +1445,7 @@ async function srGkdWindow(env, acct, d0) {
 // Giden gönderide Sürat "iade / teslim edilemedi" diyorsa (Sürat ayrı iade kaydı açmasa da) iade listesine düşer: aynı takip no ile; sonradan gelen Sürat iade kaydı aynı satırı günceller. Stok/kâr yine sadece Depoya ulaştı ile
 async function srRetFromOut(env) {
   const { results } = await env.DB.prepare(`SELECT s.ref, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, s.live_durum, s.live_yer, s.live_at, s.live_und, c.undelivered, r.iade
-    FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
+    FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(replace(s.order_no,'#',''),'KB','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
     WHERE COALESCE(s.tracking,'') <> '' AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid)`).bind(iso(Date.now() - 30 * 86400000)).all();
   const und = results.filter(x => x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || ''))));
   if (!und.length) return 0;
@@ -1616,7 +1616,7 @@ function shOrdersToInput(nodes) {
 /* ---------- Kristal Bardak (kristalbardak.com): Google Apps Script siparişi POST eder ----------
    Sipariş Backstage'de saklanır (kb_orders) ve 'kristal' kanalı olarak sipariş listesine girer. Numara: KB900001… (Shopify numaralarıyla çakışmaz). */
 const KB_CH = 'kristal';
-const kbIsGid = (g) => /^kb:KB\d{6,}$/.test(String(g || ''));
+const kbIsGid = (g) => /^kb:KB\d{6,}$/.test(String(g || '')), shOrKbGid = (g) => /^gid:\/\/shopify\/Order\/\d+$/.test(String(g || '')) || kbIsGid(g);
 const kbGid = (no) => 'kb:' + no;
 async function kbProducts(env) {
   const s = await getSettings(env, ['kb_pk_e', 'kb_pk_k']); const out = {};
@@ -1659,6 +1659,22 @@ async function kbSave(env, o, test) {
   if (!test) await kbIngest(env, r.no, o.at, data, false);
   return { id: r.no };
 }
+
+// Kristal Bardak siparişi, adres düzeltme ve Sürat akışında Shopify siparişi biçiminde kullanılır (adres düzeltmesi sadece Backstage'de: data.addr)
+function kbShAddr(d) {
+  if (d.addr) return d.addr;
+  const w = String(d.ad || '').trim().split(/\s+/), last = w.length > 1 ? w.pop() : '', t = String(d.telefon || '').replace(/\D/g, '').slice(-10);
+  return { firstName: w.join(' '), lastName: last, company: '', address1: d.adres || '', address2: '', city: d.ilce || '', province: d.il || '', provinceCode: '', zip: '', countryCode: 'TR', country: 'Turkey', phone: t.length === 10 ? '+90' + t : '' };
+}
+function kbItems(d) { return [['elmas', 'Kristal Bardak - Elmas'], ['kristal', 'Kristal Bardak - Kristal']].filter(([k]) => d[k] > 0).map(([k, n]) => ({ k, n, q: d[k] })); }
+async function kbAddrRows(env, term) { // adres düzeltme listesi: iptal edilmemiş, takip no'su gelmemiş (gönderilmemiş) Kristal Bardak siparişleri
+  const { results } = await env.DB.prepare(`SELECT * FROM kb_orders k WHERE COALESCE(test,0)=0 AND cancelled_at IS NULL AND at > ?1 AND NOT EXISTS (SELECT 1 FROM sr_ship s WHERE s.gid = 'kb:' || k.no AND s.fulfilled_at IS NOT NULL) ORDER BY at DESC LIMIT 200`).bind(iso(Date.now() - 45 * 86400000)).all();
+  const q = String(term || '').toLocaleLowerCase('tr-TR').replace(/^#/, '');
+  return results.map(x => { const d = JSON.parse(x.data || '{}'); return { kb: true, gid: kbGid(x.no), name: x.no, createdAt: x.at, cancelled: false, fulfill: 'UNFULFILLED', note: [d.not, 'Site no: ' + x.src].filter(Boolean).join(' · '), email: '', phone: '',
+    total: Number(x.tutar) || 0, items: kbItems(d).map(i => `${i.q}× ${i.n}`), addr: kbShAddr(d), cod: { tip: 1, amt: Number(x.tutar) || 0, gw: 'Kapıda nakit (Kristal Bardak)' } }; })
+    .filter(o => !q || o.name.toLowerCase().includes(q) || String(x2s(o.addr)).toLocaleLowerCase('tr-TR').includes(q));
+}
+const x2s = (a) => `${a.firstName} ${a.lastName} ${a.phone}`;
 async function kbIngest(env, no, at, d, cancelled) {
   const pk = await kbProducts(env), tot = (d.elmas || 0) + (d.kristal || 0), st = cancelled ? 'cancelled' : 'active';
   const lines = [['elmas', 'KB-ELMAS', 'Kristal Bardak - Elmas'], ['kristal', 'KB-KRISTAL', 'Kristal Bardak - Kristal']].filter(([k]) => d[k] > 0)
@@ -2986,10 +3002,10 @@ async function computeProfit(env, from, to, ch0) {
     env.DB.prepare('SELECT COUNT(*) n FROM ad_spend'),
     env.DB.prepare('SELECT id, day, name, amount, created_at, kind FROM expenses WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC, id DESC').bind(dayFrom, dayTo),
     env.DB.prepare('SELECT no, fee, cod_fee, handler, cod, cod_type FROM bk_ship WHERE created >= ?1').bind(addDay(dayFrom, -10)),
-    env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
-    env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
+    env.DB.prepare(`SELECT p.* FROM sh_pay p WHERE p.no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
+    env.DB.prepare(`SELECT * FROM sr_cost WHERE no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2)`).bind(from, to),
     env.DB.prepare(`SELECT * FROM paytr_tx WHERE tip='S' AND tarih >= ?1 AND tarih <= ?2`).bind(addDay(dayFrom, -1), addDay(dayTo, 1)),
-    env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(order_no,'#','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
+    env.DB.prepare(`SELECT no, SUM(cost) cost, COUNT(*) n FROM sh_ret WHERE deleted=0 AND no IN (SELECT replace(replace(order_no,'#',''),'KB','') FROM orders WHERE channel='shopify' AND date >= ?1 AND date < ?2) GROUP BY no`).bind(from, to)])]);
   const ptLk = (await env.DB.prepare('SELECT k, no, kind FROM pt_link').all()).results, ptLinkNo = new Map(ptLk.filter(x => x.kind === 'match').map(x => [x.no, x.k])), ptSelf = new Set(ptLk.filter(x => x.kind === 'self').map(x => x.no)), ptLinkedK = new Set(ptLk.map(x => x.k));
   const ptTx = ptR.results, ptUsed = new Set(), ptRate = ptTx.filter(x => x.oran > 0).reduce((a, x, i, arr) => a + x.oran / arr.length, 0);
   const ptFind = (no, total, day, txIds) => { if (ptLinkNo.has(no)) { const lm = ptTx.find(x => x.k === ptLinkNo.get(no)); if (lm) { ptUsed.add(lm.k); return lm; } } let m = ptTx.find(x => !ptUsed.has(x.k) && !ptLinkedK.has(x.k) && String(x.siparis_no || '').replace(/\D/g, '') === no);
@@ -4283,6 +4299,7 @@ ${catalog}` });
         gid: o.id, name: o.name, createdAt: o.createdAt, cancelled: !!o.cancelledAt, fulfill: o.displayFulfillmentStatus, note: o.note || '', email: o.email || '', phone: o.phone || '',
         total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0, items: ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0).map(l => `${l.unfulfilledQuantity}× ${l.name}`),
         addr: o.shippingAddress || null, cod: shCod(o) }));
+      if (!body.after) { try { orders.push(...(await kbAddrRows(env, term))); } catch (e) {} } // Kristal Bardak siparişleri
       const log = body.after ? null : (await env.DB.prepare('SELECT id, gid, order_no, before, after, at FROM sh_addr_log ORDER BY id DESC LIMIT 30').all()).results;
       const ships = orders.length ? (await selectIn(env, 'SELECT ref, gid, order_no, adet, desi, addr, lines, msg, at, tracking, track_at, track_msg, fulfilled_at, fulfill_err, exported_at, mode, printed_at FROM sr_ship', 'gid', orders.map(o => o.gid))).map(r => ({ ...r, addr: JSON.parse(r.addr || '{}'), lines: JSON.parse(r.lines || '[]') })) : [];
       const addrOk = orders.length ? (await selectIn(env, 'SELECT gid FROM addr_ok', 'gid', orders.map(o => o.gid))).map(r => r.gid) : [];
@@ -4291,7 +4308,7 @@ ${catalog}` });
   }
   if (path === '/api/shaddr/transit') { // Sürat yolda / teslim edildi: takip no'su olan Sürat gönderileri (son 30 gün); durum Sürat raporundan
     const { results } = await env.DB.prepare(`SELECT s.gid, s.ref, s.acct, s.order_no, s.addr, s.tracking, s.at, s.fulfilled_at, s.live_durum, s.live_yer, s.live_at, s.live_teslim, s.live_und, c.durum cdurum, c.teslim, c.undelivered, c.cod_amount, r.durum rdurum, r.cod rcod, r.collected, r.iade
-      FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(s.order_no,'#','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
+      FROM sr_ship s LEFT JOIN sr_cost c ON c.no = replace(replace(s.order_no,'#',''),'KB','') LEFT JOIN sr_rows r ON r.takip = s.tracking AND COALESCE(r.cancelled,0) = 0
       WHERE COALESCE(s.tracking,'') <> '' AND s.at > ?1 AND s.at = (SELECT MAX(at) FROM sr_ship t WHERE t.gid = s.gid) ORDER BY s.at DESC LIMIT 500`).bind(iso(Date.now() - 30 * 86400000)).all();
     const now = Date.now(), items = results.map(x => { let a = {}; try { a = JSON.parse(x.addr || '{}'); } catch (e) {} const dl = dlvDay(x.teslim) || x.live_teslim || null, since = Date.parse(x.fulfilled_at || x.at) || now;
       const und = x.live_at ? !!x.live_und : (!!x.undelivered || /^(EVET|E|1)$/i.test(String(x.iade || ''))), /* Sürat'tan canlı durum geldiyse eski rapor işaretleri yok sayılır */ durum = String(x.live_durum || x.rdurum || x.cdurum || '').trim();
@@ -4301,7 +4318,7 @@ ${catalog}` });
     return json({ ok: true, transit: items.filter(x => !x.deliv && !isRet(x)), delivered: items.filter(x => x.deliv && !isRet(x)) });
   }
   if (path === '/api/shaddr/addrok') { // "Adres doğru, bekleyene al": sarı adres uyarısı bu sipariş için yok sayılır
-    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    const gid = String(body.gid || ''); if (!shOrKbGid(gid)) return bad('Sipariş bulunamadı.');
     if (body.on === false) await env.DB.prepare('DELETE FROM addr_ok WHERE gid=?1').bind(gid).run();
     else await env.DB.prepare('INSERT INTO addr_ok(gid, at) VALUES(?1,?2) ON CONFLICT(gid) DO NOTHING').bind(gid, iso()).run();
     return json({ ok: true });
@@ -4342,14 +4359,14 @@ ${catalog}` });
   }
   if (path === '/api/shaddr/settrack') {
     // Gönderilmiş siparişe takip no gir/değiştir: Backstage'e kaydedilir (rapor eşleştirmesi için) ve Shopify'daki takip no güncellenir
-    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    const gid = String(body.gid || ''); if (!shOrKbGid(gid)) return bad('Sipariş bulunamadı.');
     const n = String(body.number || '').toLocaleUpperCase('tr').replace(/[^A-Z0-9]/g, ''); if (n.length < 8 || (n.match(/\d/g) || []).length < 6) return bad('Takip numarası en az 8 karakter olmalı (Sürat eKargo\'daki "Kargo Takip No").');
     const now = iso(), row = await env.DB.prepare('SELECT ref FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(gid).first();
     if (row) await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4, fulfilled_at=COALESCE(fulfilled_at, ?4) WHERE ref=?1').bind(row.ref, n, 'Gönderilmiş sekmesinden elle girildi', now).run();
     else await env.DB.prepare(`INSERT INTO sr_ship(ref, gid, order_no, adet, desi, addr, lines, msg, at, mode, exported_at, tracking, track_msg, track_at, fulfilled_at) VALUES(?1,?2,?3,0,0,'{}','[]',?4,?5,'manual',?5,?6,?4,?5,?5) ON CONFLICT(ref) DO UPDATE SET tracking=excluded.tracking, track_msg=excluded.track_msg, track_at=excluded.track_at, fulfilled_at=COALESCE(sr_ship.fulfilled_at, excluded.fulfilled_at)`)
       .bind('EL' + gid.replace(/\D/g, ''), gid, String(body.name || '').slice(0, 40), 'Gönderilmiş sekmesinden elle girildi', now, n).run();
-    let shop = 'ok'; const c = await shCreds(env);
-    if (shConfigured(c)) { try { const r = await shFixTracking(env, c, gid, n); if (r && r.none) shop = 'none'; } catch (e) { shop = String(e.message || e).slice(0, 200); } } else shop = 'Shopify bağlı değil';
+    let shop = 'ok'; const c = kbIsGid(gid) ? null : await shCreds(env);
+    if (!c) {} /* Kristal Bardak: sadece Backstage */ else if (shConfigured(c)) { try { const r = await shFixTracking(env, c, gid, n); if (r && r.none) shop = 'none'; } catch (e) { shop = String(e.message || e).slice(0, 200); } } else shop = 'Shopify bağlı değil';
     return json({ ok: true, tracking: n, shop });
   }
   // ---------- Sürat Kargo ----------
@@ -4397,7 +4414,7 @@ ${catalog}` });
   if (path === '/api/paytr/recon') {
     // PayTR mutabakatı: Shopify online siparişlerde beklenen tutar (ürün + 700 TL altı 100 TL kargo) ile PayTR'nin işlediği tutar, komisyonu, neti ve hesaba yattığı gün
     const rs = (await reportStart(env)) || '2026-10-01', from = iso(dayStartTR(rs));
-    const [oR, tR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.subtotal, p.total, p.tx, p.gateway, p.delivered shd, s.teslim srd, b.delivered bkd FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost s ON s.no = replace(o.order_no,'#','') LEFT JOIN bk_ship b ON b.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1 AND ((p.no IS NOT NULL AND COALESCE(p.cod,0)=0) OR replace(o.order_no,'#','') IN (SELECT no FROM pt_link WHERE kind='match')) ORDER BY o.date`).bind(from),
+    const [oR, tR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.subtotal, p.total, p.tx, p.gateway, p.delivered shd, s.teslim srd, b.delivered bkd FROM orders o LEFT JOIN sh_pay p ON p.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN sr_cost s ON s.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN bk_ship b ON b.no = replace(replace(o.order_no,'#',''),'KB','') WHERE o.channel='shopify' AND o.date >= ?1 AND ((p.no IS NOT NULL AND COALESCE(p.cod,0)=0) OR replace(replace(o.order_no,'#',''),'KB','') IN (SELECT no FROM pt_link WHERE kind='match')) ORDER BY o.date`).bind(from),
       env.DB.prepare(`SELECT * FROM paytr_tx WHERE tarih >= ?1 ORDER BY tarih`).bind(addDayStr(rs, -1)), env.DB.prepare('SELECT * FROM pt_payout WHERE day >= ?1 ORDER BY day DESC').bind(rs)]);
     const sales = tR.results.filter(x => x.tip === 'S'), refunds = tR.results.filter(x => x.tip === 'I'), used = new Set(), out = [], selfList = [];
     // Elle eşleme / yok sayma (turuncu kutudaki düğmeler)
@@ -4417,7 +4434,7 @@ ${catalog}` });
     const ignored = sales.filter(x => ignK.has(x.k)).map(x => ({ k: x.k, siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih }));
     const orphan = sales.filter(x => !used.has(x.k) && !linkedK.has(x.k)).map(x => ({ k: x.k, siparis_no: x.siparis_no, tutar: x.tutar, tarih: x.tarih, paid: x.paid_day, odeme: x.odeme_tipi || '' }));
     // Eşleşmeyen her PayTR işlemi için aday Shopify siparişleri (±1 gün, tutar ±%15): neden eşleşmediği yazılır
-    if (orphan.length) { const { results: cand } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, p.gateway FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') WHERE o.channel='shopify' AND o.date >= ?1`).bind(iso(dayStartTR(addDayStr(rs, -2)))).all();
+    if (orphan.length) { const { results: cand } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, p.gateway FROM orders o LEFT JOIN sh_pay p ON p.no = replace(replace(o.order_no,'#',''),'KB','') WHERE o.channel='shopify' AND o.date >= ?1`).bind(iso(dayStartTR(addDayStr(rs, -2)))).all();
       for (const x of orphan.slice(0, 50)) { const t0 = Date.parse(x.tarih + 'T12:00:00+03:00');
         x.cands = cand.filter(c => Math.abs(Date.parse(c.date) - t0) <= 36 * 3600000).map(c => { let lines = []; try { lines = JSON.parse(c.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'), tot = c.total !== null && c.total !== undefined ? r2(c.total) : null;
           const sub = r2(c.subtotal !== null && c.subtotal !== undefined ? c.subtotal : lines.reduce((a, l) => a + ((l.fin && l.fin.revenue) || 0), 0)), exp = r2(sub + (sub > 0 && sub < SH_FREE_SHIP ? SH_SHIP_FEE : 0));
@@ -4446,7 +4463,7 @@ ${catalog}` });
     const tx = await env.DB.prepare('SELECT k, tarih FROM paytr_tx WHERE k=?1').bind(k).first(); if (!tx) return bad('PayTR işlemi bulunamadı.');
     if (kind === 'remove') await env.DB.prepare('DELETE FROM pt_link WHERE k=?1').bind(k).run();
     else { let no = ''; if (kind === 'match') { no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş numarasını yaz.');
-        const o = await env.DB.prepare(`SELECT 1 FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(no).first(); if (!o) return bad(`#${no} numaralı Shopify siparişi bulunamadı.`);
+        const o = await env.DB.prepare(`SELECT 1 FROM orders WHERE channel='shopify' AND replace(replace(order_no,'#',''),'KB','')=?1`).bind(no).first(); if (!o) return bad(`#${no} numaralı Shopify siparişi bulunamadı.`);
         await env.DB.prepare(`DELETE FROM pt_link WHERE no=?1 AND kind='match' AND k<>?2`).bind(no, k).run(); }
       await env.DB.prepare('INSERT INTO pt_link(k, no, kind, at) VALUES(?1,?2,?3,?4) ON CONFLICT(k) DO UPDATE SET no=excluded.no, kind=excluded.kind, at=excluded.at').bind(k, no, kind, iso()).run(); }
     await env.DB.batch([env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(addDayStr(String(tx.tarih || '').slice(0, 10) || trToday(), -3)), setStmt(env, 'home_cache', ''), REV(env)]);
@@ -4474,7 +4491,7 @@ ${catalog}` });
   if (path === '/api/paytr/disconnect') { await env.DB.batch([setStmt(env, 'pt_id', ''), setStmt(env, 'pt_key', ''), setStmt(env, 'pt_salt', '')]); return json({ ok: true }); }
   if (path === '/api/bk/status') {
     const s0 = await getSettings(env, ['bk_token', 'bk_sync_at', 'bk_sync_msg']), c = await env.DB.prepare('SELECT COUNT(*) n, SUM(fee IS NOT NULL) f, SUM(cod) c, SUM(cod=1 AND cod_fee IS NULL) cp, MIN(created) a, MAX(created) b FROM bk_ship').first();
-    const mt = await env.DB.prepare(`SELECT COUNT(*) n FROM bk_ship b WHERE EXISTS(SELECT 1 FROM orders o WHERE o.channel='shopify' AND replace(o.order_no,'#','')=b.no)`).first();
+    const mt = await env.DB.prepare(`SELECT COUNT(*) n FROM bk_ship b WHERE EXISTS(SELECT 1 FROM orders o WHERE o.channel='shopify' AND replace(replace(o.order_no,'#',''),'KB','')=b.no)`).first();
     const smp = (await env.DB.prepare('SELECT no FROM bk_ship ORDER BY created DESC LIMIT 4').all()).results.map(x => x.no), so = (await env.DB.prepare(`SELECT order_no FROM orders WHERE channel='shopify' AND date < ?1 ORDER BY date DESC LIMIT 4`).bind('2026-10-17T07:00:00Z').all()).results.map(x => x.order_no);
     return json({ matched: mt ? mt.n : 0, sampleBk: smp, sampleSh: so, connected: !!(env.BASIT_KARGO_TOKEN || s0.bk_token), syncAt: s0.bk_sync_at || '', msg: s0.bk_sync_msg || '', n: c.n || 0, withFee: c.f || 0, cod: c.c || 0, codPending: c.cp || 0, from: c.a || '', to: c.b || '', cutoff: BK_CUTOFF });
   }
@@ -4565,7 +4582,7 @@ ${catalog}` });
   if (path === '/api/srret/link') { // eşleşmeyen Sürat iadesini siparişe elle bağla
     const takip = String(body.takip || '').replace(/\D/g, ''), no = String(body.no || '').replace(/\D/g, ''); if (!takip || !no) return bad('Takip no ve sipariş no gerekli.');
     const x = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(takip).first(); if (!x) return bad('Bu iade listede yok; önce dosyayı yükle.');
-    const o = await env.DB.prepare(`SELECT 1 FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(no).first(); if (!o) return bad(`#${no} Shopify siparişlerinde bulunamadı.`);
+    const o = await env.DB.prepare(`SELECT 1 FROM orders WHERE channel IN ('shopify','kristal') AND replace(replace(order_no,'#',''),'KB','')=?1`).bind(no).first(); if (!o) return bad(`#${no} Shopify siparişlerinde bulunamadı.`);
     await env.DB.batch([env.DB.prepare(`UPDATE sr_ret SET no=?2, how='manual' WHERE takip=?1`).bind(takip, no), REV(env)]);
     let stock = null; if (x.teslim && x.teslim.slice(0, 10) <= SR_RET_AUTO_UNTIL && !(await env.DB.prepare('SELECT 1 FROM sr_ret_in WHERE takip=?1').bind(takip).first())) stock = await srRetStock(env, takip, true, true);
     return json({ ok: true, stock });
@@ -4574,9 +4591,9 @@ ${catalog}` });
   if (path === '/api/srret/live') { const x = await env.DB.prepare('SELECT * FROM sr_ret WHERE takip=?1').bind(String(body.takip || '').replace(/\D/g, '')).first(); if (!x) return bad('İade bulunamadı.'); let r; try { r = await srRetLive(env, x); } catch (e) { r = { err: String(e.message || e).slice(0, 200) }; } return json({ ok: true, ...r }); }
   if (path === '/api/srret/find') { // iade teslim al: okutulan barkoddan siparişi bul (LH sipariş kodu ya da Sürat takip / barkod no)
     const raw = String(body.code || '').trim(); if (!raw) return bad('Barkod okunamadı.'); let no = '', how = '';
-    const m = /LH\s*0*(\d{2,7})/i.exec(raw); if (m) { no = m[1]; how = 'kod'; }
+    const m = /(?:LH|KB)\s*0*(\d{2,7})/i.exec(raw); if (m) { no = m[1]; how = 'kod'; } // LH… Shopify, KB… Kristal Bardak
     const dg = raw.replace(/\D/g, ''), dz = dg.replace(/^0+/, '');
-    if (!no && dz.length >= 8) { for (const q of [`SELECT no FROM sr_ret WHERE ltrim(takip,'0')=?1 AND no IS NOT NULL`, `SELECT replace(order_no,'#','') no FROM sr_ship WHERE ltrim(COALESCE(tracking,''),'0')=?1`, `SELECT no FROM sr_cost WHERE ltrim(COALESCE(tracking,''),'0')=?1`]) { const r = await env.DB.prepare(q + ' LIMIT 1').bind(dz).first().catch(() => null); if (r && r.no) { no = String(r.no).replace(/\D/g, ''); how = 'takip'; break; } } }
+    if (!no && dz.length >= 8) { for (const q of [`SELECT no FROM sr_ret WHERE ltrim(takip,'0')=?1 AND no IS NOT NULL`, `SELECT replace(replace(order_no,'#',''),'KB','') no FROM sr_ship WHERE ltrim(COALESCE(tracking,''),'0')=?1`, `SELECT no FROM sr_cost WHERE ltrim(COALESCE(tracking,''),'0')=?1`]) { const r = await env.DB.prepare(q + ' LIMIT 1').bind(dz).first().catch(() => null); if (r && r.no) { no = String(r.no).replace(/\D/g, ''); how = 'takip'; break; } } }
     /* Trendyol iadesi: iade kargo kodu (PTT Ref. No / TEX 733…), kargo linkinde geçen kod, Trendyol sipariş no ya da müşteri adı */
     if (!no) { const words = raw.replace(/[0-9]/g, ' ').trim(); let R = [];
       if (dz.length >= 8) R = (await env.DB.prepare(`SELECT * FROM returns WHERE channel='trendyol' AND (ltrim(COALESCE(cargo_no,''),'0')=?1 OR order_no=?2 OR (COALESCE(cargo_link,'') <> '' AND cargo_link LIKE ?3)) ORDER BY created_at DESC LIMIT 40`).bind(dz, dg, '%' + dz + '%').all()).results;
@@ -4588,9 +4605,9 @@ ${catalog}` });
         return json({ ok: true, found: true, ch: 'trendyol', how: 'trendyol', orderNo: ord, name: R[0].customer || '', il: R[0].cargo || '', reason: R[0].reason || R[0].note || '', ids: open.map(x => x.id), tyWaiting: waiting, extStatus: R[0].ext_status || '',
           lines: R.map(x => { const p = P.get(x.pkey) || {}; return { pkey: x.pkey || '', name: p.name || x.name || x.sku || '', image: p.image || '', sku: p.sku || x.sku || '', qtyAll: x.qty || 0, st: x.status }; }), done: !open.length, doneMsg: R.some(x => x.status === 'rejected') && !open.length ? 'Bu iade reddedilmiş.' : '' }); } }
     if (!no) return json({ ok: true, found: false, code: raw, msg: dz.length >= 8 ? 'Bu barkod hiçbir siparişle eşleşmedi. Etiketteki küçük "LH…" barkodunu okut.' : 'Okunan barkod tanınmadı. Etiketteki küçük "LH…" barkodunu okut.' });
-    const o = await env.DB.prepare(`SELECT order_no, lines FROM orders WHERE channel='shopify' AND replace(order_no,'#','')=?1`).bind(no).first(); if (!o) return json({ ok: true, found: false, code: raw, msg: `#${no} Shopify siparişlerinde bulunamadı.` });
+    const o = await env.DB.prepare(`SELECT order_no, lines FROM orders WHERE channel IN ('shopify','kristal') AND replace(replace(order_no,'#',''),'KB','')=?1`).bind(no).first(); if (!o) return json({ ok: true, found: false, code: raw, msg: `#${no} Shopify siparişlerinde bulunamadı.` });
     const L = JSON.parse(o.lines || '[]').filter(l => l.status !== 'cancelled' && l.pkey), P = new Map((L.length ? await selectIn(env, 'SELECT key, name, image, sku FROM products', 'key', L.map(l => l.pkey)) : []).map(x => [x.key, x]));
-    const sh = await env.DB.prepare(`SELECT addr FROM sr_ship WHERE replace(order_no,'#','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first(); let a = {}; try { a = JSON.parse((sh && sh.addr) || '{}'); } catch (e) {}
+    const sh = await env.DB.prepare(`SELECT addr FROM sr_ship WHERE replace(replace(order_no,'#',''),'KB','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first(); let a = {}; try { a = JSON.parse((sh && sh.addr) || '{}'); } catch (e) {}
     const R = (await env.DB.prepare('SELECT r.*, i.at in_at FROM sr_ret r LEFT JOIN sr_ret_in i ON i.takip = r.takip WHERE r.no=?1').bind(no).all()).results, pay = await env.DB.prepare('SELECT * FROM sh_pay WHERE no=?1').bind(no).first();
     return json({ ok: true, found: true, how, no, orderNo: o.order_no, name: a.name || (R[0] && R[0].gonderen) || '', il: [a.ilce, a.il].filter(Boolean).join(' / '), total: pay ? Number(pay.total || 0) : null, cod: pay ? !!pay.cod : null,
       lines: L.map(l => { const p = P.get(l.pkey) || {}; return { pkey: l.pkey, name: p.name || l.name || l.sku || '', image: p.image || '', sku: p.sku || l.sku || '', qty: Math.max(0, (Number(l.applied) || Number(l.qty) || 0) - (Number(l.rin) || 0)), qtyAll: Number(l.applied) || Number(l.qty) || 0 }; }),
@@ -4600,7 +4617,7 @@ ${catalog}` });
     const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş yok.');
     let r = await env.DB.prepare(`SELECT r.takip FROM sr_ret r WHERE r.no=?1 AND NOT EXISTS (SELECT 1 FROM sr_ret_in i WHERE i.takip = r.takip) ORDER BY r.fatura DESC LIMIT 1`).bind(no).first();
     if (!r) { if ((await env.DB.prepare('SELECT 1 FROM sr_ret r JOIN sr_ret_in i ON i.takip = r.takip WHERE r.no=?1').bind(no).first())) return bad('Bu iade zaten depoya ulaştı olarak işlenmiş.', 409);
-      const sh = await env.DB.prepare(`SELECT addr, tracking FROM sr_ship WHERE replace(order_no,'#','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first(); let a = {}; try { a = JSON.parse((sh && sh.addr) || '{}'); } catch (e) {}
+      const sh = await env.DB.prepare(`SELECT addr, tracking FROM sr_ship WHERE replace(replace(order_no,'#',''),'KB','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first(); let a = {}; try { a = JSON.parse((sh && sh.addr) || '{}'); } catch (e) {}
       const takip = String(body.takip || '').replace(/\D/g, '').replace(/^0+/, '') || ((sh && sh.tracking) ? String(sh.tracking).replace(/^0+/, '') : '') || ('LH' + no);
       await env.DB.prepare(`INSERT INTO sr_ret(takip, web, gonderen, il, fatura, teslim, durum, fee, desi, cod, no, how, at) VALUES(?1,?2,?3,?4,?5,NULL,'Barkodla teslim alındı',0,NULL,0,?6,'scan',?7) ON CONFLICT(takip) DO UPDATE SET no=excluded.no`).bind(takip, 'LH' + no, a.name || '', a.il || '', trDay(Date.now()), no, iso()).run();
       r = { takip }; }
@@ -4626,7 +4643,7 @@ ${catalog}` });
     // Sipariş bazında Sürat mutabakatı (17.10.2026 10:00 sonrası Shopify): bizim beklediğimiz (tahsilat − ücret) ile Sürat raporundaki (tahsilat − ücret)
     const rs = await reportStart(env), from = iso(Math.max(Date.parse(SURAT_DIRECT_FROM), /^\d{4}-\d{2}-\d{2}$/.test(rs || '') ? dayStartTR(rs) : 0));
     const [oR, pR] = await env.DB.batch([env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.cod, p.card, p.subtotal, p.total, c.tracking, c.undelivered, c.teslim, c.planned, c.desi cdesi, s.fee sfee, s.cod scod, s.collected scoll, s.coll_amt samt, s.durum sdurum, s.iade siade, s.day sday, so.no fno, so.amount famt, so.paid fpaid, so.paid_at fpaid_at, so.kind fkind, bk.fee bkfee, cr.carrier carrier
-      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN sr_rows s ON s.takip = c.tracking LEFT JOIN sr_online so ON so.no = replace(o.order_no,'#','') LEFT JOIN bk_ship bk ON bk.no = replace(o.order_no,'#','') LEFT JOIN sh_carrier cr ON cr.no = replace(o.order_no,'#','')
+      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN sr_cost c ON c.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN sr_rows s ON s.takip = c.tracking LEFT JOIN sr_online so ON so.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN bk_ship bk ON bk.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN sh_carrier cr ON cr.no = replace(replace(o.order_no,'#',''),'KB','')
       WHERE o.channel='shopify' AND o.date >= ?1 ORDER BY o.date DESC LIMIT 2000`).bind(from), env.DB.prepare('SELECT key, desi FROM products')]);
     const fee = await loadFees(env), dz = new Map(pR.results.map(x => [x.key, Number(x.desi) || null])), out = [];
     for (const r of oR.results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {} const act = lines.filter(l => l.status !== 'cancelled'); if (!act.length) continue; if ((r.bkfee !== null && r.bkfee !== undefined) || r.carrier === 'basit') continue; // Basit Kargo ile gönderilmiş
@@ -4665,7 +4682,7 @@ ${catalog}` });
       env.DB.prepare('UPDATE sr_rows SET cancelled=0 WHERE takip=?1').bind(takip),
       env.DB.prepare(`DELETE FROM sr_online WHERE no=?1 AND kind IN ('short','accept')`).bind(no),
       env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind('2026-10-17'), setStmt(env, 'home_cache', ''), REV(env)];
-    if (old) st.push(env.DB.prepare('UPDATE sr_rows SET cancelled=1 WHERE takip=?1').bind(old), env.DB.prepare(`UPDATE sr_ship SET tracking=?2 WHERE tracking=?1 AND replace(order_no,'#','')=?3`).bind(old, takip, no));
+    if (old) st.push(env.DB.prepare('UPDATE sr_rows SET cancelled=1 WHERE takip=?1').bind(old), env.DB.prepare(`UPDATE sr_ship SET tracking=?2 WHERE tracking=?1 AND replace(replace(order_no,'#',''),'KB','')=?3`).bind(old, takip, no));
     await env.DB.batch(st);
     return json({ ok: true, old });
   }
@@ -4693,7 +4710,7 @@ ${catalog}` });
     let from = String(body.from || ''), to = String(body.to || ''); if (!from || !to) return bad('Tarih aralığı yok.');
     const rs = await reportStart(env); if (/^\d{4}-\d{2}-\d{2}$/.test(rs || '')) { const a = iso(dayStartTR(rs)); if (from < a) from = a; }
     const { results } = await env.DB.prepare(`SELECT o.id, o.order_no, o.date, o.lines, p.gateway, p.cod, p.card, p.subtotal, p.ship, p.total, c.cod_amount sr_cod, c.undelivered, b.cod bk_cod, b.cod_type bk_type, b.cod_amount bk_amt, b.fee bk_fee, cr.carrier carrier
-      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(o.order_no,'#','') LEFT JOIN sr_cost c ON c.no = replace(o.order_no,'#','') LEFT JOIN bk_ship b ON b.no = replace(o.order_no,'#','') LEFT JOIN sh_carrier cr ON cr.no = replace(o.order_no,'#','')
+      FROM orders o LEFT JOIN sh_pay p ON p.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN sr_cost c ON c.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN bk_ship b ON b.no = replace(replace(o.order_no,'#',''),'KB','') LEFT JOIN sh_carrier cr ON cr.no = replace(replace(o.order_no,'#',''),'KB','')
       WHERE o.channel='shopify' AND o.date >= ?1 AND o.date < ?2 ORDER BY o.date DESC`).bind(from, to).all();
     const out = []; let checked = 0, noData = 0;
     for (const r of results) { let lines = []; try { lines = JSON.parse(r.lines || '[]'); } catch (e) {}
@@ -4736,7 +4753,7 @@ ${catalog}` });
     // Teşhis: bir siparişin Sürat'taki takip sorgusu ve listede eşleşen satır (kişisel bilgiler gizli)
     const no = String(body.no || '').replace(/\D/g, ''); if (!no) return bad('Sipariş no yaz.');
     const cr = await srCreds(env); if (!cr.cari || !cr.pass) return bad('Sürat bağlı değil.');
-    const row = await env.DB.prepare(`SELECT * FROM sr_ship WHERE replace(order_no,'#','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first();
+    const row = await env.DB.prepare(`SELECT * FROM sr_ship WHERE replace(replace(order_no,'#',''),'KB','')=?1 ORDER BY at DESC LIMIT 1`).bind(no).first();
     if (!row) return bad('Bu sipariş için Sürat gönderisi kaydı yok (barkod oluşturulmamış).');
     const PII = /ad|isim|unvan|alici|gonderen|kisi|tel|gsm|adres|il$|ilce|mahalle|sokak|mail|tc|vergi/i;
     const mask = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, PII.test(k) && !/takip|barkod|kod$|no$/i.test(k) ? (v ? '•' : '') : v]));
@@ -4817,7 +4834,7 @@ ${catalog}` });
       if (!tn) { if (!r.fulfilled_at) miss.push(r.order_no); continue; }
       if (r.fulfilled_at) { // zaten kargolandı: numara farklıysa (eski hatalı okuma) düzelt
         if (r.tracking === tn) { already++; continue; }
-        try { if (shConfigured(c)) await shFixTracking(env, c, r.gid, tn); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(r.ref, tn, 'Sürat raporundan düzeltildi (önceki: ' + (r.tracking || '-') + ')', iso()).run(); fixed.push(r.order_no); out.push({ ref: r.ref, tracking: tn, fulfilled: true, fixed: true }); }
+        try { if (shConfigured(c) && !kbIsGid(r.gid)) await shFixTracking(env, c, r.gid, tn); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(r.ref, tn, 'Sürat raporundan düzeltildi (önceki: ' + (r.tracking || '-') + ')', iso()).run(); fixed.push(r.order_no); out.push({ ref: r.ref, tracking: tn, fulfilled: true, fixed: true }); }
         catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } continue; }
       r.tracking = tn; r.track_msg = srRowState(m) || 'Sürat raporundan';
       try { out.push(await srTrackOne(env, r, (r.acct === 'cod' ? (crCod = crCod || await srCreds(env, 'cod')) : cr), c)); } catch (e) { out.push({ ref: r.ref, tracking: tn, err: String(e.message || e) }); } }
@@ -4865,7 +4882,7 @@ ${catalog}` });
     const cr = await srCreds(env, acct); if (!cr.cari || !cr.pass) return bad('Sürat Kargo bağlı değil.');
     const row = await env.DB.prepare('SELECT * FROM sr_ship WHERE gid=?1 ORDER BY at DESC LIMIT 1').bind(String(body.gid || '')).first(); if (!row) return bad('Bu siparişin Sürat barkodu yok.');
     if (body.number !== undefined) { const n = String(body.number || '').toLocaleUpperCase('tr').replace(/[^A-Z0-9]/g, ''); if (n.length < 8 || (n.match(/\d/g) || []).length < 6) return bad('Takip numarası en az 8 karakter olmalı (Sürat eKargo\'daki "Kargo Takip No").');
-      if (row.fulfilled_at) { const c0 = await shCreds(env); try { if (shConfigured(c0)) await shFixTracking(env, c0, row.gid, n); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(row.ref, n, 'Elle düzeltildi (önceki: ' + (row.tracking || '-') + ')', iso()).run(); return json({ ok: true, r: { ref: row.ref, tracking: n, fulfilled: true, fixed: true } }); } catch (e) { return bad(String(e.message || e)); } }
+      if (row.fulfilled_at) { const c0 = await shCreds(env); try { if (shConfigured(c0) && !kbIsGid(row.gid)) await shFixTracking(env, c0, row.gid, n); await env.DB.prepare('UPDATE sr_ship SET tracking=?2, track_msg=?3, track_at=?4 WHERE ref=?1').bind(row.ref, n, 'Elle düzeltildi (önceki: ' + (row.tracking || '-') + ')', iso()).run(); return json({ ok: true, r: { ref: row.ref, tracking: n, fulfilled: true, fixed: true } }); } catch (e) { return bad(String(e.message || e)); } }
       row.tracking = n; row.track_msg = 'Elle girildi'; }
     try { return json({ ok: true, r: await srTrackOne(env, row, cr, await shCreds(env)) }); } catch (e) { return bad(String(e.message || e)); }
   }
@@ -4892,7 +4909,7 @@ ${catalog}` });
   // Kayıtlı → bekleyen: siparişin Sürat barkodu kaydı silinir (etiket kullanılmayacaksa)
   if (path === '/api/surat/mark') {
     // Elle "Kayıtlı"ya al: Sürat barkodu oluşturulmadan sipariş Kayıtlı sekmesine geçer (başka yolla gönderildi vb.); "Bekleyene geri al" ile geri döner
-    const L = (Array.isArray(body.orders) ? body.orders : []).filter(x => /^gid:\/\/shopify\/Order\/\d+$/.test(String(x.gid || ''))).slice(0, 300); if (!L.length) return bad('Sipariş seçilmedi.');
+    const L = (Array.isArray(body.orders) ? body.orders : []).filter(x => shOrKbGid(String(x.gid || ''))).slice(0, 300); if (!L.length) return bad('Sipariş seçilmedi.');
     const at = iso(), st = L.map(x => env.DB.prepare(`INSERT OR IGNORE INTO sr_ship(ref, gid, order_no, adet, desi, addr, lines, msg, at, mode, exported_at) VALUES(?1,?2,?3,0,0,'{}','[]',?4,?5,'manual',?5)`).bind('EL' + String(x.gid).replace(/\D/g, ''), x.gid, String(x.name || '').slice(0, 40), 'Elle kayıtlıya alındı', at));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     return json({ ok: true, n: L.length, ships: L.map(x => ({ ref: 'EL' + String(x.gid).replace(/\D/g, ''), gid: x.gid, order_no: x.name, adet: 0, desi: 0, addr: {}, lines: [], msg: 'Elle kayıtlıya alındı', at, mode: 'manual', exported_at: at })) });
@@ -4900,7 +4917,7 @@ ${catalog}` });
   if (path === '/api/surat/unship') {
     const gid = String(body.gid || ''); if (!gid) return bad('Sipariş bulunamadı.');
     const f = await env.DB.prepare('SELECT 1 FROM sr_ship WHERE gid=?1 AND fulfilled_at IS NOT NULL').bind(gid).first();
-    if (f) return bad("Bu sipariş Shopify'da kargolandı olarak işlendi; geri alınamaz.");
+    if (f) return bad(kbIsGid(gid) ? 'Bu siparişin Sürat takip numarası geldi (kargoya verildi); geri alınamaz.' : "Bu sipariş Shopify'da kargolandı olarak işlendi; geri alınamaz.");
     // Web servisiyle Sürat'a gönderilmiş kayıtlar Sürat'ta da geri çekilir; çekilemezse yine de bekleyene alınır, uyarı döner
     const { results: rows } = await env.DB.prepare(`SELECT ref, acct, tracking, order_no FROM sr_ship WHERE gid=?1 AND mode='api'`).bind(gid).all(), warn = [], replies = [];
     let cancelled = 0; for (const x of rows) { try { const r = await srCancelRest(await srCreds(env, x.acct || ''), x.ref); if (r.ok) cancelled++; replies.push({ ref: x.ref, ok: r.ok, msg: r.msg }); if (!r.ok) warn.push(`${x.ref}: ${r.msg}`); } catch (e) { const m = String(e.message || e).slice(0, 200); replies.push({ ref: x.ref, ok: false, msg: m }); warn.push(`${x.ref}: ${m}`); } }
@@ -4947,46 +4964,64 @@ ${catalog}` });
   if (path === '/api/surat/ship') {
     // Varsayılan: Excel ile (Sürat eKargo → Gönderi Girişi Excel). Web servis yalnız sr_mode=api ise kullanılır.
     const cr = await srCreds(env), apiMode = (await getSetting(env, 'sr_mode')) === 'api' && cr.user && cr.pass;
-    const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
-    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    const gid = String(body.gid || ''); if (!shOrKbGid(gid)) return bad('Sipariş bulunamadı.'); const kb = kbIsGid(gid);
+    const c = await shCreds(env); if (!kb && !shConfigured(c)) return bad('Shopify bağlı değil.');
     const adet = Math.max(1, Math.min(50, parseInt(body.adet, 10) || 1)), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || cr.desi).replace(',', '.')) || cr.desi));
-    let o; try { o = (await shGql(env, c, SR_ORDER_Q, { id: gid })).order; } catch (e) { return bad(shAddrErr(e)); }
+    let o, kbD = null; if (kb) { const x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1 AND COALESCE(test,0)=0').bind(gid.slice(3)).first(); if (!x) return bad('Sipariş bulunamadı.'); kbD = JSON.parse(x.data || '{}');
+      o = { id: gid, name: x.no, email: '', phone: '', cancelledAt: x.cancelled_at, shippingAddress: kbShAddr(kbD), lineItems: { nodes: [] }, totalPriceSet: { shopMoney: { amount: x.tutar } } }; }
+    else try { o = (await shGql(env, c, SR_ORDER_Q, { id: gid })).order; } catch (e) { return bad(shAddrErr(e)); }
     if (!o) return bad('Sipariş Shopify\'da bulunamadı.'); if (o.cancelledAt) return bad('Sipariş iptal edilmiş.');
     const a = o.shippingAddress || {};
     const name = `${a.firstName || ''} ${a.lastName || ''}`.replace(/\s+/g, ' ').trim() || (a.company || '');
     const tel = (() => { let d = String(a.phone || o.phone || '').replace(/\D/g, ''); if (d.startsWith('90') && d.length === 12) d = d.slice(2); if (d.startsWith('0') && d.length === 11) d = d.slice(1); return d; })();
     const adres = [a.address1, a.address2].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
     const miss = [!name && 'ad soyad', !adres && 'adres', !a.city && 'ilçe', !a.province && 'il', !/^5\d{9}$/.test(tel) && 'cep telefonu'].filter(Boolean);
-    if (miss.length) return bad('Adreste eksik var: ' + miss.join(', ') + '. Önce adresi düzeltip Shopify\'a kaydet.');
+    if (miss.length) return bad('Adreste eksik var: ' + miss.join(', ') + (kb ? '. Önce adresi düzeltip kaydet.' : '. Önce adresi düzeltip Shopify\'a kaydet.'));
     // Kendi barkodumuz: LH + sipariş no (aynı sipariş için yeniden oluşturulursa sonuna B, C… eklenir)
-    const base = 'LH' + String(o.name || '').replace(/\D/g, '');
+    const base = (kb ? 'KB' : 'LH') + String(o.name || '').replace(/\D/g, '');
     const prev = (await env.DB.prepare(`SELECT ref FROM sr_ship WHERE gid=?1 AND COALESCE(mode,'') <> 'manual'`).bind(gid).all()).results.map(r => r.ref); // elle kayıtlıya alınan (barkodsuz) satır sayılmaz
     if (prev.length && !body.again) return bad('Bu siparişin Sürat barkodu zaten var: ' + prev[prev.length - 1]);
     let ref = base; for (let k = 0; prev.includes(ref) && k < 25; k++) ref = base + String.fromCharCode(66 + k);
     const lines = ((o.lineItems || {}).nodes || []).filter(l => Number(l.unfulfilledQuantity) > 0);
     const lm = await listingMap(env, 'shopify', lines.map(l => shId(l.variant && l.variant.id)).filter(Boolean));
     const codes = new Map((await selectIn(env, 'SELECT key, code FROM products', 'key', [...new Set([...lm.values()].map(v => v.pkey).filter(Boolean))])).map(r => [r.key, r.code]));
-    const L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
+    let L = lines.map(l => { const m = lm.get(shId(l.variant && l.variant.id)); return { name: l.name, sku: l.sku || '', qty: Number(l.unfulfilledQuantity) || Number(l.quantity) || 1, code: m ? codes.get(m.pkey) || '' : '', factor: m ? m.factor : 1, unit: Number(((l.discountedUnitPriceAfterAllDiscountsSet || {}).shopMoney || {}).amount) || 0, image: (l.image || {}).url || '' }; });
+    if (kb) { const pk = await kbProducts(env), cs = new Map((await selectIn(env, 'SELECT key, code, image FROM products', 'key', [pk.elmas, pk.kristal])).map(r => [r.key, r]));
+      L = kbItems(kbD).map(i => { const p = cs.get(pk[i.k]) || {}; return { name: i.n, sku: i.k === 'elmas' ? 'KB-ELMAS' : 'KB-KRISTAL', qty: i.q, code: p.code || '', factor: 1, unit: 0, image: p.image || '' }; }); }
     const icerik = L.map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ').slice(0, 100);
     // Kapıda ödeme: Shopify'daki ödeme yönteminden; formda değiştirildiyse o geçerli
-    const cd = shCod(o); let codTip = cd.tip, cod = cd.amt;
+    const cd = kb ? { tip: 1, amt: r2(Number(kbD.tutar) || 0) } : shCod(o); let codTip = cd.tip, cod = cd.amt; // Kristal Bardak: her zaman kapıda nakit, tutar = sipariş tutarı
     if (body.codTip != null) { codTip = [0, 1, 2].includes(Number(body.codTip)) ? Number(body.codTip) : cd.tip; const t = String(body.cod ?? cod).trim(); cod = codTip ? r2(Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t) || 0) : 0; }
+    if (kb) { codTip = 1; if (!(cod > 0)) cod = cd.amt; } // Kristal Bardak: kapıda nakit
     if (codTip && !(cod > 0)) return bad('Kapıda ödeme tutarı girilmeli.');
     const acct = codTip ? 'cod' : '', crS = await srCreds(env, acct); if (crS.pass) Object.assign(cr, crS); // kapıda ödemeli gönderi kapıda ödeme carisinden
-    const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: codTip, kapidanodemetutari: codTip ? cod : 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: codTip ? 'LH' : '', irsaliyesirano: codTip ? String(o.name || '').replace(/\D/g, '') + (ref.length > base.length ? String(ref.charCodeAt(base.length) - 64) : '') : '' }; // Sürat: sıra no yalnız rakam (yeniden oluşturulanda B→2, C→3…) // kapıda ödemede Sürat irsaliye seri/sıra no istiyor
+    const g = { kisikurum: name, aliciadresi: adres, il: a.province, ilce: a.city, telefoncep: tel, telefonev: '', telefonis: '', email: o.email || '', alicikodu: '', kargoturu: 3, odemetipi: 1, adet, birimdesi: desi, desi, birimkg: 1, kg: 1, kargoicerigi: icerik, ozelkargotakipno: ref, referansno: ref, kapidanodemetahsilattipi: codTip, kapidanodemetutari: codTip ? cod : 0, ekhizmetler: '', sevkadresi: '', teslimsekli: 1, irsaliyeserino: codTip ? (kb ? 'KB' : 'LH') : '', irsaliyesirano: codTip ? String(o.name || '').replace(/\D/g, '') + (ref.length > base.length ? String(ref.charCodeAt(base.length) - 64) : '') : '' }; // Sürat: sıra no yalnız rakam (yeniden oluşturulanda B→2, C→3…) // kapıda ödemede Sürat irsaliye seri/sıra no istiyor
     const ref0 = ref; let res; if (apiMode) { try { for (let k = 0; ; k++) { try { res = await srSendRest(cr, g); break; } catch (e) { if (!e.dup || k >= 24) throw e; /* yeni harf: LH2509 → LH2509B → C… */ do { ref = base + String.fromCharCode(66 + (ref.length > base.length ? ref.charCodeAt(base.length) - 65 : 0)); } while (prev.includes(ref)); g.ozelkargotakipno = ref; g.referansno = ref; if (codTip) g.irsaliyesirano = String(o.name || '').replace(/\D/g, '') + String(ref.charCodeAt(base.length) - 64); } } try { const q = await srQueryRest(cr, ref); if (q.no) res.barcode = q.no; } catch (e) {} } catch (e) { if (!(e.cf || /fetch|network|timed? ?out|50\d/i.test(String(e.message)))) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); } } } /* yeni servis; yalnız ulaşılamazsa eski yol */
     if (res) {} else if (!apiMode) res = { msg: 'Sürat Excel dosyasına eklendi' }; else try { const sc = await srSchema(env, false), errs = []; for (const a of (sc.alts || [])) { try { res = await srSend(env, cr, g, a.method); if (!res.barcode && !/hata|olamaz|olmal|ge[cç]ersiz|a[sş]t[ıi]n[ıi]z|hatal/i.test(res.msg)) { // kabul edildi ama barkod dönmedi: Sürat barkodunu ayrıca iste (bizim ref, sonra sipariş no)
           let fb = await srFetchBarcode(env, cr, ref); if (!fb.barcode) { const fb2 = await srFetchBarcode(env, cr, String(o.name || '').replace(/\D/g, '')); if (fb2.barcode) fb = fb2; }
           if (fb.barcode) res.barcode = fb.barcode; else errs.push('Sürat barkodu henüz yok (şube okutunca gelir): ' + fb.log.join(' / ').slice(0, 200)); } if (errs.length) res.msg = res.msg + ' ‖ ' + errs.join(' | '); break; } catch (e1) { errs.push(a.method.replace('GonderiyiKargoyaGonder', '…') + ': ' + String(e1.message || e1).slice(0, 220)); } } if (!res) throw new Error(errs.join(' | ')); } catch (e) { await setSetting(env, 'sr_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); return bad(String(e.message || e)); }
-    const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik, codTip, cod };
+    const addr = { name, adres, il: a.province, ilce: a.city, zip: a.zip || '', tel, email: o.email || '', icerik, codTip, cod, ...(kb ? { kb: 1 } : {}) };
     await env.DB.batch([env.DB.prepare(`DELETE FROM sr_ship WHERE gid=?1 AND mode='manual'`).bind(gid), env.DB.prepare('INSERT INTO sr_ship(ref,gid,order_no,adet,desi,addr,lines,msg,at,mode,acct) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)').bind(ref, gid, o.name, adet, desi, JSON.stringify(addr), JSON.stringify(L), res.msg, iso(), apiMode ? 'api' : 'excel', cr.acct || ''), setStmt(env, 'sr_ok', iso()), ...(apiMode ? [setStmt(env, 'sr_err', '')] : [])]);
     // Sürat barkodu geldiyse takip no hemen Shopify'a işlenir (Trendyol'daki gibi)
     let trk = null; if (res.barcode) { try { trk = await srTrackOne(env, { ref, gid, order_no: o.name, tracking: res.barcode, track_msg: 'Sürat barkodu', fulfilled_at: null }, cr, c); } catch (e) { trk = { err: String(e.message || e) }; } }
     return json({ ok: true, ship: { ref, gid, order_no: o.name, adet, desi, addr, lines: L, msg: res.msg, at: iso(), mode: apiMode ? 'api' : 'excel', tracking: res.barcode || null, renum: ref !== ref0 ? ref0 : null, fulfilled_at: trk && trk.fulfilled ? iso() : null, fulfill_err: trk && trk.err || null, total: Number(((o.totalPriceSet || {}).shopMoney || {}).amount) || 0 } });
   }
+  if (path === '/api/shaddr/save' && kbIsGid(body.gid)) { // Kristal Bardak: düzeltilen adres sadece Backstage'e kaydedilir
+    const no = String(body.gid).slice(3), x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1').bind(no).first(); if (!x) return bad('Sipariş bulunamadı.');
+    const a = body.addr || {}, F = ['firstName', 'lastName', 'company', 'address1', 'address2', 'city', 'provinceCode', 'zip', 'countryCode', 'phone'], A = {};
+    for (const f of F) A[f] = String(a[f] == null ? '' : a[f]).replace(/\s+/g, ' ').trim().slice(0, 255);
+    if (!A.firstName && !A.lastName) return bad('Ad soyad boş olamaz.'); if (!A.address1) return bad('Adres boş olamaz.'); if (!A.city) return bad('İlçe boş olamaz.');
+    if (A.phone && !/^\+\d{8,15}$/.test(A.phone)) return bad('Telefon +905xxxxxxxxx biçiminde olmalı.');
+    A.countryCode = A.countryCode || 'TR'; A.country = 'Turkey'; const d = JSON.parse(x.data || '{}'); A.province = String(body.provinceName || '') || (d.addr || kbShAddr(d)).province || '';
+    if (!A.provinceCode && intOr(body.plate, 0)) A.provinceCode = 'TR-' + String(intOr(body.plate, 0)).padStart(2, '0');
+    d.addr = A;
+    await env.DB.batch([env.DB.prepare('UPDATE kb_orders SET data=?2 WHERE no=?1').bind(no, JSON.stringify(d)),
+      env.DB.prepare('INSERT INTO sh_addr_log(gid, order_no, before, after, at) VALUES(?1,?2,?3,?4,?5)').bind(body.gid, no, JSON.stringify(body.before || null), JSON.stringify(A), iso())]);
+    return json({ ok: true, addr: A, noProv: false, noZip: false });
+  }
   if (path === '/api/shaddr/save') {
     const c = await shCreds(env); if (!shConfigured(c)) return bad('Shopify bağlı değil.');
-    const gid = String(body.gid || ''); if (!/^gid:\/\/shopify\/Order\/\d+$/.test(gid)) return bad('Sipariş bulunamadı.');
+    const gid = String(body.gid || ''); if (!shOrKbGid(gid)) return bad('Sipariş bulunamadı.');
     const a = body.addr || {}, F = ['firstName', 'lastName', 'company', 'address1', 'address2', 'city', 'provinceCode', 'zip', 'countryCode', 'phone'], input = {};
     for (const f of F) { const v = String(a[f] == null ? '' : a[f]).replace(/\s+/g, ' ').trim().slice(0, 255); if (v || f === 'address2' || f === 'company') input[f] = v; }
     if (!input.firstName && !input.lastName) return bad('Ad soyad boş olamaz.');
@@ -5415,10 +5450,11 @@ ${catalog}` });
     const where = [], args = [];
     const f = String(body.filter || 'all');
     // Durum süzgeçleri (Trendyol paket durumu; Shopify: gönderilmemiş / yolda / teslim)
-    const SH_UNF = `o.order_no IN (SELECT order_no FROM sh_unf WHERE data IS NOT NULL AND data<>'{}')`, SH_DLV = `(EXISTS(SELECT 1 FROM sh_pay p WHERE p.no=replace(o.order_no,'#','') AND p.delivered IS NOT NULL) OR EXISTS(SELECT 1 FROM sr_cost c WHERE c.no=replace(o.order_no,'#','') AND c.teslim IS NOT NULL AND c.teslim<>''))`;
-    if (f === 'delivered') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')) OR (o.channel='shopify' AND ${SH_DLV}))`);
-    else if (f === 'transit') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status IN ('Shipped','AtCollectionPoint'))) OR (o.channel='shopify' AND o.status<>'cancelled' AND NOT ${SH_UNF} AND NOT ${SH_DLV} AND o.date >= '${iso(Date.now() - 30 * 86400000)}'))`);
-    else if (f === 'new') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}')) OR (o.channel='shopify' AND o.status<>'cancelled' AND ${SH_UNF}))`);
+    const SH_UNF = `o.order_no IN (SELECT order_no FROM sh_unf WHERE data IS NOT NULL AND data<>'{}')`, SH_DLV = `(EXISTS(SELECT 1 FROM sh_pay p WHERE p.no=replace(replace(o.order_no,'#',''),'KB','') AND p.delivered IS NOT NULL) OR EXISTS(SELECT 1 FROM sr_cost c WHERE c.no=replace(replace(o.order_no,'#',''),'KB','') AND c.teslim IS NOT NULL AND c.teslim<>''))`;
+    const KB_SENT = `EXISTS(SELECT 1 FROM sr_ship s WHERE s.gid='kb:'||o.order_no AND s.fulfilled_at IS NOT NULL)`, KB_DLV = `(EXISTS(SELECT 1 FROM sr_cost c WHERE c.no=replace(o.order_no,'KB','') AND c.teslim IS NOT NULL AND c.teslim<>'') OR EXISTS(SELECT 1 FROM sr_ship s WHERE s.gid='kb:'||o.order_no AND s.live_teslim IS NOT NULL))`; // Kristal Bardak: Sürat takip no'su gelince gönderildi
+    if (f === 'delivered') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status='Delivered')) OR (o.channel='shopify' AND ${SH_DLV}) OR (o.channel='kristal' AND ${KB_DLV}))`);
+    else if (f === 'transit') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT order_no FROM audit_pkg WHERE status IN ('Shipped','AtCollectionPoint'))) OR (o.channel='shopify' AND o.status<>'cancelled' AND NOT ${SH_UNF} AND NOT ${SH_DLV} AND o.date >= '${iso(Date.now() - 30 * 86400000)}') OR (o.channel='kristal' AND o.status<>'cancelled' AND ${KB_SENT} AND NOT ${KB_DLV}))`);
+    else if (f === 'new') where.push(`((o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}')) OR (o.channel='shopify' AND o.status<>'cancelled' AND ${SH_UNF}) OR (o.channel='kristal' AND o.status<>'cancelled' AND NOT ${KB_SENT}))`);
     else if (f === 'printed') where.push(`o.channel='trendyol' AND o.order_no IN (SELECT a.order_no FROM audit_pkg a WHERE a.status IN ('Created','Picking','Invoiced') AND a.day >= '${trDay(Date.now() - 30 * 86400000)}' AND EXISTS(SELECT 1 FROM label_printed lp WHERE lp.pkg_id=a.pkg_id))`);
     else if (f === 'active') where.push(`o.status='active'`); else if (f === 'cancelled') where.push(`o.status IN ('cancelled','partial')`); else if (f === 'returned') where.push(`(o.status='returned' OR o.id IN (SELECT order_id FROM returns WHERE order_id<>'' AND status<>'rejected'))`);
     if (body.channel) { args.push(String(body.channel)); where.push(`o.channel=?${args.length}`); }

@@ -1031,7 +1031,7 @@ function viewAddr(){
   for (const {o, e, issues} of list) {
     const g = esc(o.gid), busy = A.busy[o.gid], orig = addrForm(o.addr || {}), cur = e || orig, F = A.field && A.field.gid === o.gid ? A.field : null;
     const selOk = done || (A.view === 'pending' && !e); // Kayıtlı: toplu etiket · Bekleyen: toplu barkod (kırmızı sorunlu / kaydedilmemiş değişikliği olan seçilemez)
-    h += `<div class="card" style="gap:8px"><div style="min-width:0">${selOk ? `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px"><input type="checkbox" data-srsel="${g}" ${A.sel && A.sel.has(o.gid) ? 'checked' : ''}></label>` : `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px;opacity:.4" title="Seçmek için önce kırmızı sorunları düzelt / değişiklikleri Shopify'a kaydet"><input type="checkbox" disabled></label>`}<b>${esc(o.name)}</b> <span class="muted small">${esc(fmtDate(o.createdAt))}</span> ${o.fulfill === 'PARTIALLY_FULFILLED' ? '<span class="pill p-warn">Kısmen kargolandı</span>' : '<span class="pill p-brass">Kargolanmadı</span>'}
+    h += `<div class="card" style="gap:8px"><div style="min-width:0">${selOk ? `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px"><input type="checkbox" data-srsel="${g}" ${A.sel && A.sel.has(o.gid) ? 'checked' : ''}></label>` : `<label class="chk" style="display:inline-flex;vertical-align:middle;margin-right:6px;opacity:.4" title="Seçmek için önce kırmızı sorunları düzelt / değişiklikleri Shopify'a kaydet"><input type="checkbox" disabled></label>`}<b>${esc(o.name)}</b>${o.kb ? ' ' + chBadge('kristal') : ''} <span class="muted small">${esc(fmtDate(o.createdAt))}</span> ${o.fulfill === 'PARTIALLY_FULFILLED' ? '<span class="pill p-warn">Kısmen kargolandı</span>' : '<span class="pill p-brass">Kargolanmadı</span>'}
       <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.items.join(', '))}</div></div>`;
     if (issues.length) { const onlyWarn = !issues.some(i => i[0] === 'bad'), okd = ((A.data && A.data.addrOk) || []).includes(o.gid);
       h += `<div class="row" style="gap:5px;flex-wrap:wrap;align-items:center">${issues.map(([l, m]) => `<span class="pill ${l === 'bad' ? 'p-bad' : 'p-warn'}">${esc(m)}</span>`).join('')}${onlyWarn && !e ? (okd ? `<span class="small muted">Uyarı onaylandı · <span role="button" data-act="ad-addrok" data-id="${g}" data-on="0" style="text-decoration:underline;cursor:pointer">geri al</span></span>` : `<button class="btn sm primary" type="button" data-act="ad-addrok" data-id="${g}" data-on="1">✓ Adres doğru, bekleyene al</button>`) : ''}</div>`; }
@@ -1044,9 +1044,9 @@ function viewAddr(){
           ${sug ? `<div id="af-sug" class="afs">${addrSugHtml(sug)}</div>` : ''}</div></div>`; }
       return `<div class="afr${changed ? ' chg' : ''}"><span class="afk">${label}</span><span class="afv">${val ? esc(val) : '<span class="muted">—</span>'}${changed ? `<span class="small muted"> (önce: ${esc((k === 'phone' ? phoneShow(orig.phone) : orig[k]) || '—')})</span>` : ''}</span><button class="btn sm ghost" data-act="ad-fedit" data-id="${g}" data-k="${k}" ${busy ? 'disabled' : ''}>Düzenle</button></div>`; }).join('')}</div>`;
     { // siparişi Shopify'da aç
-      const num = (/(\d+)\s*$/.exec(o.gid) || [])[1], shop = String((S.shop && S.shop.shop) || '').replace(/\.myshopify\.com.*$/, '');
+      const num = o.kb ? '' : (/(\d+)\s*$/.exec(o.gid) || [])[1], shop = String((S.shop && S.shop.shop) || '').replace(/\.myshopify\.com.*$/, '');
       h += `<div class="row" style="gap:6px;flex-wrap:wrap">${shop && num ? `<a class="btn sm" href="https://admin.shopify.com/store/${encodeURIComponent(shop)}/orders/${num}" target="_blank" rel="noopener">Shopify'da aç</a>` : ''}</div>`; }
-    if (e) h += `<div class="afb"><button class="btn ghost" data-act="ad-cancel" data-id="${g}" ${busy?'disabled':''}>Değişiklikleri at</button><button class="btn primary" data-act="ad-save" data-id="${g}" ${busy?'disabled':''}>${busy ? 'Kaydediliyor…' : "Shopify'a kaydet"}</button></div>`;
+    if (e) h += `<div class="afb"><button class="btn ghost" data-act="ad-cancel" data-id="${g}" ${busy?'disabled':''}>Değişiklikleri at</button><button class="btn primary" data-act="ad-save" data-id="${g}" ${busy?'disabled':''}>${busy ? 'Kaydediliyor…' : o.kb ? 'Kaydet' : "Shopify'a kaydet"}</button></div>`;
     h += suratBlock(o, e, issues);
     h += `</div>`;
   }
@@ -1062,7 +1062,7 @@ function suratXls(ships, tag){
   const up = s => String(s || '').toLocaleUpperCase('tr-TR');
   const rows = ships.map(sh => { const a = sh.addr || {}, tel = /^5\d{9}$/.test(a.tel || '') ? Number(a.tel) : '';
     const icerik = a.icerik || (sh.lines || []).map(l => `${l.qty}x ${l.code || l.sku || l.name}`).join(', ');
-    return [a.name || '', '', `${a.adres || ''} ${a.ilce || ''}/${up(a.il)}`.trim(), up(a.il), up(a.ilce), '', '', tel, a.email || '', '', 3, 1, a.codTip ? 'LH' : '', a.codTip ? String(sh.order_no || '').replace(/\D/g, '') : '', String(sh.order_no || '').replace(/\D/g, ''), sh.ref, Number(sh.adet) || 1, Number(sh.desi) || 1, 1, String(icerik).slice(0, 100), a.codTip ? Number(a.codTip) : '', a.codTip ? Number(a.cod) || '' : '', 1, 1]; });
+    return [a.name || '', '', `${a.adres || ''} ${a.ilce || ''}/${up(a.il)}`.trim(), up(a.il), up(a.ilce), '', '', tel, a.email || '', '', 3, 1, a.codTip ? (a.kb ? 'KB' : 'LH') : '', a.codTip ? String(sh.order_no || '').replace(/\D/g, '') : '', String(sh.order_no || '').replace(/\D/g, ''), sh.ref, Number(sh.adet) || 1, Number(sh.desi) || 1, 1, String(icerik).slice(0, 100), a.codTip ? Number(a.codTip) : '', a.codTip ? Number(a.cod) || '' : '', 1, 1]; });
   const ws = XLSX.utils.aoa_to_sheet([SR_XLS_HEAD, ...rows]); ws['!cols'] = SR_XLS_HEAD.map((h, i) => ({wch: i === 2 ? 60 : i === 0 ? 24 : 14}));
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sayfa1');
   XLSX.writeFile(wb, `surat-gonderi-${tag ? tag + '-' : ''}${todayTR()}-${ships.length}.xls`, {bookType: 'biff8'});
@@ -1140,7 +1140,8 @@ function drawSuratLabel(sh, W, H, mk){
   const iz = tall ? 4 : 3.4; font(c, iz, true); const ii = `${a.ilce || ''} / ${a.il || ''}`.toLocaleUpperCase('tr-TR') + (a.zip ? '  ' + a.zip : ''); c.fillText(ii, m, y); y += mm(iz * 1.2);
   if (/^5\d{9}$/.test(a.tel || '')) { font(c, 2.9, false); c.fillText(`Tel: 0${a.tel.slice(0,3)} ${a.tel.slice(3,6)} ${a.tel.slice(6,8)} ${a.tel.slice(8)}`, m, y); y += mm(3.6); }
   rule(y + mm(0.3)); y += mm(1.6);
-  font(c, 2.4, false); c.fillText('GÖNDERİCİ: LİLYA HOME · lilyahome.com.tr', m, y); y += mm(3.3);
+  if (a.kb && a.codTip) { font(c, 3.4, true); const kt = `KAPIDA NAKİT TAHSİLAT: ${tl2(Number(a.cod) || 0)}`; c.fillText(kt, m, y); y += mm(4.2); }
+  font(c, 2.4, false); c.fillText(a.kb ? 'GÖNDERİCİ: LİLYA HOME · kristalbardak.com' : 'GÖNDERİCİ: LİLYA HOME · lilyahome.com.tr', m, y); y += mm(3.3);
   const L = sh.lines || []; font(c, 2.5, false);
   for (let i = 0; i < L.length; i++) { const l = L[i], ws = wrapText(c, `${l.qty} × ${l.code ? l.code + ' · ' : ''}${l.name}`, cw);
     if (y + mm(3.1) > PH - m) { c.fillText(`+${L.length - i} ürün daha`, m, y - mm(3.1)); break; }
@@ -2717,7 +2718,7 @@ async function rsStart(){ const sh = S.sheet; if (!sh || sh.type !== 'retscan') 
   sh.cam = true; const btn = $('#rs-cambtn'); if (btn) btn.textContent = 'Kamerayı kapat'; const box = $('#rs-cam'); if (box) box.style.display = '';
   /* yarım okunan kısa kodlar (ör. 581232) yok sayılır: LH… ya da en az 10 haneli kodlar işlenir */
   /* Hatalı okumayı ele: sadece LH…, tamamı rakam (en az 10 hane) ya da TEX R… kodu kabul; LH dışındakiler art arda iki kez aynı okununca işlenir */
-  const hit = (t) => { t = String(t || '').trim().replace(/\s+/g, ''); const lh = /^LH\d{2,7}$/i.test(t); if (!lh && !/^\d{10,20}$/.test(t) && !/^R0\d{8,}$/i.test(t)) return;
+  const hit = (t) => { t = String(t || '').trim().replace(/\s+/g, ''); const lh = /^(LH\d{2,7}|KB\d{6,7})$/i.test(t); if (!lh && !/^\d{10,20}$/.test(t) && !/^R0\d{8,}$/i.test(t)) return;
     if (!lh) { if (sh.cand !== t) { sh.cand = t; sh.candN = 1; return; } if (++sh.candN < 2) return; }
     const now = Date.now(); if (t === sh.lastCam && now - sh.lastCamAt < 2500) return; sh.lastCam = t; sh.lastCamAt = now; sh.cand = ''; rsHandle(t); };
   try {
@@ -5399,7 +5400,7 @@ document.addEventListener('click', async e => {
     case 'ad-fix': { const A = aS(), o = A.data && A.data.orders.find(x => x.gid === id); if (!o) break; const base = A.edit[id] || addrForm(o.addr || {}), fx = addrFix(base); if (JSON.stringify(fx) === JSON.stringify(addrForm(o.addr || {}))) { toast('Otomatik düzeltilecek bir şey bulunamadı; alanları tek tek düzenleyebilirsin.'); break; } A.edit[id] = fx; A.field = null; render(); toast('Önerilen düzeltmeler uygulandı (mavi satırlar); kontrol edip kaydet.'); break; }
     case 'ad-save': { const A = aS(), e = A.edit[id], o = A.data && A.data.orders.find(x => x.gid === id); if (!e || !o) break;
       const left = addrIssues(e, o).filter(i => i[0] === 'bad');
-      if (!(await confirmBox(`${esc(o.name)} siparişinin teslimat adresi Shopify'da değiştirilsin mi?<br><br><span class="small">${esc(`${e.firstName} ${e.lastName}`)} · ${esc(phoneShow(phoneFix(e.phone) || e.phone))}<br>${esc([e.address1, e.address2, e.city + ' / ' + e.province, e.zip].filter(Boolean).join(' · '))}</span>${left.length ? `<br><br><span class="small" style="color:var(--bad)">Hâlâ: ${esc(left.map(i => i[1]).join(', '))}</span>` : ''}`, 'Kaydet'))) break;
+      if (!(await confirmBox(`${esc(o.name)} siparişinin teslimat adresi ${o.kb ? 'değiştirilsin mi (sadece Backstage)' : "Shopify'da değiştirilsin mi"}?<br><br><span class="small">${esc(`${e.firstName} ${e.lastName}`)} · ${esc(phoneShow(phoneFix(e.phone) || e.phone))}<br>${esc([e.address1, e.address2, e.city + ' / ' + e.province, e.zip].filter(Boolean).join(' · '))}</span>${left.length ? `<br><br><span class="small" style="color:var(--bad)">Hâlâ: ${esc(left.map(i => i[1]).join(', '))}</span>` : ''}`, 'Kaydet'))) break;
       A.busy[id] = 1; render();
       try { if (await addrSave(id, e, o.addr)) { delete A.edit[id]; A.at = Date.now(); } } catch(err) { toast(errText(err), true); }
       delete A.busy[id]; render(); break; }
