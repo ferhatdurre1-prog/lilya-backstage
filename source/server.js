@@ -5753,6 +5753,7 @@ export default {
         ctx.waitUntil((async () => { await sleep(1500); try { const r = await syncShopifyOrders(env, { pages: 1 }); await setSetting(env, 'sh_hook_at', iso() + ' · ' + (r ? r.orders + ' sipariş' : '')); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } })());
         return new Response('ok');
       }
+      if (path === '/robots.txt') return new Response('User-agent: *\nDisallow: /\nAllow: /api/export/kristal/\n', { status: 200, headers: { 'content-type': 'text/plain' } });
       if (path.startsWith('/api/export/kristal/')) { // salt-okuma; yanlış anahtar / GET dışı / secret yok → 404 (anahtar hiçbir yere yazılmaz)
         const nf = () => new Response('Not found', { status: 404, headers: { 'cache-control': 'no-store', 'content-type': 'text/plain; charset=utf-8' } });
         if (req.method !== 'GET') return nf();
