@@ -9,7 +9,7 @@
   ],
   "triggers": { "crons": ["* * * * *", "*/1 * * * *"] },
   "services": [{ "binding": "SELF", "service": "lilya-backstage" }],
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false, "persist": true } }, // istek adresleri loglanmaz (Kristal Bardak dışa aktarım anahtarı adreste)
   "limits": { "cpu_ms": 300000 },
   "placement": { "mode": "smart" }
 }
