@@ -1203,6 +1203,7 @@ function kbNewForm(){ // Kristal Bardak: elle sipariş (onaylı gelir)
   const A = aS(), f = A.kbn, busy = A.busy.kbn, il = ilFind(f.il), ilces = il == null ? [] : ilceList(TR_IL[il]);
   const iv = (k, label, ex = '') => `<label class="f">${label}<input class="input" data-kbn="${k}" value="${esc(f[k] || '')}" autocomplete="off" ${ex}></label>`;
   return `<div class="card" style="gap:10px;border:2px solid var(--kb)"><div class="spread"><h3 style="margin:0">➕ Yeni Kristal Bardak siparişi</h3><button class="btn sm ghost" data-act="kbn-close" ${busy ? 'disabled' : ''}>Vazgeç</button></div>
+    <div class="f"><span>Kanal</span><div class="chips" role="radiogroup">${[['whatsapp', 'WhatsApp'], ['site', 'Site']].map(([v, t]) => `<button class="chip" type="button" data-act="kbn-kanal" data-id="${v}" aria-pressed="${(f.kanal || 'whatsapp') === v}">${t}</button>`).join('')}</div></div>
     <div class="grid2">${iv('ad', 'Ad soyad')}${iv('telefon', 'Telefon', 'inputmode="tel" placeholder="05xx xxx xx xx"')}
       <label class="f">İl<select class="input" data-kbn="il"><option value="">— seç —</option>${TR_IL.map(x => `<option ${x === f.il ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
       <label class="f">İlçe<select class="input" data-kbn="ilce" ${ilces.length ? '' : 'disabled'}><option value="">${ilces.length ? '— seç —' : 'Önce il seç'}</option>${ilces.map(x => `<option ${x === f.ilce ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label></div>
@@ -4261,14 +4262,25 @@ function kbOrderCard(o){
   if (!x) return `<div class="card"><h3>Kristal Bardak siparişi</h3><p class="muted small" style="margin:0">${x === false ? 'Sipariş kaydı bulunamadı.' : 'Yükleniyor…'}</p></div>`;
   const d = x.data || {}, A = d.addr || {}, ad = A.ad || d.ad, adres = A.adres || d.adres, il = A.il || d.il, ilce = A.ilce || d.ilce, tel = A.telefon || d.telefon;
   return `<div class="card"><h3>Kristal Bardak siparişi</h3><dl class="kv">
+    <dt>Kanal</dt><dd><div class="chips">${[['site', 'Site'], ['whatsapp', 'WhatsApp']].map(([v, t]) => `<button class="chip" data-act="kb-kanal-set" data-id="${esc(o.orderNo)}" data-k="${v}" aria-pressed="${x.kanal === v}">${t}</button>`).join('')}${x.kanal ? '' : ' <span class="small muted">atanmadı</span>'}</div></dd>
     <dt>Site sipariş no</dt><dd class="mono">${esc(x.src)}</dd><dt>Müşteri</dt><dd>${esc(ad)}</dd><dt>Telefon</dt><dd class="mono">${esc(tel)}</dd>
     <dt>Adres</dt><dd>${esc(adres)}<br>${esc(ilce)} / ${esc(il)}${d.addr ? ' <span class="pill p-warn">düzeltildi</span>' : ''}</dd>${d.not ? `<dt>Not</dt><dd>${esc(d.not)}</dd>` : ''}
     <dt>Model</dt><dd>${esc(d.model)} · ${d.adet} adet${d.model === 'Karışık' ? ` (${d.elmas} Elmas + ${d.kristal} Kristal)` : ''}</dd><dt>Tutar</dt><dd><b>${tl2(d.tutar)}</b> · kapıda ödeme</dd></dl>
     ${x.cancelled_at ? `<p class="small" style="color:var(--bad)">İptal edildi: ${esc(fmtDate(x.cancelled_at))}</p><button class="btn sm" data-act="kb-cancel" data-id="${esc(o.orderNo)}" data-on="0">İptali geri al</button>`
       : `<p class="muted small">İptal edersen stoktan düşülen bardaklar geri eklenir, sipariş ciroya girmez.</p><button class="btn danger sm" data-act="kb-cancel" data-id="${esc(o.orderNo)}" data-on="1">Siparişi iptal et</button>`}</div>`;
 }
+function kbKanalBox(){ // kanalı atanmamış eski siparişler: öneri listelenir, onaylanınca yazılır
+  if (S.kbk === undefined) { S.kbk = null; api('/api/kb/kanal-list', {}).then(r => { S.kbk = r.items || []; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }).catch(() => { S.kbk = []; }); }
+  const L = S.kbk; if (!L || !L.length) return '';
+  return `<div style="margin:10px 0;padding:10px;border:1px solid var(--kb);border-radius:10px"><b>Kanal ataması · ${L.length} sipariş</b>
+    <p class="small muted" style="margin:4px 0 8px">Bu siparişlerin kanalı henüz yok. Öneri: Backstage'den elle girilenler WhatsApp, diğerleri Site. Kontrol et, gerekirse değiştir, sonra onayla.</p>
+    <table class="small" style="width:100%"><tr><th align="left">Sipariş</th><th align="left">Gün</th><th align="left">Kaynak</th><th align="right">Tutar</th><th align="left">Kanal</th></tr>
+    ${L.map((x, i) => `<tr><td class="mono">${esc(x.no)}${x.iptal ? ' <span class="muted">(iptal)</span>' : ''}</td><td>${esc(x.day)}</td><td>${esc(x.kaynak)}</td><td align="right">${tl2(x.tutar)}</td><td><select class="input" style="padding:2px 6px;min-height:0" data-kbk="${i}"><option value="site" ${x.oneri === 'site' ? 'selected' : ''}>Site</option><option value="whatsapp" ${x.oneri === 'whatsapp' ? 'selected' : ''}>WhatsApp</option></select></td></tr>`).join('')}</table>
+    <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn sm primary" data-act="kbk-apply">Onayla ve uygula</button></div></div>`;
+}
+document.addEventListener('change', e => { const t = e.target; if (t && t.dataset && t.dataset.kbk !== undefined && S.kbk) { const x = S.kbk[Number(t.dataset.kbk)]; if (x) x.oneri = t.value; } });
 function kbCard(){
-  if (S.kbSheet !== S.sheet) { S.kbSheet = S.sheet; S.kb = undefined; } /* ekran her açılışta tazelenir */
+  if (S.kbSheet !== S.sheet) { S.kbSheet = S.sheet; S.kb = undefined; S.kbk = undefined; } /* ekran her açılışta tazelenir */
   const K = S.kb;
   if (K === undefined) { S.kb = null; api('/api/kb/info', {}).then(r => { S.kb = r; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }).catch(e => { S.kb = {err: errText(e)}; if (S.sheet && S.sheet.type === 'import') renderSheet(false); }); }
   if (!K) return `<div class="card"><h3 style="margin:0">${chBadge('kristal')} Sipariş bağlantısı</h3><p class="muted small">Yükleniyor…</p></div>`;
@@ -4281,6 +4293,7 @@ function kbCard(){
     <p class="small muted" style="margin:0 0 6px">${K.n} sipariş geldi${K.last ? ' · son: ' + esc(fmtDate(K.last)) : ''}</p>
     <ul class="small" style="margin:0 0 8px;padding-left:18px">${pr}</ul>
     <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="kb-test">Test siparişi gönder</button>${(K.tests || []).length ? `<button class="btn sm" data-act="kb-test-clear">Test siparişlerini sil (${K.tests.length})</button>` : ''}</div>
+    ${kbKanalBox()}
     ${(K.tests || []).length ? `<p class="small muted" style="margin:6px 0 0">Test siparişleri stoğa ve ciroya girmez: ${K.tests.slice(0, 5).map(t => `<span class="mono">${esc(t.no)}</span> (${esc(t.src)})`).join(', ')}</p>` : ''}</div>`;
 }
 function customerCard(o){
@@ -5239,13 +5252,17 @@ document.addEventListener('click', async e => {
     case 'cancel-order': await cancelOrder(); break;
     case 'kb-cancel': { const on = b.dataset.on === '1'; if (on && !confirm('Kristal Bardak siparişi iptal edilsin mi? Bardaklar stoğa geri eklenir.')) break; await run(async () => { await api('/api/kb/cancel', {no: id, on}); delete KBO[id]; S.rev = (S.rev||0) + 1; toast(on ? 'Sipariş iptal edildi, stok geri eklendi.' : 'İptal geri alındı.'); }); break; }
     case 'merges-open': openSheet('merges'); break;
-    case 'kbn-open': { const A = aS(); A.kbn = { ad: '', telefon: '', il: '', ilce: '', adres: '', not: '', elmas: '1', kristal: '0', tutar: '500' }; render(); break; }
+    case 'kbn-open': { const A = aS(); A.kbn = { kanal: 'whatsapp', ad: '', telefon: '', il: '', ilce: '', adres: '', not: '', elmas: '1', kristal: '0', tutar: '500' }; render(); break; }
+    case 'kbk-apply': { const L = S.kbk || []; if (!L.length) break; if (!(await confirmBox(`${L.length} siparişin kanalı listedeki gibi yazılsın mı? (${L.filter(x => x.oneri === 'site').length} Site, ${L.filter(x => x.oneri === 'whatsapp').length} WhatsApp)`, 'Uygula'))) break;
+      await run(async () => { const r = await api('/api/kb/kanal-apply', {items: L.map(x => ({no: x.no, kanal: x.oneri}))}); toast(r.n + ' siparişin kanalı yazıldı.'); S.kbk = undefined; }); break; }
+    case 'kb-kanal-set': await run(async () => { await api('/api/kb/kanal-set', {no: id, kanal: b.dataset.k}); delete KBO[id]; toast('Kanal güncellendi.'); }); break;
+    case 'kbn-kanal': { const A = aS(); if (A.kbn) { A.kbn.kanal = id; render(); } break; }
     case 'kbn-close': { const A = aS(); A.kbn = null; render(); break; }
     case 'kbn-save': { const A = aS(), f = A.kbn; if (!f) break; const tel = String(f.telefon || '').replace(/\D/g, '').replace(/^90(?=5\d{9}$)/, '').replace(/^(?=5\d{9}$)/, '0');
       const nE = parseInt(f.elmas, 10) || 0, nK = parseInt(f.kristal, 10) || 0; const miss = [!(nE + nK > 0) && 'adet (Elmas ya da Kristal)', !String(f.ad).trim() && 'ad soyad', !/^05\d{9}$/.test(tel) && 'telefon (05xx…)', !f.il && 'il', !f.ilce && 'ilçe', !String(f.adres).trim() && 'adres', !(Number(String(f.tutar).replace(',', '.')) > 0) && 'tutar'].filter(Boolean);
       if (miss.length) { toast('Eksik: ' + miss.join(', '), true); break; }
       A.busy.kbn = true; render();
-      try { const r = await api('/api/kb/manual', { ad: f.ad, telefon: tel, il: f.il, ilce: f.ilce, adres: f.adres, not: f.not, elmas: nE, kristal: nK, tutar: Number(String(f.tutar).replace(',', '.')) });
+      try { const r = await api('/api/kb/manual', { ad: f.ad, telefon: tel, il: f.il, ilce: f.ilce, adres: f.adres, not: f.not, kanal: f.kanal || 'whatsapp', elmas: nE, kristal: nK, tutar: Number(String(f.tutar).replace(',', '.')) });
         A.kbn = null; toast(`${r.id} oluşturuldu, stok düşüldü.`); S.rev = (S.rev || 0) + 1; loadAddr(true); }
       catch (err) { toast(errText(err), true); } finally { delete A.busy.kbn; render(); } break; }
     case 'kb-approve': { const A = aS(), o = ((A.data && A.data.orders) || []).find(x => x.gid === id); if (!o) break; const on = b.dataset.on === '1';
