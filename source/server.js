@@ -5486,6 +5486,16 @@ ${catalog}` });
     await kbIngest(env, x.no, x.at, d, on);
     await env.DB.batch([env.DB.prepare('UPDATE kb_orders SET cancelled_at=?2 WHERE no=?1').bind(no, on ? iso() : null), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(trDay(Date.parse(x.at))), setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true }); }
+  if (path === '/api/kb/manual') { // Backstage'den elle girilen Kristal Bardak siparişi: onaylı gelir, Google E-Tablo'ya yazılmaz
+    const model = ['Elmas', 'Kristal', 'Karışık'].includes(body.model) ? body.model : '', adet = Number(body.adet) || 0;
+    const now = new Date(Date.now() + 3 * 3600000), sno = 'ELLE-' + now.toISOString().replace(/\D/g, '').slice(0, 14) + '-' + String(Math.floor(Math.random() * 900) + 100);
+    const { o, err } = kbParse({ siparisNo: sno, tarih: iso(), ad: body.ad, telefon: body.telefon, il: body.il, ilce: body.ilce, adres: body.adres, not: body.not, model, adet,
+      elmasAdet: model === 'Elmas' ? adet : model === 'Karışık' ? adet / 2 : 0, kristalAdet: model === 'Kristal' ? adet : model === 'Karışık' ? adet / 2 : 0, tutar: body.tutar, odeme: 'kapida' });
+    if (err) return bad(err);
+    const r = await kbSave(env, o, false), x = await env.DB.prepare('SELECT data FROM kb_orders WHERE no=?1').bind(r.id).first(), d = JSON.parse((x && x.data) || '{}');
+    d.onay = iso(); d.elle = 1; await env.DB.prepare('UPDATE kb_orders SET data=?2 WHERE no=?1').bind(r.id, JSON.stringify(d)).run();
+    return json({ ok: true, id: r.id });
+  }
   if (path === '/api/kb/approve') { // Kristal Bardak siparişi onayı (müşteri arandı): onaysız sipariş Sürat Sorunlu'da kalır, barkod oluşturulamaz
     const no = String(body.no || ''), x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1 AND COALESCE(test,0)=0').bind(no).first(); if (!x) return bad('Sipariş bulunamadı.');
     const on = body.on !== false, d = JSON.parse(x.data || '{}');

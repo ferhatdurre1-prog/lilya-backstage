@@ -1031,6 +1031,7 @@ function viewAddr(){
   if (A.retRes) { const R = A.retRes; h += `<div class="card" style="gap:6px;margin-bottom:12px"><div class="spread"><b>↩️ Sürat iade listesi</b><button class="btn sm ghost" type="button" data-act="srret-close">Kapat</button></div><div class="small">${fmtN(R.total)} gönderinin ${fmtN(R.n)} tanesi iade: ${fmtN(R.web)} sipariş koduyla, ${fmtN(R.auto)} ad/il/tarihle${R.manual ? `, ${fmtN(R.manual)} elle` : ''} bağlandı. Depoya ulaşanlar kârdan ve stoktan işlenir; ulaşmayanlar sen <b>Depoya ulaştı</b>'ya basana kadar ikisini de etkilemez.</div>${R.un.length ? `<div class="small" style="color:var(--bad)">${R.stock || R.stockSkip ? `<div class="small">Depoya ulaşmış ${fmtN(R.stock)} iadenin ürünleri stoğa eklendi ve kârda teslim edilemedi yapıldı${R.stockSkip ? ` · ${fmtN(R.stockSkip)} iadede sipariş zaten iptal edilmiş, stok iptalde geri eklenmişti` : ''}. Liste için <b>İade dönüş yolunda</b> / <b>İade depoya ulaştı</b> sekmeleri.</div>` : ''}${fmtN(R.un.length)} iade siparişe bağlanamadı; sipariş numarasını yazıp bağla:</div><div class="tbl-wrap"><table class="t"><thead><tr><th>Takip no</th><th>Müşteri</th><th>Tarih</th><th class="r">Kapıda</th><th>Sipariş</th></tr></thead><tbody>${R.un.map(x => `<tr><td class="mono small">${esc(x.takip)}</td><td>${esc(x.gonderen)}<div class="small muted">${esc(x.il || '')}</div></td><td class="small">${esc(x.fatura ? cDay(x.fatura.slice(0, 10)) : '')}</td><td class="r">${x.cod ? tl2(x.cod) : '—'}</td><td style="white-space:nowrap"><input class="input mono" id="rl-${esc(x.takip)}" placeholder="Sipariş no" inputmode="numeric" style="width:96px"> <button class="btn sm primary" type="button" data-act="srret-link" data-id="${esc(x.takip)}">Bağla</button></td></tr>`).join('')}</tbody></table></div>` : `${R.stock || R.stockSkip ? `<div class="small">Depoya ulaşmış ${fmtN(R.stock)} iadenin ürünleri stoğa eklendi ve kârda teslim edilemedi yapıldı${R.stockSkip ? ` · ${fmtN(R.stockSkip)} iadede sipariş zaten iptal edilmiş, stok iptalde geri eklenmişti` : ''}.</div>` : ''}<div class="small" style="color:var(--good)">Hepsi siparişe bağlandı.</div>`}</div>`; }
 
   const done = A.view === 'done' || A.view === 'printed';
+  if (!done && KBM) h += A.kbn ? kbNewForm() : `<div style="margin:0 0 12px"><button class="btn" data-act="kbn-open">➕ Yeni sipariş oluştur</button></div>`;
   if (!done && !KBM) h += A.no ? newOrderForm() : `<div style="margin:0 0 12px"><button class="btn" data-act="no-open">➕ Yeni sipariş oluştur</button></div>`;
   const rows = adOrd(A).filter(o => adTab(A, o) === A.view).map(o => { const e = A.edit[o.gid]; const cur = e || (o.addr ? addrForm(o.addr) : null); return {o, e, issues: addrIssues(cur, o)}; });
   const nBad = rows.filter(r => r.issues.length).length;
@@ -1197,6 +1198,28 @@ async function suratPrint(list){
 }
 function srApply(gid, r){ const A = aS(), sh = (A.data.ships || []).filter(x => x.gid === gid).pop(); if (!sh || !r) return; sh.tracking = r.tracking || sh.tracking; sh.track_at = new Date().toISOString(); sh.track_msg = r.msg || sh.track_msg; if (r.fulfilled) sh.fulfilled_at = sh.track_at; sh.fulfill_err = r.err || null; }
 // Yeni sipariş formu: Shopify'da sipariş açar (ürünler Shopify ilanlarından aranır)
+const KB_FIYAT = {1: 500, 2: 800, 6: 1500};
+function kbNewForm(){ // Kristal Bardak: elle sipariş (onaylı gelir)
+  const A = aS(), f = A.kbn, busy = A.busy.kbn, il = ilFind(f.il), ilces = il == null ? [] : ilceList(TR_IL[il]);
+  const iv = (k, label, ex = '') => `<label class="f">${label}<input class="input" data-kbn="${k}" value="${esc(f[k] || '')}" autocomplete="off" ${ex}></label>`;
+  const adets = f.model === 'Karışık' ? [2, 6] : [1, 2, 6];
+  return `<div class="card" style="gap:10px;border:2px solid var(--kb)"><div class="spread"><h3 style="margin:0">➕ Yeni Kristal Bardak siparişi</h3><button class="btn sm ghost" data-act="kbn-close" ${busy ? 'disabled' : ''}>Vazgeç</button></div>
+    <div class="grid2">${iv('ad', 'Ad soyad')}${iv('telefon', 'Telefon', 'inputmode="tel" placeholder="05xx xxx xx xx"')}
+      <label class="f">İl<select class="input" data-kbn="il"><option value="">— seç —</option>${TR_IL.map(x => `<option ${x === f.il ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+      <label class="f">İlçe<select class="input" data-kbn="ilce" ${ilces.length ? '' : 'disabled'}><option value="">${ilces.length ? '— seç —' : 'Önce il seç'}</option>${ilces.map(x => `<option ${x === f.ilce ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label></div>
+    <label class="f">Adres (mahalle, cadde/sokak, bina no, daire)<textarea class="input" rows="2" data-kbn="adres">${esc(f.adres || '')}</textarea></label>
+    <div class="grid2"><label class="f">Model<select class="input" data-kbn="model">${['Elmas', 'Kristal', 'Karışık'].map(x => `<option ${x === f.model ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label class="f">Adet<select class="input" data-kbn="adet">${adets.map(n => `<option value="${n}" ${Number(f.adet) === n ? 'selected' : ''}>${n} adet${f.model === 'Karışık' ? ` (${n / 2} Elmas + ${n / 2} Kristal)` : ''}</option>`).join('')}</select></label>
+      ${iv('tutar', 'Tutar (TL) · kapıda nakit', 'inputmode="decimal"')}${iv('not', 'Not (isteğe bağlı)')}</div>
+    <p class="small muted" style="margin:0">Sipariş onaylı gelir ve Sürat Bekleyen'e düşer; stok hemen düşer. Google E-Tablo'ya yazılmaz.</p>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary" data-act="kbn-save" ${busy ? 'disabled' : ''}>${busy ? 'Kaydediliyor…' : 'Siparişi oluştur'}</button></div></div>`;
+}
+document.addEventListener('input', e => { const t = e.target, A = S.addr; if (!t || !t.dataset || !t.dataset.kbn || !A || !A.kbn) return; A.kbn[t.dataset.kbn] = t.value; });
+document.addEventListener('change', e => { const t = e.target, A = S.addr; if (!t || !t.dataset || !t.dataset.kbn || !A || !A.kbn) return; const f = A.kbn, k = t.dataset.kbn; f[k] = t.value;
+  if (k === 'il') f.ilce = '';
+  if (k === 'model' && f.model === 'Karışık' && Number(f.adet) === 1) { f.adet = 2; f.tutar = String(KB_FIYAT[2]); }
+  if (k === 'adet') f.tutar = String(KB_FIYAT[Number(f.adet)] || f.tutar);
+  if (['il', 'model', 'adet'].includes(k)) render(); });
 function newOrderForm(){
   const A = aS(), N = A.no, f = N.f, busy = A.busy.no, iv = (k, label, ex = '') => `<label class="f">${label}<input class="input" id="no-${k}" data-nof="${k}" value="${esc(f[k])}" autocomplete="off" ${ex}></label>`;
   const il = ilFind(f.province), ilces = il == null ? [] : ilceList(TR_IL[il]);
@@ -5219,6 +5242,15 @@ document.addEventListener('click', async e => {
     case 'cancel-order': await cancelOrder(); break;
     case 'kb-cancel': { const on = b.dataset.on === '1'; if (on && !confirm('Kristal Bardak siparişi iptal edilsin mi? Bardaklar stoğa geri eklenir.')) break; await run(async () => { await api('/api/kb/cancel', {no: id, on}); delete KBO[id]; S.rev = (S.rev||0) + 1; toast(on ? 'Sipariş iptal edildi, stok geri eklendi.' : 'İptal geri alındı.'); }); break; }
     case 'merges-open': openSheet('merges'); break;
+    case 'kbn-open': { const A = aS(); A.kbn = { ad: '', telefon: '', il: '', ilce: '', adres: '', not: '', model: 'Elmas', adet: 1, tutar: '500' }; render(); break; }
+    case 'kbn-close': { const A = aS(); A.kbn = null; render(); break; }
+    case 'kbn-save': { const A = aS(), f = A.kbn; if (!f) break; const tel = String(f.telefon || '').replace(/\D/g, '').replace(/^90(?=5\d{9}$)/, '').replace(/^(?=5\d{9}$)/, '0');
+      const miss = [!String(f.ad).trim() && 'ad soyad', !/^05\d{9}$/.test(tel) && 'telefon (05xx…)', !f.il && 'il', !f.ilce && 'ilçe', !String(f.adres).trim() && 'adres', !(Number(String(f.tutar).replace(',', '.')) > 0) && 'tutar'].filter(Boolean);
+      if (miss.length) { toast('Eksik: ' + miss.join(', '), true); break; }
+      A.busy.kbn = true; render();
+      try { const r = await api('/api/kb/manual', { ad: f.ad, telefon: tel, il: f.il, ilce: f.ilce, adres: f.adres, not: f.not, model: f.model, adet: Number(f.adet), tutar: Number(String(f.tutar).replace(',', '.')) });
+        A.kbn = null; toast(`${r.id} oluşturuldu, stok düşüldü.`); S.rev = (S.rev || 0) + 1; loadAddr(true); }
+      catch (err) { toast(errText(err), true); } finally { delete A.busy.kbn; render(); } break; }
     case 'kb-approve': { const A = aS(), o = ((A.data && A.data.orders) || []).find(x => x.gid === id); if (!o) break; const on = b.dataset.on === '1';
       A.busy['kbo' + id] = true; render();
       try { const r = await api('/api/kb/approve', {no: o.name, on}); o.onay = r.onay; toast(on ? `${o.name} onaylandı${adTab(A, o) === 'pending' ? ', Sürat Bekleyen\'e geçti' : ''}.` : `${o.name} onayı geri alındı, Sürat Sorunlu'ya döndü.`); }
