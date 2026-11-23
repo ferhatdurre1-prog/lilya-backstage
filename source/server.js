@@ -1674,7 +1674,7 @@ async function kbAddrRows(env, term) { // adres düzeltme listesi: iptal edilmem
   const { results } = await env.DB.prepare(`SELECT * FROM kb_orders k WHERE COALESCE(test,0)=0 AND cancelled_at IS NULL AND at > ?1 AND NOT EXISTS (SELECT 1 FROM sr_ship s WHERE s.gid = 'kb:' || k.no AND s.fulfilled_at IS NOT NULL) ORDER BY at DESC LIMIT 200`).bind(iso(Date.now() - 45 * 86400000)).all();
   const q = String(term || '').toLocaleLowerCase('tr-TR').replace(/^#/, '');
   return results.map(x => { const d = JSON.parse(x.data || '{}'); return { kb: true, gid: kbGid(x.no), name: x.no, createdAt: x.at, cancelled: false, fulfill: 'UNFULFILLED', note: [d.not, 'Site no: ' + x.src].filter(Boolean).join(' · '), email: '', phone: '',
-    total: Number(x.tutar) || 0, items: kbItems(d).map(i => `${i.q}× ${i.n}`), addr: kbShAddr(d), cod: { tip: 1, amt: Number(x.tutar) || 0, gw: 'Kapıda nakit (Kristal Bardak)' } }; })
+    total: Number(x.tutar) || 0, onay: d.onay || null, items: kbItems(d).map(i => `${i.q}× ${i.n}`), addr: kbShAddr(d), cod: { tip: 1, amt: Number(x.tutar) || 0, gw: 'Kapıda nakit (Kristal Bardak)' } }; })
     .filter(o => !q || o.name.toLowerCase().includes(q) || String(x2s(o.addr)).toLocaleLowerCase('tr-TR').includes(q));
 }
 const x2s = (a) => `${a.firstName} ${a.lastName} ${a.phone}`;
@@ -4993,7 +4993,7 @@ ${catalog}` });
     const gid = String(body.gid || ''); if (!shOrKbGid(gid)) return bad('Sipariş bulunamadı.'); const kb = kbIsGid(gid);
     const c = await shCreds(env); if (!kb && !shConfigured(c)) return bad('Shopify bağlı değil.');
     const adet = Math.max(1, Math.min(50, parseInt(body.adet, 10) || 1)), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || cr.desi).replace(',', '.')) || cr.desi));
-    let o, kbD = null; if (kb) { const x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1 AND COALESCE(test,0)=0').bind(gid.slice(3)).first(); if (!x) return bad('Sipariş bulunamadı.'); kbD = JSON.parse(x.data || '{}');
+    let o, kbD = null; if (kb) { const x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1 AND COALESCE(test,0)=0').bind(gid.slice(3)).first(); if (!x) return bad('Sipariş bulunamadı.'); kbD = JSON.parse(x.data || '{}'); if (!kbD.onay) return bad('Önce siparişi onayla (Sürat Sorunlu → Onayla).');
       o = { id: gid, name: x.no, email: '', phone: '', cancelledAt: x.cancelled_at, shippingAddress: kbShAddr(kbD), lineItems: { nodes: [] }, totalPriceSet: { shopMoney: { amount: x.tutar } } }; }
     else try { o = (await shGql(env, c, SR_ORDER_Q, { id: gid })).order; } catch (e) { return bad(shAddrErr(e)); }
     if (!o) return bad('Sipariş Shopify\'da bulunamadı.'); if (o.cancelledAt) return bad('Sipariş iptal edilmiş.');
@@ -5486,6 +5486,14 @@ ${catalog}` });
     await kbIngest(env, x.no, x.at, d, on);
     await env.DB.batch([env.DB.prepare('UPDATE kb_orders SET cancelled_at=?2 WHERE no=?1').bind(no, on ? iso() : null), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(trDay(Date.parse(x.at))), setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true }); }
+  if (path === '/api/kb/approve') { // Kristal Bardak siparişi onayı (müşteri arandı): onaysız sipariş Sürat Sorunlu'da kalır, barkod oluşturulamaz
+    const no = String(body.no || ''), x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1 AND COALESCE(test,0)=0').bind(no).first(); if (!x) return bad('Sipariş bulunamadı.');
+    const on = body.on !== false, d = JSON.parse(x.data || '{}');
+    if (!on && (await env.DB.prepare(`SELECT 1 FROM sr_ship WHERE gid=?1 AND COALESCE(mode,'') <> 'manual'`).bind(kbGid(no)).first())) return bad('Sürat barkodu oluşturulmuş siparişin onayı geri alınamaz.');
+    if (on) d.onay = iso(); else delete d.onay;
+    await env.DB.prepare('UPDATE kb_orders SET data=?2 WHERE no=?1').bind(no, JSON.stringify(d)).run();
+    return json({ ok: true, onay: d.onay || null });
+  }
   if (path === '/api/kb/order') { const x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1').bind(String(body.no || '')).first(); if (!x) return bad('Sipariş bulunamadı.'); return json({ ok: true, order: { ...x, data: JSON.parse(x.data || '{}') } }); }
   if (path === '/api/orders/page') {
     // Sipariş ekranı: sayfa başına 100 sipariş; durum, kanal ve arama süzgeci sunucuda

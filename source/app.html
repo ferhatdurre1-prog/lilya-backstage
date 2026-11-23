@@ -1097,6 +1097,7 @@ function srDoneList(A, view){ const ships = (A.data && A.data.ships) || [], last
   return adOrd(A).filter(o => last.has(o.gid)).map(o => last.get(o.gid)).filter(x => !x.tracking && (v === 'printed' ? !!x.printed_at : !x.printed_at)); }
 // Adres düzeltme sekmesi: sorunlu (barkodsuz + adres uyarısı) · bekleyen (barkodsuz, sorunsuz) · kayıtlı (barkodlu, yazdırılmadı) · yazdırıldı
 function adTab(A, o){ const last = ((A.data && A.data.ships) || []).filter(x => x.gid === o.gid).pop();
+  if (!last && o.kb && !o.onay) return 'bad'; // Kristal Bardak: onaylanmadan Sorunlu'da kalır
   if (!last) { const is = addrIssues(addrForm(o.addr || {}), o); if (!is.length) return 'pending'; const ok = ((A.data && A.data.addrOk) || []).includes(o.gid) && !is.some(i => i[0] === 'bad'); return ok ? 'pending' : 'bad'; } // sarı uyarı elle onaylandıysa bekleyende
   if (last.tracking) return null; return last.printed_at ? 'printed' : 'done'; }
 // gerçek barkod oluşunca aynı siparişin "elle kayıtlı" satırı listeden düşer
@@ -1105,8 +1106,11 @@ function srAddShip(A, sh){ A.data.ships = (A.data.ships || []).filter(x => !(x.g
 function srBulkList(A){ return adOrd(A).filter(o => adTab(A, o) === 'pending' && !A.edit[o.gid]); }
 // Sürat Kargo: barkodu olan sipariş için etiket, olmayan için oluşturma
 function suratBlock(o, e, issues){ // Kristal Bardak: altına "Siparişi iptal et"
-  const r = suratBlock0(o, e, issues); if (!o.kb) return r;
-  return r + `<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn sm danger" data-act="kb-cancel-ad" data-id="${esc(o.gid)}" ${aS().busy['kbc' + o.gid] ? 'disabled' : ''}>${aS().busy['kbc' + o.gid] ? 'İptal ediliyor…' : 'Siparişi iptal et'}</button></div>`;
+  if (!o.kb) return suratBlock0(o, e, issues);
+  const A = aS(), hasShip = (A.data.ships || []).some(x => x.gid === o.gid), bz = A.busy['kbo' + o.gid];
+  const cancel = `<button class="btn sm danger" data-act="kb-cancel-ad" data-id="${esc(o.gid)}" ${A.busy['kbc' + o.gid] ? 'disabled' : ''}>${A.busy['kbc' + o.gid] ? 'İptal ediliyor…' : 'Siparişi iptal et'}</button>`;
+  if (!o.onay && !hasShip) return `<div class="srb"><span class="small"><span class="pill p-warn">Onay bekliyor</span> <span class="muted">Müşteriyi arayıp onayla; onaylanmadan Sürat barkodu oluşturulmaz.</span></span><div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm primary" data-act="kb-approve" data-id="${esc(o.gid)}" data-on="1" ${bz ? 'disabled' : ''}>${bz ? 'Onaylanıyor…' : '✓ Onayla'}</button>${cancel}</div></div>`;
+  return suratBlock0(o, e, issues) + `<div class="row" style="justify-content:flex-end;gap:6px;margin-top:6px;flex-wrap:wrap">${o.onay && !hasShip ? `<span class="small muted" style="align-self:center">Onaylandı · ${esc(fmtDate(o.onay))}</span><button class="btn sm ghost" data-act="kb-approve" data-id="${esc(o.gid)}" data-on="0" ${bz ? 'disabled' : ''}>Onayı geri al</button>` : ''}${cancel}</div>`;
 }
 function suratBlock0(o, e, issues){
   const A = aS(), ships = (A.data.ships || []).filter(x => x.gid === o.gid), last = ships[ships.length - 1], g = esc(o.gid), busy = A.busy['sr' + o.gid], sr = S.surat || {};
@@ -5215,6 +5219,10 @@ document.addEventListener('click', async e => {
     case 'cancel-order': await cancelOrder(); break;
     case 'kb-cancel': { const on = b.dataset.on === '1'; if (on && !confirm('Kristal Bardak siparişi iptal edilsin mi? Bardaklar stoğa geri eklenir.')) break; await run(async () => { await api('/api/kb/cancel', {no: id, on}); delete KBO[id]; S.rev = (S.rev||0) + 1; toast(on ? 'Sipariş iptal edildi, stok geri eklendi.' : 'İptal geri alındı.'); }); break; }
     case 'merges-open': openSheet('merges'); break;
+    case 'kb-approve': { const A = aS(), o = ((A.data && A.data.orders) || []).find(x => x.gid === id); if (!o) break; const on = b.dataset.on === '1';
+      A.busy['kbo' + id] = true; render();
+      try { const r = await api('/api/kb/approve', {no: o.name, on}); o.onay = r.onay; toast(on ? `${o.name} onaylandı${adTab(A, o) === 'pending' ? ', Sürat Bekleyen\'e geçti' : ''}.` : `${o.name} onayı geri alındı, Sürat Sorunlu'ya döndü.`); }
+      catch (err) { toast(errText(err), true); } finally { delete A.busy['kbo' + id]; render(); } break; }
     case 'kb-cancel-ad': { const A = aS(), o = ((A.data && A.data.orders) || []).find(x => x.gid === id); if (!o) break;
       const sh = (A.data.ships || []).some(x => x.gid === id && x.mode !== 'manual');
       if (!(await confirmBox(`${esc(o.name)} siparişi iptal edilsin mi? Bardaklar stoğa geri eklenir, sipariş ciroya girmez.${sh ? '<br><b>Bu siparişin Sürat barkodu var:</b> Sürat\'a gittiyse gönderiyi Sürat eKargo\'dan da iptal etmelisin.' : ''}`, 'İptal et', true))) break;
