@@ -1631,18 +1631,18 @@ async function kbProducts(env) {
   }
   return out;
 }
-function kbParse(b) {
+function kbParse(b, free) { // free: elle giriş, adet serbest
   const t = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n);
   const o = { siparisNo: t(b.siparisNo, 60), tarih: t(b.tarih, 40), ad: t(b.ad, 80), telefon: String(b.telefon == null ? '' : b.telefon).replace(/\D/g, '').slice(0, 15), il: t(b.il, 40), ilce: t(b.ilce, 60), adres: t(b.adres, 300), not: t(b.not, 300), model: t(b.model, 20), odeme: t(b.odeme, 20) || 'kapida' };
   const n = (v) => { const x = Number(String(v == null ? '' : v).replace(',', '.')); return Number.isFinite(x) ? x : NaN; };
   o.adet = n(b.adet); o.elmasAdet = n(b.elmasAdet); o.kristalAdet = n(b.kristalAdet); o.tutar = n(b.tutar);
   const e = [];
   if (!o.siparisNo) e.push('siparisNo boş');
-  if (![1, 2, 6].includes(o.adet)) e.push('adet 1, 2 ya da 6 olmalı');
+  if (free ? !(Number.isInteger(o.adet) && o.adet >= 1 && o.adet <= 999) : ![1, 2, 6].includes(o.adet)) e.push(free ? 'adet 1 ile 999 arasında olmalı' : 'adet 1, 2 ya da 6 olmalı');
   if (!Number.isInteger(o.elmasAdet) || o.elmasAdet < 0 || !Number.isInteger(o.kristalAdet) || o.kristalAdet < 0) e.push('elmasAdet ve kristalAdet 0 ya da pozitif tam sayı olmalı');
   else if (o.elmasAdet + o.kristalAdet !== o.adet) e.push('elmasAdet + kristalAdet, adet ile aynı olmalı');
   if (!['Elmas', 'Kristal', 'Karışık'].includes(o.model)) e.push('model Elmas, Kristal ya da Karışık olmalı');
-  else if (o.model === 'Karışık' && o.adet === 1) e.push('Karışık model 1 adet olamaz');
+  else if (!free && o.model === 'Karışık' && o.adet === 1) e.push('Karışık model 1 adet olamaz');
   if (!(o.tutar > 0)) e.push('tutar 0\'dan büyük olmalı');
   for (const [k, l] of [['ad', 'ad'], ['il', 'il'], ['ilce', 'ilçe'], ['adres', 'adres']]) if (!o[k]) e.push(l + ' boş');
   if (o.telefon.length < 10) e.push('telefon eksik');
@@ -5487,10 +5487,10 @@ ${catalog}` });
     await env.DB.batch([env.DB.prepare('UPDATE kb_orders SET cancelled_at=?2 WHERE no=?1').bind(no, on ? iso() : null), env.DB.prepare('DELETE FROM daily_stats WHERE day >= ?1').bind(trDay(Date.parse(x.at))), setStmt(env, 'home_cache', ''), REV(env)]);
     return json({ ok: true }); }
   if (path === '/api/kb/manual') { // Backstage'den elle girilen Kristal Bardak siparişi: onaylı gelir, Google E-Tablo'ya yazılmaz
-    const model = ['Elmas', 'Kristal', 'Karışık'].includes(body.model) ? body.model : '', adet = Number(body.adet) || 0;
+    const el = Math.max(0, parseInt(body.elmas, 10) || 0), kr = Math.max(0, parseInt(body.kristal, 10) || 0), adet = el + kr, model = el && kr ? 'Karışık' : el ? 'Elmas' : kr ? 'Kristal' : '';
     const now = new Date(Date.now() + 3 * 3600000), sno = 'ELLE-' + now.toISOString().replace(/\D/g, '').slice(0, 14) + '-' + String(Math.floor(Math.random() * 900) + 100);
     const { o, err } = kbParse({ siparisNo: sno, tarih: iso(), ad: body.ad, telefon: body.telefon, il: body.il, ilce: body.ilce, adres: body.adres, not: body.not, model, adet,
-      elmasAdet: model === 'Elmas' ? adet : model === 'Karışık' ? adet / 2 : 0, kristalAdet: model === 'Kristal' ? adet : model === 'Karışık' ? adet / 2 : 0, tutar: body.tutar, odeme: 'kapida' });
+      elmasAdet: el, kristalAdet: kr, tutar: body.tutar, odeme: 'kapida' }, true);
     if (err) return bad(err);
     const r = await kbSave(env, o, false), x = await env.DB.prepare('SELECT data FROM kb_orders WHERE no=?1').bind(r.id).first(), d = JSON.parse((x && x.data) || '{}');
     d.onay = iso(); d.elle = 1; await env.DB.prepare('UPDATE kb_orders SET data=?2 WHERE no=?1').bind(r.id, JSON.stringify(d)).run();
