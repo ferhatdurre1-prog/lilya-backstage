@@ -2890,13 +2890,14 @@ async function pwHash(pw, saltB64) {
 async function pwCheck(pw, u) { if (!u || !u.hash || !u.salt || typeof pw !== 'string' || !pw) return false; const h = await pwHash(pw, u.salt); return (await hmac('cmp', h.hash)) === (await hmac('cmp', u.hash)); }
 const userName = (v) => String(v || '').trim().toLocaleLowerCase('tr-TR');
 const USER_RE = /^[a-z0-9çğıöşü._-]{3,32}$/;
-/* Rol izinleri (sunucuda): yönetici her şey; depo = Barkod, Stok, Sipariş, Kargo; izle = sadece okuma */
+/* Rol izinleri (sunucuda): yönetici her şey; depo = kâr ile ilgili olanlar ve alış fiyatları hariç her şey; izle = sadece okuma */
 const P_COMMON = new Set(['/api/state', '/api/me/password', '/api/passkey/register-options', '/api/passkey/register', '/api/passkey/list', '/api/passkey/delete', '/api/weather', '/api/market', '/api/img', '/api/surat/autotrack', '/api/fix1117']);
 const P_DEPO = new Set(['/api/sync', '/api/products/lookup', '/api/products/scan-index', '/api/stock', '/api/stock/in-bulk', '/api/stock/out-bulk', '/api/labels/pending', '/api/labels/mark', '/api/outlists/list', '/api/outlists/revert',
   '/api/products', '/api/products/info', '/api/products/listings', '/api/products/pending',
   '/api/orders/page', '/api/orders/get', '/api/orders/customer', '/api/orders/search', '/api/orders/cancel', '/api/orders/manual',
   '/api/shopify/status', '/api/surat/status', '/api/surat/ship', '/api/surat/unship', '/api/surat/printed', '/api/surat/track', '/api/surat/trackall', '/api/surat/live', '/api/surat/export', '/api/surat/exported', '/api/surat/mark', '/api/surat/report',
   '/api/shorder/create', '/api/shorder/products']);
+const P_DEPO_NO = new Set(['/api/home', '/api/profit', '/api/reports', '/api/reports/products', '/api/reports/rebuild', '/api/orders/prof', '/api/orders/profdet', '/api/pricing', '/api/costs', '/api/costs/reset', '/api/ads', '/api/retcargo/analysis', '/api/undcargo/analysis', '/api/desi/status']);
 const P_READ = new Set(['/api/home', '/api/profit', '/api/orders/page', '/api/orders/get', '/api/orders/customer', '/api/orders/search', '/api/orders/prof', '/api/orders/profdet', '/api/reports', '/api/reports/products',
   '/api/pay/list', '/api/cari/list', '/api/cari/get', '/api/cari/merges', '/api/cari/imports', '/api/qna/list', '/api/shaddr/list', '/api/shaddr/transit', '/api/shaddr/shipped', '/api/srret/list',
   '/api/surat/status', '/api/shopify/status', '/api/products/listings', '/api/products/pending', '/api/products/merges', '/api/products/scan-index', '/api/products/lookup', '/api/pricing', '/api/audit',
@@ -2906,7 +2907,7 @@ function roleOk(role, path) {
   if (role === 'admin') return true;
   if (path.startsWith('/api/users')) return false;
   if (P_COMMON.has(path)) return true;
-  if (role === 'depo') return P_DEPO.has(path) || path.startsWith('/api/shaddr/') || path.startsWith('/api/srret/');
+  if (role === 'depo') return !P_DEPO_NO.has(path) && !path.startsWith('/api/expenses/') && !path.startsWith('/api/recurring/'); // depo: kâr ile ilgili olanlar hariç her şey
   if (role === 'izle') return P_READ.has(path);
   return false;
 }
@@ -5969,7 +5970,7 @@ export default {
         if (SELF_ORIGIN !== url.origin) { SELF_ORIGIN = url.origin; ctx.waitUntil(getSetting(env, 'self_origin').then(v => v !== url.origin ? setSetting(env, 'self_origin', url.origin) : null).catch(() => {})); }
         const uc = { n: 0 }; const envU = { ...env, DB: countingDB(env.DB, uc), USER: A.user, ROLE: role };
         let res = await api(req, envU, path, ctx);
-        if (role === 'depo' && (res.headers.get('content-type') || '').includes('application/json')) { try { const d = stripCost(await res.clone().json()); res = new Response(JSON.stringify(d), { status: res.status, headers: res.headers }); } catch (e) {} } // depo: alış fiyatları gizli
+        if (role === 'depo' && (path === '/api/state' || path.startsWith('/api/products')) && (res.headers.get('content-type') || '').includes('application/json')) { try { const d = stripCost(await res.clone().json()); res = new Response(JSON.stringify(d), { status: res.status, headers: res.headers }); } catch (e) {} } // depo: alış fiyatları gizli
         USE.req++; USE.wr += uc.w || 0; USE.rd += uc.r || 0;
         if (Date.now() - USE.at > 60000) ctx.waitUntil(flushUsage(env).catch(() => {}));
         // Kullandıkça oturum uzar

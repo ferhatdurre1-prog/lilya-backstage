@@ -516,9 +516,9 @@ const ICONS = {
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
 const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['pay','Ödemelerim'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
-/* Kullanıcı rolleri: yönetici her şey; depo = Stok, Siparişler, Kargo (adres düzeltme) + barkod; izle = her şeyi görür, değiştiremez */
-const ROLE = () => (S.me && S.me.role) || 'admin', isAdmin = () => ROLE() === 'admin', DEPO_TABS = ['stock','orders','addr'];
-const tabOk = (id) => ROLE() !== 'depo' || DEPO_TABS.includes(id);
+/* Kullanıcı rolleri: yönetici her şey; depo = kâr ile ilgili ekranlar ve alış fiyatları hariç her şey; izle = her şeyi görür, değiştiremez */
+const ROLE = () => (S.me && S.me.role) || 'admin', isAdmin = () => ROLE() === 'admin', DEPO_NO = ['home','profit','reports','value'];
+const tabOk = (id) => ROLE() !== 'depo' || !DEPO_NO.includes(id); /* depo: kâr ile ilgili ekranlar kapalı */
 const ROLE_NAMES = {admin: 'Yönetici', depo: 'Depo', izle: 'Sadece görüntüleme'};
 const NAV_MAIN = ['stock','value','orders','pay','profit']; // alt çubukta görünenler; diğerleri sol menüde
 const TAB_SHORT = {questions:'Soru', addr:'Adres', buy:'Sipariş ver', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket', pay:'Ödemeler'};
@@ -787,7 +787,7 @@ function sheetUsers(){
       <label class="f">Şifre (en az 6 karakter)<input class="input" id="us-pass" type="text" autocomplete="new-password" autocapitalize="none" required></label>
       <label class="f">Rol<select class="input" id="us-role">${opt('depo')}</select></label>
       <button class="btn primary" type="submit">Kullanıcı ekle</button></form>
-    <p class="muted small" style="margin:0"><b>Depo:</b> Stoklar (alış fiyatı görünmez), Siparişler, Kargo / adres düzeltme ve barkod. <b>Sadece görüntüleme:</b> her şeyi görür, hiçbir şeyi değiştiremez. <b>Yönetici:</b> her şey.</p></div>
+    <p class="muted small" style="margin:0"><b>Depo:</b> kâr ile ilgili ekranlar (Ana ekran, Kâr, Raporlar, Stok değeri, sipariş kârı, gider/gelir) ve alış fiyatları hariç her şey. <b>Sadece görüntüleme:</b> her şeyi görür, hiçbir şeyi değiştiremez. <b>Yönetici:</b> her şey.</p></div>
     <div class="card"><h3 style="margin:0">Kullanıcılar</h3><div class="list" style="box-shadow:none">${D.users.map(u => { const me = u.id === D.me; return `<div class="item" style="cursor:default${u.active ? '' : ';opacity:.6'}"><div class="main"><div class="ttl">${esc(u.name)}${me ? ' <span class="pill">sen</span>' : ''}${u.active ? '' : ' <span class="pill p-bad">kapalı</span>'}</div><div class="meta"><span>${esc(ROLE_NAMES[u.role] || u.role)}</span><span>son giriş ${esc(fmt(u.last_at))}</span>${u.passkeys ? `<span>Face ID: ${fmtN(u.passkeys)}</span>` : ''}</div>
       ${me ? '' : `<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px"><select class="input" data-urole="${u.id}" aria-label="Rol" style="width:auto;padding:6px 8px">${opt(u.role)}</select><button class="btn sm" data-act="user-pass" data-id="${u.id}">Şifre sıfırla</button><button class="btn sm" data-act="user-act" data-id="${u.id}">${u.active ? 'Kapat' : 'Aç'}</button><button class="btn sm ghost" data-act="user-del" data-id="${u.id}">Sil</button></div>`}</div></div>`; }).join('')}</div>
     <p class="muted small" style="margin:0">Rol değişince, şifre sıfırlanınca ya da kullanıcı kapatılınca o kişinin açık oturumları hemen kapanır.</p></div>`};
@@ -860,12 +860,12 @@ function render(){
   S.dirty = false;
   const logged = S.authed === true;
   document.body.dataset.tab = logged ? S.tab : 'login';
-  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#q-lbl').hidden = !logged; $('#q-kyt').hidden = !logged; $('#hdr-actions').hidden = !logged || !isAdmin(); $('#burger').hidden = !logged;
+  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#q-lbl').hidden = !logged; $('#q-kyt').hidden = !logged; $('#hdr-actions').hidden = !logged || ROLE() === 'izle'; $('#burger').hidden = !logged;
   if (S.authed === false) { $('#view').innerHTML = viewLogin(); setTimeout(() => { const i = $('#lg-pass'); if (i) i.focus(); }, 30); return; }
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
   if (logged && !tabOk(S.tab)) S.tab = 'stock'; /* depo: izinli olmayan ekran açılmaz */
   const pending = retActionCount();
-  const PS0 = S.pay && S.pay.data && S.pay.data.sum; if (logged && S.authed && ROLE() !== 'depo') payMaybeLoad();
+  const PS0 = S.pay && S.pay.data && S.pay.data.sum; if (logged && S.authed) payMaybeLoad();
   const counts = {returns: pending, pay: PS0 ? PS0.lateN + PS0.todayN : 0};
   const NAV = NAV_MAIN.filter(tabOk).map(id => TABS.find(t => t[0] === id)).filter(Boolean);
   // bilgisayarda bütün bölümler üst sekmede (telefonda alt çubukta 3 ana bölüm + sol menü)
@@ -890,10 +890,10 @@ function renderDrawer(){
     <div class="dh"><div class="mark" aria-hidden="true">L</div><div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1 style="font-size:20px">Backstage</h1></div></div>
     ${item('home', 'Ana ekran')}
     ${grp('Satış')}${item('orders', 'Siparişler')}${item('addr', 'Adres düzeltme')}${item('returns', 'İadeler', 'returns', pending)}${item('questions', 'Sorular', 'questions', (S.sync.trendyol || {}).qnaWaiting || 0)}
-    ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${!isAdmin() ? '' : btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
-    ${ROLE() === 'depo' ? '' : grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${!isAdmin() ? '' : btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
-    ${ROLE() === 'depo' ? '' : grp('Kayıtlar')}${item('moves', 'Hareketler')}
-    ${grp('Ayarlar')}${isAdmin() ? `<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>` + btn('users-open', 'Kullanıcılar', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 010 6M21 20c0-2.6-1.6-4.8-4-5.6"/>') : ''}${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
+    ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${ROLE() === 'izle' ? '' : btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
+    ${grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${!isAdmin() ? '' : btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
+    ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
+    ${grp('Ayarlar')}${ROLE() !== 'izle' ? `<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>` : ''}${isAdmin() ? btn('users-open', 'Kullanıcılar', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 010 6M21 20c0-2.6-1.6-4.8-4-5.6"/>') : ''}${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
     <div class="small muted" style="padding:14px 16px 6px">Sürüm: __BUILD_TIME__</div>
   </nav>`;
 }
@@ -2221,7 +2221,7 @@ function viewHome(){
 }
 // Sipariş kârları: liste beklemeden açılır, kârlar ayrı istekle gelip yerine oturur (önceki değerler hemen gösterilir)
 function withProf(os){ const C = S.profC; return C ? os.map(o => o.prof || !C.has(o.id) ? o : {...o, prof: C.get(o.id)}) : os; }
-function loadProf(os, tab){ const ids = os.map(o => o.id); if (!ids.length) return; S.profC = S.profC || new Map();
+function loadProf(os, tab){ const ids = os.map(o => o.id); if (!ids.length || ROLE() === 'depo') return; S.profC = S.profC || new Map();
   api('/api/orders/prof', {ids}).then(r => { for (const id of ids) if (r.prof[id]) S.profC.set(id, r.prof[id]); if (S.tab === tab) render(); }).catch(() => {}); }
 // Ana ekran: son gelen siparişler (kârıyla), dokununca sipariş açılır
 function homeRecent(){
@@ -3082,7 +3082,7 @@ function sheetOrder(){
   const body = `<div class="card"><dl class="kv"><dt>Kanal</dt><dd>${chBadge(o.channel)}</dd><dt>Sipariş tarihi</dt><dd>${esc(fmtDate(o.date))}</dd><dt>Durum</dt><dd><span class="pill ${st[1]}">${st[0]}</span></dd><dt>Kaynak</dt><dd>${o.source==='manual'?'Elle girildi':o.source==='trendyol'?'Trendyol (otomatik)':'Dosyadan aktarıldı'}</dd>${o.baseline?'<dt>Not</dt><dd>Başlangıç tarihinden önce; stoğu etkilemedi</dd>':''}</dl></div>
   ${customerCard(o)}
   ${o.channel === 'kristal' ? kbOrderCard(o) : ''}
-  ${orderProfitCard(o)}
+  ${ROLE() === 'depo' ? '' : orderProfitCard(o)}
   ${o.channel === 'shopify' ? shRetCard(o) : ''}
   ${o.channel === 'trendyol' ? tyDiagCard(o) : ''}
   <div class="card"><h3>Kalemler</h3><div class="lines">${rows}</div></div>
