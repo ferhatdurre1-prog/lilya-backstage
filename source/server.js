@@ -125,6 +125,7 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS sr_ret(takip TEXT PRIMARY KEY, web TEXT, gonderen TEXT, il TEXT, fatura TEXT, teslim TEXT, durum TEXT, fee REAL, desi REAL, cod REAL, no TEXT, how TEXT, at TEXT)').run();
   // Kural değişti (13.11): iade kârı sadece depoya ulaşınca etkiler; önceki yüklemede işaretlenen ama depoya ulaşmamış iadelerin kâr işareti kalkar
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_retcargo_all1'`).first())) { try { await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_retcargo_all1','1')`), env.DB.prepare('DELETE FROM daily_stats'), setStmt(env, 'home_cache', '')]); } catch (e) {} } // iade siparişlerinde gidiş kargosu da iade kargosuna: kâr günleri yeniden hesaplanır
+  if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_kb_off1'`).first())) { try { await kbOff(env); } catch (e) { try { await setSetting(env, 'kb_off_err', iso() + ' · ' + String(e.message || e).slice(0, 300)); } catch (e2) {} } } // 24.11.2026: Kristal Bardak Backstage'den kaldırıldı
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_fix1117'`).first())) { try { await fix1117(env); } catch (e) { try { await setSetting(env, 'fix1117_err', iso() + ' · ' + String(e.message || e).slice(0, 300)); } catch (e2) {} } }
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_srret_profit1'`).first())) { try {
     await env.DB.batch([env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_srret_profit1','1')`),
@@ -1678,6 +1679,20 @@ async function kbExport(env, url) {
 /* ---------- Kristal Bardak (kristalbardak.com): Google Apps Script siparişi POST eder ----------
    Sipariş Backstage'de saklanır (kb_orders) ve 'kristal' kanalı olarak sipariş listesine girer. Numara: KB900001… (Shopify numaralarıyla çakışmaz). */
 const KB_CH = 'kristal';
+/* 24.11.2026: Kristal Bardak artık kendi panelinde (kristalbardak.xyz). Backstage'de sadece Sürat kargo takibi kalır:
+   yeni sipariş alınmaz, kâr / ana sayfa / siparişler / giderler / stoktan çıkarıldı (kayıtlar veritabanında durur). */
+async function kbOff(env) {
+  const s = await getSettings(env, ['kb_pk_e', 'kb_pk_k']);
+  const keys = [...new Set([s.kb_pk_e, s.kb_pk_k, skuKey('KB-ELMAS'), skuKey('KB-KRISTAL')].filter(Boolean))];
+  const rows = keys.length ? await selectIn(env, 'SELECT key, sku, name, channels, merged_into FROM products', 'key', keys) : [];
+  const st = [env.DB.prepare(`INSERT INTO settings(k,v) VALUES('mig_kb_off1','1')`)], rp = { deleted: [], kept: [] };
+  for (const p of rows) { let ch = []; try { ch = JSON.parse(p.channels || '[]'); } catch (e) {} const rest = ch.filter(c => c !== KB_CH);
+    if (p.merged_into || (!rest.length && /^KB-/i.test(p.sku || ''))) { st.push(env.DB.prepare('DELETE FROM products WHERE key=?1').bind(p.key)); rp.deleted.push(p.name || p.sku); } // sadece Kristal Bardak ürünü
+    else { st.push(env.DB.prepare('UPDATE products SET channels=?2 WHERE key=?1').bind(p.key, JSON.stringify(rest))); rp.kept.push(p.name || p.sku); } } // Lilya Home ürünüyle birleştirilmişse ürün kalır
+  st.push(env.DB.prepare(`DELETE FROM listings WHERE channel='kristal'`), env.DB.prepare(`DELETE FROM settings WHERE k IN ('kb_pk_e','kb_pk_k')`), setStmt(env, 'kb_off_report', JSON.stringify(rp)),
+    env.DB.prepare('DELETE FROM daily_stats'), env.DB.prepare('DELETE FROM product_daily'), setStmt(env, 'home_cache', ''), REV(env));
+  await env.DB.batch(st);
+}
 const kbIsGid = (g) => /^kb:KB\d{6,}$/.test(String(g || '')), shOrKbGid = (g) => /^gid:\/\/shopify\/Order\/\d+$/.test(String(g || '')) || kbIsGid(g);
 const kbGid = (no) => 'kb:' + no;
 async function kbProducts(env) {
@@ -3046,7 +3061,7 @@ async function loadFees(env) {
 let RS_CACHE = { v: null, at: 0 };
 async function reportStart(env) { if (Date.now() - RS_CACHE.at > 60000) { RS_CACHE = { v: (await getSetting(env, 'report_start')) || '', at: Date.now() }; } return RS_CACHE.v; }
 async function computeProfit(env, from, to, ch0) {
-  const chAll = ch0 === '*'; if (chAll) ch0 = ''; // '*': Kristal Bardak dahil bütün kanallar (sipariş listesi, ana sayfa); boş: Lilya Home (Trendyol + Shopify), Kristal Bardak bağımsız
+  const chAll = ch0 === '*'; if (chAll) ch0 = ''; if (ch0 === 'kristal') ch0 = ''; // Kristal Bardak kaldırıldı (24.11) // '*': Kristal Bardak dahil bütün kanallar (sipariş listesi, ana sayfa); boş: Lilya Home (Trendyol + Shopify), Kristal Bardak bağımsız
   { const rs = await reportStart(env); if (/^\d{4}-\d{2}-\d{2}$/.test(rs || '')) { const a = iso(dayStartTR(rs)); if (from < a) from = a; if (to < from) to = from; } }
   const T0 = Date.now(), TM = {}; const mark = (k) => { TM[k] = Date.now() - T0; };
   // Tüm okumalar tek gidiş-dönüşte (veritabanına her sorgu ayrı yolculuk demek)
@@ -3079,7 +3094,7 @@ async function computeProfit(env, from, to, ch0) {
   const bkMap = new Map(bkR.results.map(x => [x.no, x]));
   const bkMark = new Set((await env.DB.prepare(`SELECT no FROM sh_carrier WHERE carrier='basit'`).all()).results.map(x => x.no)); // Shopify'da Basit Kargo ile kargolandığı görülenler
   // Kanal seçiliyse sadece o kanalın siparişleri; Trendyol fatura kesintileri yalnız Trendyol'da, genel giderler kanal seçilince düşülmez
-  if (!ch0 && !chAll) o.results = o.results.filter(x => x.channel !== 'kristal');
+  o.results = o.results.filter(x => x.channel !== 'kristal'); adR.results = adR.results.filter(x => x.channel !== 'kristal'); expR.results = expR.results.filter(x => x.brand !== 'kb'); // Kristal Bardak kâra girmez (24.11)
   if (ch0) { o.results = o.results.filter(x => x.channel === ch0); if (ch0 !== 'trendyol') { miscR.results = []; miscAllR.results = []; } adR.results = adR.results.filter(x => (x.channel || 'trendyol') === ch0); if (ch0 !== 'kristal') expR.results = []; }
   mark('batch'); const prods = new Map(p.results.map(x => [x.key, x]));
   // İade, Trendyol'un onayladığı (para iadesi yapılan) ya da senin depoda kabul ettiğin anda kâra yansır
@@ -3314,7 +3329,7 @@ async function computeProfit(env, from, to, ch0) {
     for (const x of rr) { const a = x.start_day > dayFrom ? x.start_day : dayFrom, b = x.end_day && x.end_day < dayTo ? x.end_day : dayTo;
       const days = Math.max(0, Math.round((dayStartTR(b) - dayStartTR(a)) / 86400000) + 1); if (!days) continue;
       const kind = x.kind === 'gelir' ? 'gelir' : 'gider';
-      const br = x.brand === 'kb' ? 'kb' : 'lh';
+      if (x.brand === 'kb') continue; const br = 'lh';
       recurring.push({ id: x.id, name: x.name, daily: R2(x.amount || 0), kind, start: x.start_day, end: x.end_day || null, days, brand: br });
       expenses.push({ id: 'r' + x.id, day: b, name: `${x.name} (günlük × ${days} gün)`, amount: R2((x.amount || 0) * days), kind, recurring: true, brand: br }); }
   } catch (e) {}
@@ -5049,7 +5064,7 @@ ${catalog}` });
   if (path === '/api/surat/ship') {
     // Varsayılan: Excel ile (Sürat eKargo → Gönderi Girişi Excel). Web servis yalnız sr_mode=api ise kullanılır.
     const cr = await srCreds(env), apiMode = (await getSetting(env, 'sr_mode')) === 'api' && cr.user && cr.pass;
-    const gid = String(body.gid || ''); if (!shOrKbGid(gid)) return bad('Sipariş bulunamadı.'); const kb = kbIsGid(gid);
+    const gid = String(body.gid || ''); if (!shOrKbGid(gid)) return bad('Sipariş bulunamadı.'); const kb = kbIsGid(gid); if (kb) return bad('Kristal Bardak siparişleri artık Backstage\'den gönderilmiyor.');
     const c = await shCreds(env); if (!kb && !shConfigured(c)) return bad('Shopify bağlı değil.');
     const adet = Math.max(1, Math.min(50, parseInt(body.adet, 10) || 1)), desi = Math.max(0.5, Math.min(300, Number(String(body.desi || cr.desi).replace(',', '.')) || cr.desi));
     let o, kbD = null; if (kb) { const x = await env.DB.prepare('SELECT * FROM kb_orders WHERE no=?1 AND COALESCE(test,0)=0').bind(gid.slice(3)).first(); if (!x) return bad('Sipariş bulunamadı.'); kbD = JSON.parse(x.data || '{}'); if (!kbD.onay) return bad('Önce siparişi onayla (Sürat Sorunlu → Onayla).');
@@ -5503,7 +5518,7 @@ ${catalog}` });
     if (!from || !to || to <= from || to - from > 400 * 86400000) return bad('Tarih aralığı geçersiz.');
     // Hız ölçümü: veritabanı bekleme süresi (ping) ve toplam süre Bağlantılar'da görünür
     const t0 = Date.now(); await env.DB.prepare('SELECT 1').first(); const ping = Date.now() - t0;
-    const ch = ['trendyol', 'shopify', 'kristal'].includes(body.channel) ? body.channel : '';
+    const ch = ['trendyol', 'shopify'].includes(body.channel) ? body.channel : '';
     const out = await computeProfit(env, iso(from), iso(to), ch); const ms = Date.now() - t0;
     try { await setSetting(env, 'perf_profit', JSON.stringify({ at: iso(), days: Math.round((to - from) / 86400000), orders: out.orders.length, ms, ping, ph: PERF_LAST, cold: COLD_MS })); } catch (e) {}
     return json(out);
@@ -5530,6 +5545,7 @@ ${catalog}` });
     else await env.DB.batch([env.DB.prepare('UPDATE products SET same_day=?1').bind(v), REV(env)]);
     return json({ ok: true });
   }
+  if (path.startsWith('/api/kb/')) return bad('Kristal Bardak Backstage\'den kaldırıldı.', 410); // 24.11.2026
   if (path === '/api/kb/info') {
     const [c, t, l] = await env.DB.batch([env.DB.prepare(`SELECT COUNT(*) n, MAX(created_at) last FROM kb_orders WHERE COALESCE(test,0)=0`), env.DB.prepare(`SELECT no, src, created_at FROM kb_orders WHERE test=1 ORDER BY created_at DESC LIMIT 20`), env.DB.prepare(`SELECT no, src, at, tutar, cancelled_at FROM kb_orders WHERE COALESCE(test,0)=0 ORDER BY at DESC LIMIT 5`)]);
     const pk = await kbProducts(env), pr = (await selectIn(env, 'SELECT key, code, name, qty, cost, desi, desi_m FROM products', 'key', [pk.elmas, pk.kristal]));
@@ -5600,6 +5616,7 @@ ${catalog}` });
       let extra = ''; if (bc) { args.push('%' + bc.sku + '%'); extra = ` OR o.lines LIKE ?${args.length}`; }
       where.push(`(o.order_no LIKE ?${a1} OR c.sname LIKE ?${a2} OR o.lines LIKE ?${a1}${extra})`);
     }
+    where.push(`o.channel<>'kristal'`); // Kristal Bardak kaldırıldı (24.11)
     const W = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const J = `FROM orders o LEFT JOIN order_cust c ON c.order_no=o.order_no AND o.channel IN ('trendyol','kristal') ${W}`;
     const [totR, listR] = await env.DB.batch([env.DB.prepare(`SELECT COUNT(*) n ${J}`).bind(...args), env.DB.prepare(`SELECT o.*, json_extract(c.data,'$.name') cname ${J} ORDER BY o.date DESC LIMIT ${size} OFFSET ${(page - 1) * size}`).bind(...args)]);
@@ -5753,16 +5770,8 @@ export default {
         ctx.waitUntil((async () => { await sleep(1500); try { const r = await syncShopifyOrders(env, { pages: 1 }); await setSetting(env, 'sh_hook_at', iso() + ' · ' + (r ? r.orders + ' sipariş' : '')); } catch (e) { await setSetting(env, 'sh_err', iso() + ' · ' + String(e.message || e).slice(0, 200)); } })());
         return new Response('ok');
       }
-      if (path === '/robots.txt') return new Response('User-agent: *\nDisallow: /\nAllow: /api/export/kristal/\n', { status: 200, headers: { 'content-type': 'text/plain' } });
-      if (path.startsWith('/api/export/kristal/')) { // salt-okuma; yanlış anahtar / GET dışı / secret yok → 404 (anahtar hiçbir yere yazılmaz)
-        const nf = () => new Response('Not found', { status: 404, headers: { 'cache-control': 'no-store', 'content-type': 'text/plain; charset=utf-8' } });
-        if (req.method !== 'GET') return nf();
-        let ok = false; try { ok = await kbKeyOk(env, decodeURIComponent(path.slice('/api/export/kristal/'.length))); } catch (e) { ok = false; }
-        if (!ok) return nf();
-        await init(env);
-        try { return await kbExport(env, url); } catch (e) { return json({ ok: false, hata: 'Veri okunamadı' }, 500); }
-      }
-      if (path === '/api/kristal-bardak/order') {
+      if (path === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+      if (path === '/api/kristal-bardak/order') { if (true) return new Response('Not found', { status: 404, headers: { 'cache-control': 'no-store' } }); // 24.11.2026: Kristal Bardak siparişleri artık Backstage'e alınmıyor
         if (req.method !== 'POST') return json({ ok: false, hata: 'POST kullanılmalı' }, 405);
         const want = env.KB_WEBHOOK_SECRET, got = req.headers.get('x-kb-secret') || '';
         if (!want || !got || (await hmac('cmp', got)) !== (await hmac('cmp', want))) return json({ ok: false, hata: 'yetkisiz' }, 401);
