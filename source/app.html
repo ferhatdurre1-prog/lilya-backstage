@@ -517,7 +517,7 @@ const ICONS = {
 };
 const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['pay','Ödemelerim'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
 /* Kullanıcı rolleri: yönetici her şey; depo = kâr ile ilgili ekranlar ve alış fiyatları hariç her şey; izle = her şeyi görür, değiştiremez */
-const ROLE = () => (S.me && S.me.role) || 'admin', isAdmin = () => ROLE() === 'admin', DEPO_NO = ['home','profit','reports','value'];
+const ROLE = () => (S.me && S.me.role) || 'admin', isAdmin = () => ROLE() === 'admin', DEPO_NO = ['home','profit','reports','value','pay','cari'];
 const tabOk = (id) => ROLE() !== 'depo' || !DEPO_NO.includes(id); /* depo: kâr ile ilgili ekranlar kapalı */
 const ROLE_NAMES = {admin: 'Yönetici', depo: 'Depo', izle: 'Sadece görüntüleme'};
 const NAV_MAIN = ['stock','value','orders','pay','profit']; // alt çubukta görünenler; diğerleri sol menüde
@@ -787,7 +787,7 @@ function sheetUsers(){
       <label class="f">Şifre (en az 6 karakter)<input class="input" id="us-pass" type="text" autocomplete="new-password" autocapitalize="none" required></label>
       <label class="f">Rol<select class="input" id="us-role">${opt('depo')}</select></label>
       <button class="btn primary" type="submit">Kullanıcı ekle</button></form>
-    <p class="muted small" style="margin:0"><b>Depo:</b> kâr ile ilgili ekranlar (Ana ekran, Kâr, Raporlar, Stok değeri, sipariş kârı, gider/gelir) ve alış fiyatları hariç her şey. <b>Sadece görüntüleme:</b> her şeyi görür, hiçbir şeyi değiştiremez. <b>Yönetici:</b> her şey.</p></div>
+    <p class="muted small" style="margin:0"><b>Depo:</b> kâr ve para ile ilgili ekranlar (Ana ekran, Kâr, Raporlar, Stok değeri, Ödemelerim, Cariler, sipariş kârı, gider/gelir) ve alış fiyatları hariç her şey. <b>Sadece görüntüleme:</b> her şeyi görür, hiçbir şeyi değiştiremez. <b>Yönetici:</b> her şey.</p></div>
     <div class="card"><h3 style="margin:0">Kullanıcılar</h3><div class="list" style="box-shadow:none">${D.users.map(u => { const me = u.id === D.me; return `<div class="item" style="cursor:default${u.active ? '' : ';opacity:.6'}"><div class="main"><div class="ttl">${esc(u.name)}${me ? ' <span class="pill">sen</span>' : ''}${u.active ? '' : ' <span class="pill p-bad">kapalı</span>'}</div><div class="meta"><span>${esc(ROLE_NAMES[u.role] || u.role)}</span><span>son giriş ${esc(fmt(u.last_at))}</span>${u.passkeys ? `<span>Face ID: ${fmtN(u.passkeys)}</span>` : ''}</div>
       ${me ? '' : `<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px"><select class="input" data-urole="${u.id}" aria-label="Rol" style="width:auto;padding:6px 8px">${opt(u.role)}</select><button class="btn sm" data-act="user-pass" data-id="${u.id}">Şifre sıfırla</button><button class="btn sm" data-act="user-act" data-id="${u.id}">${u.active ? 'Kapat' : 'Aç'}</button><button class="btn sm ghost" data-act="user-del" data-id="${u.id}">Sil</button></div>`}</div></div>`; }).join('')}</div>
     <p class="muted small" style="margin:0">Rol değişince, şifre sıfırlanınca ya da kullanıcı kapatılınca o kişinin açık oturumları hemen kapanır.</p></div>`};
@@ -865,9 +865,9 @@ function render(){
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
   if (logged && !tabOk(S.tab)) S.tab = 'stock'; /* depo: izinli olmayan ekran açılmaz */
   const pending = retActionCount();
-  const PS0 = S.pay && S.pay.data && S.pay.data.sum; if (logged && S.authed) payMaybeLoad();
+  const PS0 = S.pay && S.pay.data && S.pay.data.sum; if (logged && S.authed && ROLE() !== 'depo') payMaybeLoad();
   const counts = {returns: pending, pay: PS0 ? PS0.lateN + PS0.todayN : 0};
-  const NAV = NAV_MAIN.filter(tabOk).map(id => TABS.find(t => t[0] === id)).filter(Boolean);
+  const NAV = (ROLE() === 'depo' ? ['stock','orders','addr','returns','questions'] : NAV_MAIN).filter(tabOk).map(id => TABS.find(t => t[0] === id)).filter(Boolean);
   // bilgisayarda bütün bölümler üst sekmede (telefonda alt çubukta 3 ana bölüm + sol menü)
   $('#tabs').innerHTML = TABS.filter(([id]) => id !== 'home' && tabOk(id)).map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
@@ -891,7 +891,7 @@ function renderDrawer(){
     ${item('home', 'Ana ekran')}
     ${grp('Satış')}${item('orders', 'Siparişler')}${item('addr', 'Adres düzeltme')}${item('returns', 'İadeler', 'returns', pending)}${item('questions', 'Sorular', 'questions', (S.sync.trendyol || {}).qnaWaiting || 0)}
     ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${ROLE() === 'izle' ? '' : btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
-    ${grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${!isAdmin() ? '' : btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
+    ${ROLE() === 'depo' ? '' : grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${!isAdmin() ? '' : btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
     ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
     ${grp('Ayarlar')}${ROLE() !== 'izle' ? `<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>` : ''}${isAdmin() ? btn('users-open', 'Kullanıcılar', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 010 6M21 20c0-2.6-1.6-4.8-4-5.6"/>') : ''}${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
     <div class="small muted" style="padding:14px 16px 6px">Sürüm: __BUILD_TIME__</div>

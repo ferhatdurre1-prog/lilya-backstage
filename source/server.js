@@ -2907,7 +2907,7 @@ function roleOk(role, path) {
   if (role === 'admin') return true;
   if (path.startsWith('/api/users')) return false;
   if (P_COMMON.has(path)) return true;
-  if (role === 'depo') return !P_DEPO_NO.has(path) && !path.startsWith('/api/expenses/') && !path.startsWith('/api/recurring/'); // depo: kâr ile ilgili olanlar hariç her şey
+  if (role === 'depo') return !P_DEPO_NO.has(path) && !/^\/api\/(expenses|recurring|pay|cari)\//.test(path); // depo: kâr ve para (Ödemelerim, Cariler) hariç her şey // depo: kâr ile ilgili olanlar hariç her şey
   if (role === 'izle') return P_READ.has(path);
   return false;
 }
