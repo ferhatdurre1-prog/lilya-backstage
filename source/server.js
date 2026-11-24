@@ -2897,6 +2897,8 @@ const P_DEPO = new Set(['/api/sync', '/api/products/lookup', '/api/products/scan
   '/api/orders/page', '/api/orders/get', '/api/orders/customer', '/api/orders/search', '/api/orders/cancel', '/api/orders/manual',
   '/api/shopify/status', '/api/surat/status', '/api/surat/ship', '/api/surat/unship', '/api/surat/printed', '/api/surat/track', '/api/surat/trackall', '/api/surat/live', '/api/surat/export', '/api/surat/exported', '/api/surat/mark', '/api/surat/report',
   '/api/shorder/create', '/api/shorder/products']);
+const P_DEPO_CONN = new Set(['/api/settings', '/api/export', '/api/restore', '/api/ingest/orders', '/api/ingest/products', '/api/shopify/push', '/api/shopify/products', '/api/shopify/sync', '/api/shopify/pause',
+  '/api/bk/status', '/api/bk/sample', '/api/bk/sync', '/api/surat/mode', '/api/surat/settings', '/api/surat/diag', '/api/surat/probe', '/api/surat/schema', '/api/surat/trackdiag', '/api/finance/sync', '/api/trendyol/products-now', '/api/desi/set', '/api/audit/start', '/api/audit/fix']); // Bağlantılar & yedek (depoya kapalı)
 const P_DEPO_NO = new Set(['/api/home', '/api/profit', '/api/reports', '/api/reports/products', '/api/reports/rebuild', '/api/orders/prof', '/api/orders/profdet', '/api/pricing', '/api/costs', '/api/costs/reset', '/api/ads', '/api/retcargo/analysis', '/api/undcargo/analysis', '/api/desi/status']);
 const P_READ = new Set(['/api/home', '/api/profit', '/api/orders/page', '/api/orders/get', '/api/orders/customer', '/api/orders/search', '/api/orders/prof', '/api/orders/profdet', '/api/reports', '/api/reports/products',
   '/api/pay/list', '/api/cari/list', '/api/cari/get', '/api/cari/merges', '/api/cari/imports', '/api/qna/list', '/api/shaddr/list', '/api/shaddr/transit', '/api/shaddr/shipped', '/api/srret/list',
@@ -2907,7 +2909,7 @@ function roleOk(role, path) {
   if (role === 'admin') return true;
   if (path.startsWith('/api/users')) return false;
   if (P_COMMON.has(path)) return true;
-  if (role === 'depo') return !P_DEPO_NO.has(path) && !/^\/api\/(expenses|recurring|pay|cari)\//.test(path); // depo: kâr ve para (Ödemelerim, Cariler) hariç her şey // depo: kâr ile ilgili olanlar hariç her şey
+  if (role === 'depo') return !P_DEPO_NO.has(path) && !P_DEPO_CONN.has(path) && !/^\/api\/(expenses|recurring|pay|cari|paytr|tycari|srcari)\//.test(path) && !/\/(connect2?|disconnect)$/.test(path); // depo: kâr ve para (Ödemelerim, Cariler) hariç her şey // depo: kâr ile ilgili olanlar hariç her şey
   if (role === 'izle') return P_READ.has(path);
   return false;
 }
