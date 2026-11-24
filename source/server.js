@@ -5771,7 +5771,7 @@ export default {
         return new Response('ok');
       }
       if (path === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { status: 200, headers: { 'content-type': 'text/plain' } });
-      if (path === '/api/kristal-bardak/order') { if (true) return new Response('Not found', { status: 404, headers: { 'cache-control': 'no-store' } }); // 24.11.2026: Kristal Bardak siparişleri artık Backstage'e alınmıyor
+      if (path === '/api/kristal-bardak/order') { if (true) return json({ ok: false, hata: 'yetkisiz' }, 401); /* 401: Apps Script tekrar denemez */ // 24.11.2026: Kristal Bardak siparişleri artık Backstage'e alınmıyor
         if (req.method !== 'POST') return json({ ok: false, hata: 'POST kullanılmalı' }, 405);
         const want = env.KB_WEBHOOK_SECRET, got = req.headers.get('x-kb-secret') || '';
         if (!want || !got || (await hmac('cmp', got)) !== (await hmac('cmp', want))) return json({ ok: false, hata: 'yetkisiz' }, 401);
