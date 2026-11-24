@@ -516,6 +516,10 @@ const ICONS = {
   out:'<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>'
 };
 const TABS = [['home','Ana ekran'],['stock','Stoklar'],['buy','Sipariş ver'],['cari','Cariler'],['orders','Siparişler'],['addr','Adres düzeltme'],['returns','İadeler'],['questions','Sorular'],['value','Stok değeri'],['pay','Ödemelerim'],['profit','Kâr'],['reports','Raporlar'],['moves','Hareketler']];
+/* Kullanıcı rolleri: yönetici her şey; depo = Stok, Siparişler, Kargo (adres düzeltme) + barkod; izle = her şeyi görür, değiştiremez */
+const ROLE = () => (S.me && S.me.role) || 'admin', isAdmin = () => ROLE() === 'admin', DEPO_TABS = ['stock','orders','addr'];
+const tabOk = (id) => ROLE() !== 'depo' || DEPO_TABS.includes(id);
+const ROLE_NAMES = {admin: 'Yönetici', depo: 'Depo', izle: 'Sadece görüntüleme'};
 const NAV_MAIN = ['stock','value','orders','pay','profit']; // alt çubukta görünenler; diğerleri sol menüde
 const TAB_SHORT = {questions:'Soru', addr:'Adres', buy:'Sipariş ver', reports:'Rapor', home:'Ana ekran', stock:'Stok', orders:'Sipariş', returns:'İade', value:'Değer', profit:'Kâr', moves:'Hareket', pay:'Ödemeler'};
 
@@ -551,7 +555,7 @@ async function refresh(force){
       if (!last || last.b !== d.build || Date.now() - last.t > 120000) { try { sessionStorage.setItem('lb_reload', JSON.stringify({b: d.build, t: Date.now()})); } catch(e) {} location.reload(); return; }
     }
     const nwKey = o => JSON.stringify(((o || {}).trendyol || {}).newOrders || null), nwChanged = nwKey(S.sync) !== nwKey(d.sync);
-    S.settings = d.settings || {}; S.sync = d.sync || S.sync; if (d.usage) S.usage = d.usage; S.skew = Date.parse(d.now) - Date.now();
+    if (d.me) S.me = d.me; S.settings = d.settings || {}; S.sync = d.sync || S.sync; if (d.usage) S.usage = d.usage; S.skew = Date.parse(d.now) - Date.now();
     if (!d.same) {
       S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); applySets(); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
       for (const k in S.loaded) S.loaded[k] = true;
@@ -772,12 +776,34 @@ async function offerFaceId(){
     try { await faceIdRegister(); toast('Face ID açıldı. Bir dahaki girişte yüzünle girebilirsin.'); } catch(e) { toast(e.name === 'NotAllowedError' ? 'Face ID kurulumu iptal edildi.' : errText(e), true); }
   } else { try { localStorage.setItem('lb_wa_skip', '1'); } catch(e) {} }
 }
+function sheetUsers(){
+  const D = S.sheet.data;
+  if (!D) { api('/api/users/list', {}).then(d => { if (S.sheet && S.sheet.type === 'users') { S.sheet.data = d; renderSheet(false); } }).catch(e => toast(errText(e), true)); return {title:'Kullanıcılar', body: loading()}; }
+  const fmt = (t) => t ? new Date(t).toLocaleString('tr-TR', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) : '—';
+  const opt = (cur) => Object.entries(ROLE_NAMES).map(([v, t]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${t}</option>`).join('');
+  return {title:'Kullanıcılar', body: `<div class="card"><h3 style="margin:0">Yeni kullanıcı</h3>
+    <form id="f-user" style="display:grid;gap:10px">
+      <label class="f">Kullanıcı adı<input class="input" id="us-name" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required></label>
+      <label class="f">Şifre (en az 6 karakter)<input class="input" id="us-pass" type="text" autocomplete="new-password" autocapitalize="none" required></label>
+      <label class="f">Rol<select class="input" id="us-role">${opt('depo')}</select></label>
+      <button class="btn primary" type="submit">Kullanıcı ekle</button></form>
+    <p class="muted small" style="margin:0"><b>Depo:</b> Stoklar (alış fiyatı görünmez), Siparişler, Kargo / adres düzeltme ve barkod. <b>Sadece görüntüleme:</b> her şeyi görür, hiçbir şeyi değiştiremez. <b>Yönetici:</b> her şey.</p></div>
+    <div class="card"><h3 style="margin:0">Kullanıcılar</h3><div class="list" style="box-shadow:none">${D.users.map(u => { const me = u.id === D.me; return `<div class="item" style="cursor:default${u.active ? '' : ';opacity:.6'}"><div class="main"><div class="ttl">${esc(u.name)}${me ? ' <span class="pill">sen</span>' : ''}${u.active ? '' : ' <span class="pill p-bad">kapalı</span>'}</div><div class="meta"><span>${esc(ROLE_NAMES[u.role] || u.role)}</span><span>son giriş ${esc(fmt(u.last_at))}</span>${u.passkeys ? `<span>Face ID: ${fmtN(u.passkeys)}</span>` : ''}</div>
+      ${me ? '' : `<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px"><select class="input" data-urole="${u.id}" aria-label="Rol" style="width:auto;padding:6px 8px">${opt(u.role)}</select><button class="btn sm" data-act="user-pass" data-id="${u.id}">Şifre sıfırla</button><button class="btn sm" data-act="user-act" data-id="${u.id}">${u.active ? 'Kapat' : 'Aç'}</button><button class="btn sm ghost" data-act="user-del" data-id="${u.id}">Sil</button></div>`}</div></div>`; }).join('')}</div>
+    <p class="muted small" style="margin:0">Rol değişince, şifre sıfırlanınca ya da kullanıcı kapatılınca o kişinin açık oturumları hemen kapanır.</p></div>`};
+}
+async function userUpdate(id, data, msg){ await run(async () => { await api('/api/users/update', {id, ...data}); toast(msg); if (S.sheet && S.sheet.type === 'users') { S.sheet.data = null; renderSheet(false); } }); }
 function sheetSecurity(){
   const L = S.sheet.list;
   if (!L) { api('/api/passkey/list', {}).then(d => { if (S.sheet && S.sheet.type === 'security') { S.sheet.list = d; renderSheet(false); } }).catch(() => {}); return {title:'Güvenlik', body: loading()}; }
   const fmt = (t) => t ? new Date(t).toLocaleString('tr-TR', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) : '—';
-  return {title:'Güvenlik', body: `<div class="card"><div class="spread"><div><div class="small muted">Kullanıcı adı</div><b>${esc(L.user || '—')}</b></div></div>
-    <p class="muted small" style="margin:0">Şifre, Cloudflare'deki uygulama şifresidir. Bir kez giriş yaptığın cihazda uygulama açık kalır, tekrar giriş istemez. Yeni bir cihazda ya da çıkış yaptıktan sonra giriş gerekir; Face ID kuruluysa yüzünle girebilirsin.</p></div>
+  return {title:'Güvenlik', body: `<div class="card"><div class="spread"><div><div class="small muted">Kullanıcı adı</div><b>${esc(L.user || '—')}</b></div><span class="pill">${esc(L.roleName || '')}</span></div>
+    <p class="muted small" style="margin:0">Bir kez giriş yaptığın cihazda uygulama açık kalır, tekrar giriş istemez. Yeni bir cihazda ya da çıkış yaptıktan sonra giriş gerekir; Face ID kuruluysa yüzünle girebilirsin.</p></div>
+    <div class="card"><h3 style="margin:0">Şifremi değiştir</h3><form id="f-mypass" style="display:grid;gap:10px">
+      <label class="f">Mevcut şifre<input class="input" id="mp-old" type="password" autocomplete="current-password" required></label>
+      <label class="f">Yeni şifre (en az 6 karakter)<input class="input" id="mp-new" type="password" autocomplete="new-password" required></label>
+      <button class="btn" type="submit">Şifreyi değiştir</button></form>
+      <p class="muted small" style="margin:0">Şifre değişince diğer cihazlardaki oturumların kapanır.</p></div>
     <div class="card"><h3 style="margin:0">Face ID</h3>
     ${L.items.length ? `<div class="list" style="box-shadow:none">${L.items.map(x => `<div class="item" style="cursor:default"><div class="ki" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)">🔐</div><div class="main"><div class="ttl">${esc(x.label || 'Cihaz')}</div><div class="meta"><span>Kuruldu ${esc(fmt(x.created_at))}</span><span>· Son giriş ${esc(fmt(x.used_at))}</span></div></div><div class="end"><button class="btn sm ghost" data-act="wa-del" data-id="${esc(x.id)}">Kaldır</button></div></div>`).join('')}</div>` : `<p class="muted small" style="margin:0">Henüz Face ID kurulmadı.</p>`}
     ${S.waOk ? `<button class="btn primary" data-act="wa-add">Bu cihazda Face ID'yi kur</button>` : `<p class="muted small" style="margin:0">Bu cihaz ya da tarayıcı Face ID / parmak izi girişini desteklemiyor.</p>`}</div>`};
@@ -834,15 +860,16 @@ function render(){
   S.dirty = false;
   const logged = S.authed === true;
   document.body.dataset.tab = logged ? S.tab : 'login';
-  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#q-lbl').hidden = !logged; $('#q-kyt').hidden = !logged; $('#hdr-actions').hidden = !logged; $('#burger').hidden = !logged;
+  $('#tabs').hidden = !logged; $('#bnav').hidden = !logged; $('#q-lbl').hidden = !logged; $('#q-kyt').hidden = !logged; $('#hdr-actions').hidden = !logged || !isAdmin(); $('#burger').hidden = !logged;
   if (S.authed === false) { $('#view').innerHTML = viewLogin(); setTimeout(() => { const i = $('#lg-pass'); if (i) i.focus(); }, 30); return; }
   if (S.authed === null) { $('#view').innerHTML = loading(); return; }
+  if (logged && !tabOk(S.tab)) S.tab = 'stock'; /* depo: izinli olmayan ekran açılmaz */
   const pending = retActionCount();
-  const PS0 = S.pay && S.pay.data && S.pay.data.sum; if (logged && S.authed) payMaybeLoad();
+  const PS0 = S.pay && S.pay.data && S.pay.data.sum; if (logged && S.authed && ROLE() !== 'depo') payMaybeLoad();
   const counts = {returns: pending, pay: PS0 ? PS0.lateN + PS0.todayN : 0};
-  const NAV = NAV_MAIN.map(id => TABS.find(t => t[0] === id)).filter(Boolean);
+  const NAV = NAV_MAIN.filter(tabOk).map(id => TABS.find(t => t[0] === id)).filter(Boolean);
   // bilgisayarda bütün bölümler üst sekmede (telefonda alt çubukta 3 ana bölüm + sol menü)
-  $('#tabs').innerHTML = TABS.filter(([id]) => id !== 'home').map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
+  $('#tabs').innerHTML = TABS.filter(([id]) => id !== 'home' && tabOk(id)).map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}>${label}${counts[id]?`<span class="cnt">${counts[id]}</span>`:''}</button>`).join('');
   $('#bnav').innerHTML = NAV.map(([id, label]) => `<button data-act="tab" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg>${TAB_SHORT[id]||label}${counts[id]?`<span class="dot">${counts[id]}</span>`:''}</button>`).join('');
   const a = document.activeElement, aid = a && a.id, sel = a && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const v = $('#view');
@@ -858,15 +885,15 @@ function renderDrawer(){
   const root = $('#drawer-root'); if (!S.drawer) { root.innerHTML = ''; return; }
   const pending = retActionCount();
   const svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`, grp = (t) => `<div class="dg">${t}</div>`, btn = (act, label, p) => `<button class="di" data-act="${act}">${svg(p)}${label}</button>`;
-  const item = (id, label, icon, cnt) => `<button class="di" data-act="dnav" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon||id]}</svg>${label}${cnt?`<span class="cnt">${cnt}</span>`:''}</button>`;
+  const item = (id, label, icon, cnt) => !tabOk(id) ? '' : `<button class="di" data-act="dnav" data-id="${id}" ${S.tab===id?'aria-current="page"':''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[icon||id]}</svg>${label}${cnt?`<span class="cnt">${cnt}</span>`:''}</button>`;
   root.innerHTML = `<div class="drawer-scrim" data-act="menu-close"></div><nav class="drawer" aria-label="Menü">
     <div class="dh"><div class="mark" aria-hidden="true">L</div><div class="brandtxt"><div class="eyebrow">Lilya Home</div><h1 style="font-size:20px">Backstage</h1></div></div>
     ${item('home', 'Ana ekran')}
     ${grp('Satış')}${item('orders', 'Siparişler')}${item('addr', 'Adres düzeltme')}${item('returns', 'İadeler', 'returns', pending)}${item('questions', 'Sorular', 'questions', (S.sync.trendyol || {}).qnaWaiting || 0)}
-    ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
-    ${grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
-    ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
-    ${grp('Ayarlar')}<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
+    ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${!isAdmin() ? '' : btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
+    ${ROLE() === 'depo' ? '' : grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${!isAdmin() ? '' : btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
+    ${ROLE() === 'depo' ? '' : grp('Kayıtlar')}${item('moves', 'Hareketler')}
+    ${grp('Ayarlar')}${isAdmin() ? `<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>` + btn('users-open', 'Kullanıcılar', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 010 6M21 20c0-2.6-1.6-4.8-4-5.6"/>') : ''}${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
     <div class="small muted" style="padding:14px 16px 6px">Sürüm: __BUILD_TIME__</div>
   </nav>`;
 }
@@ -2436,7 +2463,7 @@ ${p.set ? `<div id="p-set">${setCard(p)}</div>` : `    <div class="seg" role="gr
       <label class="f">Lilya ürün kodu<input class="input mono" id="pi-code" value="${esc(p.code || '')}" maxlength="30" autocomplete="off" placeholder="Örn. LH-0001"></label>
       <label class="f">Stok kodu (SKU)<input class="input mono" value="${esc(p.sku)}" disabled></label>
       <label class="f">Barkod<input class="input mono" id="pi-barcode" value="${esc(p.barcode)}"></label>
-      <label class="f">Birim alış fiyatı (TL)<input class="input num" id="pi-cost" inputmode="decimal" value="${p.cost!=null?esc(String(p.cost).replace('.',',')):''}" placeholder="Örn. 75,00"></label>
+      ${ROLE() === 'depo' ? '' : `<label class="f">Birim alış fiyatı (TL)<input class="input num" id="pi-cost" inputmode="decimal" value="${p.cost!=null?esc(String(p.cost).replace('.',',')):''}" placeholder="Örn. 75,00"></label>`}
       <label class="f">Düşük stok sınırı<input class="input num" id="pi-min" inputmode="numeric" value="${esc(p.min)}"></label>
       <label class="f">Ürün desi bilgisi (gerçek, örn. 0,36)<input class="input num" id="pi-desi" inputmode="decimal" value="${p.desiM != null ? esc(String(p.desiM).replace('.', ',')) : ''}" placeholder="${p.desiTy ? 'Trendyol paketlerinden: ~' + esc(String(p.desiTy).replace('.', ',')) : 'Örn. 0,36'}"></label>
       <label class="f">Tedarikçi linki <span class="muted">(drop yapılan sitedeki ürün sayfası; Alınacaklar'da 🔗 ile açılır)</span><input class="input" id="pi-buyurl" inputmode="url" value="${esc(p.buyUrl || '')}" placeholder="https://www.kartalistoc.com/..."></label>
@@ -2992,14 +3019,14 @@ async function submitMove(){
 async function submitInfo(){
   const p = S.products.get(S.sheet.id); if (!p) return;
   const name = $('#pi-name').value.trim(); if (!name) return toast('Ürün adı boş olamaz.', true);
-  const costRaw = $('#pi-cost').value.trim(), cost = costRaw ? num(costRaw) : null;
+  const costRaw = (($('#pi-cost') || {}).value || '').trim(), cost = costRaw ? num(costRaw) : null;
   if (costRaw && (!isFinite(cost) || cost < 0)) return toast('Alış fiyatını sayı olarak yaz. Örn. 75,50', true);
   const min = intOr($('#pi-min').value, NaN); if (!isFinite(min) || min < 0) return toast('Düşük stok sınırı 0 veya pozitif tam sayı olmalı.', true);
   const channels = [...document.querySelectorAll('input[name="pi-ch"]:checked')].map(i => i.value);
   const code = ($('#pi-code') || {}).value; if (code !== undefined && !code.trim()) return toast('Ürün kodu boş olamaz.', true);
   const dRaw = (($('#pi-desi') || {}).value || '').trim(), desi = dRaw ? num(dRaw) : null; if (dRaw && (!isFinite(desi) || desi < 0 || desi > 500)) return toast('Desiyi sayı olarak yaz. Örn. 0,36', true);
   const dChg = (desi || null) !== (p.desiM || null);
-  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), cost, min, channels, ...($('#pi-buyurl') ? {buyUrl: $('#pi-buyurl').value.trim()} : {}), ...(dChg ? {desi: desi || 0} : {}), ...(code !== undefined && code.trim() !== (p.code || '') ? {code} : {})}); await refresh(true); if (dChg) { profS().cache = {}; profS().key = ''; } toast('Ürün bilgileri kaydedildi.'); });
+  await run(async () => { await api('/api/products/info', {key:p.id, name, barcode:$('#pi-barcode').value.trim(), ...($('#pi-cost') ? {cost} : {}), min, channels, ...($('#pi-buyurl') ? {buyUrl: $('#pi-buyurl').value.trim()} : {}), ...(dChg ? {desi: desi || 0} : {}), ...(code !== undefined && code.trim() !== (p.code || '') ? {code} : {})}); await refresh(true); if (dChg) { profS().cache = {}; profS().key = ''; } toast('Ürün bilgileri kaydedildi.'); });
 }
 
 /* ============ Siparişler ============ */
@@ -4843,7 +4870,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts, fix1117:sheetFix1117, merges:sheetMerges}[sh.type];
+  const fn = {payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, users:sheetUsers, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts, fix1117:sheetFix1117, merges:sheetMerges}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -4987,6 +5014,10 @@ document.addEventListener('click', async e => {
     case 'wa-add': try { await faceIdRegister(); toast('Face ID kuruldu.'); if (S.sheet) { S.sheet.list = null; renderSheet(false); } } catch(e) { toast(e.name === 'NotAllowedError' ? 'İptal edildi.' : e.name === 'InvalidStateError' ? 'Bu cihazda Face ID zaten kurulu.' : errText(e), true); } break;
     case 'wa-del': if (await confirmBox('Bu cihazın Face ID girişi kaldırılsın mı?', 'Kaldır', true)) { await run(async () => { await api('/api/passkey/delete', {id}); try { localStorage.removeItem('lb_wa'); } catch(e) {} S.sheet.list = null; renderSheet(false); }); } break;
     case 'security': S.drawer = false; renderDrawer(); openSheet('security'); break;
+    case 'users-open': S.drawer = false; renderDrawer(); openSheet('users'); break;
+    case 'user-pass': { const u = ((S.sheet && S.sheet.data && S.sheet.data.users) || []).find(x => String(x.id) === id); if (!u) break; const pw = prompt(`${u.name} için yeni şifre (en az 6 karakter):`); if (!pw) break; await userUpdate(u.id, {password: pw}, `${u.name}: şifre değişti.`); break; }
+    case 'user-act': { const u = ((S.sheet && S.sheet.data && S.sheet.data.users) || []).find(x => String(x.id) === id); if (!u) break; if (u.active && !(await confirmBox(`<b>${esc(u.name)}</b> kapatılsın mı? Giriş yapamaz, açık oturumları kapanır.`, 'Kapat', true))) break; await userUpdate(u.id, {active: !u.active}, u.active ? `${u.name} kapatıldı.` : `${u.name} açıldı.`); break; }
+    case 'user-del': { const u = ((S.sheet && S.sheet.data && S.sheet.data.users) || []).find(x => String(x.id) === id); if (!u) break; if (!(await confirmBox(`<b>${esc(u.name)}</b> silinsin mi? Geri alınamaz.`, 'Sil', true))) break; await run(async () => { await api('/api/users/delete', {id: u.id}); toast(`${u.name} silindi.`); S.sheet.data = null; renderSheet(false); }); break; }
     case 'home-retry': homeMaybeLoad(true); render(); break;
     case 'home-losers': { const P = profS(); P.sub = 'losers'; P.focus = 'losers'; } setTab('profit'); break;
     case 'focus-exit': profS().focus = null; setTab('home'); break;
@@ -5564,7 +5595,7 @@ document.addEventListener('click', async e => {
     case 'resync-products': await run(async () => { let created = 0;
       for (let i = 0; i < 40; i++) { toast(`Trendyol ürün listesi taranıyor… (sayfa ${i * 2 + 1})`); const r = await api('/api/trendyol/products-now', {first: i === 0}); created += r.created || 0; if (r.finished) break; }
       await refresh(true); toast(created ? `Tarama bitti · ${fmtN(created)} yeni ürün eklendi.` : 'Tarama bitti · yeni ürün yok (ürün Trendyol\'da onaylı mı, stok kodu başka bir ürünle aynı mı?).'); }); break;
-    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
+    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; S.me = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
     case 'close': closeSheet(); break;
     case 'fix1117-ok': closeSheet(); api('/api/fix1117', {seen: 1}).catch(() => {}); break;
   }
@@ -5601,6 +5632,8 @@ document.addEventListener('submit', async e => {
   if (id === 'f-surat') { await run(async () => { await api('/api/surat/connect', {user: $('#sr-user').value, cari: $('#sr-cari').value, pass: $('#sr-pass').value, web: $('#sr-web').value, desi: $('#sr-desi').value}); S.surat = null; S.srEdit = false; renderSheet(false); toast('Sürat Kargo bilgileri kaydedildi.'); }); return; }
   if (id === 'f-srdesi') { await run(async () => { await api('/api/surat/settings', {desi: $('#sr-desi2').value}); S.surat = null; renderSheet(false); toast('Varsayılan desi kaydedildi.'); }); return; }
   if (id === 'f-adq') { const A = aS(); A.q = ($('#ad-q') || {}).value || ''; A.data = null; A.sent = null; render(); return; }
+  if (id === 'f-user') { await run(async () => { await api('/api/users/add', {name: $('#us-name').value, password: $('#us-pass').value, role: $('#us-role').value}); toast('Kullanıcı eklendi.'); S.sheet.data = null; renderSheet(false); }); return; }
+  if (id === 'f-mypass') { await run(async () => { await api('/api/me/password', {old: $('#mp-old').value, password: $('#mp-new').value}); toast('Şifren değişti.'); $('#mp-old').value = ''; $('#mp-new').value = ''; }); return; }
   if (id === 'f-login') {
     const btn = e.target.querySelector('button'); btn.disabled = true;
     try { if (S.logoutP) await S.logoutP; await api('/api/login', {username:$('#lg-user').value, password:$('#lg-pass').value}); S.authInfo = null; await afterLogin(); }
@@ -5667,6 +5700,7 @@ document.addEventListener('change', e => {
   if (t.classList && t.classList.contains('so-n') && S.sheet && S.sheet.mode !== 'in') { const x = S.sheet.items[Number(t.dataset.i)]; if (x) x.n = Math.max(1, Math.min(100000, parseInt(t.value, 10) || 1)); soList(); }
   if (t.id === 'so-pdf' && S.sheet) { S.sheet.pdf = t.checked; scanFocus(); }
   if (t.dataset && t.dataset.cost) saveCost(t);
+  if (t.dataset && t.dataset.urole) { const u = ((S.sheet && S.sheet.data && S.sheet.data.users) || []).find(x => String(x.id) === t.dataset.urole); if (u && u.role !== t.value) userUpdate(u.id, {role: t.value}, `${u.name}: rol ${ROLE_NAMES[t.value]} oldu.`); }
   if (t.id === 'imp-file') onImportFile(t.files[0]);
   if (t.id === 'ad-file' && t.files[0]) { importAds(t.files[0]); t.value = ''; }
   if (t.id === 'det-file' && t.files.length) { importDetails([...t.files]); t.value = ''; }

@@ -262,6 +262,8 @@ async function init0(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS recurring(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL, kind TEXT, start_day TEXT, end_day TEXT, created_at TEXT)').run();
   try { await env.DB.prepare('ALTER TABLE recurring ADD COLUMN brand TEXT').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS wa_creds(id TEXT PRIMARY KEY, jwk TEXT, counter INTEGER, created_at TEXT, used_at TEXT, label TEXT)').run();
+  try { await env.DB.prepare('ALTER TABLE wa_creds ADD COLUMN uid INTEGER').run(); } catch (e) {} // Face ID kaydının sahibi (kullanıcı)
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, hash TEXT, salt TEXT, role TEXT NOT NULL DEFAULT \'depo\', active INTEGER NOT NULL DEFAULT 1, ver INTEGER NOT NULL DEFAULT 1, created_at TEXT, last_at TEXT)').run(); // kullanıcılar: admin / depo / izle
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS ad_spend(day TEXT, channel TEXT, amount REAL, source TEXT, updated_at TEXT, PRIMARY KEY(day, channel))').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS fin_misc(id TEXT PRIMARY KEY, order_no TEXT, date TEXT, type TEXT, amount REAL, descr TEXT)').run();
   if (!(await env.DB.prepare(`SELECT 1 FROM settings WHERE k='mig_misc1'`).first())) {
@@ -2861,15 +2863,91 @@ async function hmac(secret, msg) {
 }
 // Oturum: bir kez giriş yapılan cihazda 120 gün açık kalır; kullandıkça kendiliğinden uzar
 const SESSION_MS = 120 * 86400000;
+/* Kullanıcılar ve roller (24.11.2026): her kişinin kendi adı/şifresi; oturum kullanıcıya bağlı.
+   Çerez: lb = uid.ver.exp.imza — kullanıcı kapatılınca, rolü ya da şifresi değişince (ver artar) açık oturumları düşer. */
+const ROLES = { admin: 'Yönetici', depo: 'Depo', izle: 'Sadece görüntüleme' };
 async function authed(req, env) {
   const c = req.headers.get('cookie') || ''; const m = c.match(/(?:^|;\s*)lb=([^;]+)/); if (!m) return false;
-  const [exp, sig] = decodeURIComponent(m[1]).split('.'); if (!exp || !sig || Number(exp) < Date.now()) return false;
-  return sig === await hmac(env.APP_PASSWORD, 'lb2:' + exp) ? Number(exp) : false;
+  const parts = decodeURIComponent(m[1]).split('.'); if (parts.length !== 4) return false; // eski (tek şifreli) oturum: yeniden giriş
+  const [id, ver, exp, sig] = parts; if (!(Number(exp) > Date.now())) return false;
+  if (sig !== await hmac(env.APP_PASSWORD, `lb3:${id}.${ver}.${exp}`)) return false;
+  const u = await env.DB.prepare('SELECT id, name, role, active, ver FROM users WHERE id=?1').bind(Number(id)).first();
+  if (!u || !u.active || String(u.ver) !== ver) return false;
+  return { exp: Number(exp), user: u };
 }
-async function loginCookie(env) {
-  const exp = Date.now() + SESSION_MS;
-  const v = exp + '.' + await hmac(env.APP_PASSWORD, 'lb2:' + exp);
+async function loginCookie(env, u) {
+  const exp = Date.now() + SESSION_MS, p = `${u.id}.${u.ver || 1}.${exp}`;
+  const v = p + '.' + await hmac(env.APP_PASSWORD, 'lb3:' + p);
   return `lb=${encodeURIComponent(v)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${Math.round(SESSION_MS / 1000)}`;
+}
+const PW_IT = 100000; // PBKDF2-SHA256
+async function pwHash(pw, saltB64) {
+  const salt = saltB64 ? b64u.dec(saltB64) : crypto.getRandomValues(new Uint8Array(16));
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(pw)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PW_IT }, k, 256);
+  return { salt: b64u.enc(salt), hash: b64u.enc(bits) };
+}
+async function pwCheck(pw, u) { if (!u || !u.hash || !u.salt || typeof pw !== 'string' || !pw) return false; const h = await pwHash(pw, u.salt); return (await hmac('cmp', h.hash)) === (await hmac('cmp', u.hash)); }
+const userName = (v) => String(v || '').trim().toLocaleLowerCase('tr-TR');
+const USER_RE = /^[a-z0-9çğıöşü._-]{3,32}$/;
+/* Rol izinleri (sunucuda): yönetici her şey; depo = Barkod, Stok, Sipariş, Kargo; izle = sadece okuma */
+const P_COMMON = new Set(['/api/state', '/api/me/password', '/api/passkey/register-options', '/api/passkey/register', '/api/passkey/list', '/api/passkey/delete', '/api/weather', '/api/market', '/api/img', '/api/surat/autotrack', '/api/fix1117']);
+const P_DEPO = new Set(['/api/sync', '/api/products/lookup', '/api/products/scan-index', '/api/stock', '/api/stock/in-bulk', '/api/stock/out-bulk', '/api/labels/pending', '/api/labels/mark', '/api/outlists/list', '/api/outlists/revert',
+  '/api/products', '/api/products/info', '/api/products/listings', '/api/products/pending',
+  '/api/orders/page', '/api/orders/get', '/api/orders/customer', '/api/orders/search', '/api/orders/cancel', '/api/orders/manual',
+  '/api/shopify/status', '/api/surat/status', '/api/surat/ship', '/api/surat/unship', '/api/surat/printed', '/api/surat/track', '/api/surat/trackall', '/api/surat/live', '/api/surat/export', '/api/surat/exported', '/api/surat/mark', '/api/surat/report',
+  '/api/shorder/create', '/api/shorder/products']);
+const P_READ = new Set(['/api/home', '/api/profit', '/api/orders/page', '/api/orders/get', '/api/orders/customer', '/api/orders/search', '/api/orders/prof', '/api/orders/profdet', '/api/reports', '/api/reports/products',
+  '/api/pay/list', '/api/cari/list', '/api/cari/get', '/api/cari/merges', '/api/cari/imports', '/api/qna/list', '/api/shaddr/list', '/api/shaddr/transit', '/api/shaddr/shipped', '/api/srret/list',
+  '/api/surat/status', '/api/shopify/status', '/api/products/listings', '/api/products/pending', '/api/products/merges', '/api/products/scan-index', '/api/products/lookup', '/api/pricing', '/api/audit',
+  '/api/tycari/recon', '/api/srcari/summary', '/api/srcari/recon', '/api/paytr/status', '/api/paytr/recon', '/api/bk/status', '/api/inspect/list', '/api/labels/pending', '/api/outlists/list',
+  '/api/purchase/list', '/api/purchase/get', '/api/buy/suppliers', '/api/desi/status', '/api/retcargo/analysis', '/api/undcargo/analysis', '/api/returns/reasons', '/api/shret/list']);
+function roleOk(role, path) {
+  if (role === 'admin') return true;
+  if (path.startsWith('/api/users')) return false;
+  if (P_COMMON.has(path)) return true;
+  if (role === 'depo') return P_DEPO.has(path) || path.startsWith('/api/shaddr/') || path.startsWith('/api/srret/');
+  if (role === 'izle') return P_READ.has(path);
+  return false;
+}
+function stripCost(v) { // depo: alış fiyatı / maliyet bilgisi gönderilmez
+  if (Array.isArray(v)) { for (const x of v) stripCost(x); return v; }
+  if (v && typeof v === 'object') { for (const k of Object.keys(v)) { if (k === 'cost' || k === 'costDate' || k === 'cost_date') delete v[k]; else stripCost(v[k]); } }
+  return v;
+}
+async function usersApi(env, path, body) {
+  const me = env.USER;
+  if (path === '/api/users/list') {
+    const { results } = await env.DB.prepare('SELECT u.id, u.name, u.role, u.active, u.created_at, u.last_at, (SELECT COUNT(*) FROM wa_creds w WHERE w.uid=u.id) passkeys FROM users u ORDER BY u.id').all();
+    return json({ ok: true, me: me.id, roles: ROLES, users: results });
+  }
+  if (path === '/api/users/add') {
+    const name = userName(body.name), role = ROLES[body.role] ? body.role : '', pw = String(body.password || '');
+    if (!USER_RE.test(name)) return bad('Kullanıcı adı 3-32 karakter olmalı; harf, rakam, nokta, tire kullanılabilir.');
+    if (!role) return bad('Rol seç.'); if (pw.length < 6) return bad('Şifre en az 6 karakter olmalı.');
+    if (await env.DB.prepare('SELECT 1 FROM users WHERE name=?1').bind(name).first()) return bad('Bu kullanıcı adı zaten var.');
+    const h = await pwHash(pw);
+    await env.DB.prepare('INSERT INTO users(name, hash, salt, role, active, ver, created_at) VALUES(?1,?2,?3,?4,1,1,?5)').bind(name, h.hash, h.salt, role, iso()).run();
+    return json({ ok: true });
+  }
+  const id = Number(body.id) || 0, u = id ? await env.DB.prepare('SELECT * FROM users WHERE id=?1').bind(id).first() : null;
+  if (!u) return bad('Kullanıcı bulunamadı.', 404);
+  const self = u.id === me.id;
+  if (path === '/api/users/update') {
+    const sets = [], vals = [];
+    if (body.role !== undefined) { if (!ROLES[body.role]) return bad('Rol geçersiz.'); if (self && body.role !== 'admin') return bad('Kendi yönetici yetkini kaldıramazsın.'); sets.push('role'); vals.push(body.role); }
+    if (body.active !== undefined) { if (self) return bad('Kendi hesabını kapatamazsın.'); sets.push('active'); vals.push(body.active ? 1 : 0); }
+    if (body.password !== undefined) { const pw = String(body.password || ''); if (pw.length < 6) return bad('Şifre en az 6 karakter olmalı.'); const h = await pwHash(pw); sets.push('hash', 'salt'); vals.push(h.hash, h.salt); }
+    if (!sets.length) return json({ ok: true });
+    await env.DB.prepare(`UPDATE users SET ${sets.map((c, i) => `${c}=?${i + 2}`).join(', ')}, ver=ver+${self ? 0 : 1} WHERE id=?1`).bind(id, ...vals).run(); // başkasının oturumları düşer
+    return json({ ok: true });
+  }
+  if (path === '/api/users/delete') {
+    if (self) return bad('Kendi hesabını silemezsin.');
+    await env.DB.batch([env.DB.prepare('DELETE FROM wa_creds WHERE uid=?1').bind(id), env.DB.prepare('DELETE FROM users WHERE id=?1').bind(id)]);
+    return json({ ok: true });
+  }
+  return bad('Bilinmeyen işlem.', 404);
 }
 /* ---------- Face ID / Touch ID: WebAuthn (passkey) ---------- */
 const b64u = {
@@ -3597,6 +3675,15 @@ async function api(req, env, path, ctx) {
   const method = req.method;
   const multipart = (req.headers.get('content-type') || '').includes('multipart/form-data');
   const body = method === 'POST' && !multipart ? await req.json().catch(() => ({})) : {};
+  if (env.ROLE === 'depo' && body && typeof body === 'object') { delete body.cost; } // depo alış fiyatı değiştiremez
+  if (path.startsWith('/api/users/')) return usersApi(env, path, body);
+  if (path === '/api/me/password') { // herkes kendi şifresini değiştirebilir (diğer cihazlardaki oturumları düşer)
+    const u = await env.DB.prepare('SELECT * FROM users WHERE id=?1').bind(env.USER.id).first(), pw = String(body.password || '');
+    if (!(await pwCheck(String(body.old || ''), u))) { await sleep(700); return bad('Mevcut şifre hatalı.'); }
+    if (pw.length < 6) return bad('Yeni şifre en az 6 karakter olmalı.');
+    const h = await pwHash(pw); await env.DB.prepare('UPDATE users SET hash=?2, salt=?3, ver=ver+1 WHERE id=?1').bind(u.id, h.hash, h.salt).run();
+    return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env, { ...u, ver: (u.ver || 1) + 1 }) });
+  }
   if (path === '/api/img') {
     // Ürün resmi aynı adresten verilir (etiket PDF'inde resim piksellerini okuyabilmek için); yalnızca ürün resmi sunucuları
     const u = new URL(req.url).searchParams.get('u') || ''; let h = ''; try { const x = new URL(u); h = x.protocol === 'https:' ? x.hostname : ''; } catch (e) {}
@@ -3606,6 +3693,7 @@ async function api(req, env, path, ctx) {
   }
   if (path === '/api/state') {
     const info = await syncInfo(env);
+    info.me = env.USER ? { name: env.USER.name, role: env.USER.role } : null;
     if (new URL(req.url).searchParams.get('rev') === info.rev) return json({ ...info, same: true });
     const [p, o, r, m] = await env.DB.batch([
       env.DB.prepare(`SELECT p.*, CASE WHEN EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key) THEN NOT EXISTS(SELECT 1 FROM listings l WHERE l.pkey=p.key AND COALESCE(l.passive,0)=0) ELSE (p.ty_passive=1 AND p.channels='["trendyol"]') END AS all_passive FROM products p ORDER BY p.name`),
@@ -3615,8 +3703,8 @@ async function api(req, env, path, ctx) {
     return json({ ...info, products: p.results.map(mapProduct), orders: o.results.map(mapOrder), returns: r.results.map(mapReturn), moves: m.results.map(mapMove) });
   }
   if (path === '/api/passkey/register-options') {
-    const user = await authUser(env) || 'lilya';
-    return json({ challenge: await waChallenge(env, 'reg'), rp: { name: 'Lilya Backstage', id: new URL(req.url).hostname }, user: { id: b64u.enc(new TextEncoder().encode('lb-' + user)), name: user, displayName: user }, exclude: (await env.DB.prepare('SELECT id FROM wa_creds').all()).results.map(r => r.id) });
+    const user = env.USER.name;
+    return json({ challenge: await waChallenge(env, 'reg'), rp: { name: 'Lilya Backstage', id: new URL(req.url).hostname }, user: { id: b64u.enc(new TextEncoder().encode('lb-' + user)), name: user, displayName: user }, exclude: (await env.DB.prepare('SELECT id FROM wa_creds WHERE uid=?1').bind(env.USER.id).all()).results.map(r => r.id) });
   }
   if (path === '/api/passkey/register') {
     try {
@@ -3629,12 +3717,12 @@ async function api(req, env, path, ctx) {
       const jwk = { kty: 'EC', crv: 'P-256', x: b64u.enc(k.get(-2)), y: b64u.enc(k.get(-3)), ext: true };
       await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
       const id = b64u.enc(info.credId);
-      await env.DB.prepare('INSERT OR REPLACE INTO wa_creds(id, jwk, counter, created_at, used_at, label) VALUES(?1,?2,?3,?4,NULL,?5)').bind(id, JSON.stringify(jwk), info.counter, iso(), String(body.label || 'iPhone').slice(0, 60)).run();
+      await env.DB.prepare('INSERT OR REPLACE INTO wa_creds(id, jwk, counter, created_at, used_at, label, uid) VALUES(?1,?2,?3,?4,NULL,?5,?6)').bind(id, JSON.stringify(jwk), info.counter, iso(), String(body.label || 'iPhone').slice(0, 60), env.USER.id).run();
       return json({ ok: true, id });
     } catch (e) { return bad('Face ID kurulamadı: ' + (e.message || e)); }
   }
-  if (path === '/api/passkey/list') return json({ user: await authUser(env), items: (await env.DB.prepare('SELECT id, label, created_at, used_at FROM wa_creds ORDER BY created_at DESC').all()).results });
-  if (path === '/api/passkey/delete') { if (body.all) await env.DB.prepare('DELETE FROM wa_creds').run(); else await env.DB.prepare('DELETE FROM wa_creds WHERE id=?1').bind(String(body.id || '')).run(); return json({ ok: true }); }
+  if (path === '/api/passkey/list') return json({ user: env.USER.name, role: env.USER.role, roleName: ROLES[env.USER.role] || '', items: (await env.DB.prepare('SELECT id, label, created_at, used_at FROM wa_creds WHERE uid=?1 ORDER BY created_at DESC').bind(env.USER.id).all()).results });
+  if (path === '/api/passkey/delete') { if (body.all) await env.DB.prepare('DELETE FROM wa_creds WHERE uid=?1').bind(env.USER.id).run(); else await env.DB.prepare('DELETE FROM wa_creds WHERE id=?1 AND uid=?2').bind(String(body.id || ''), env.USER.id).run(); return json({ ok: true }); }
   if (path === '/api/expenses/add' || path === '/api/expenses/update') {
     const name = String(body.name || '').trim().slice(0, 80), amount = Number(body.amount), day = String(body.day || trDay(Date.now())), kind = body.kind === 'gelir' ? 'gelir' : 'gider', brand = body.brand === 'kb' ? 'kb' : null;
     if (!name) return bad(kind === 'gelir' ? 'Gelir adını yaz.' : 'Gider adını yaz.');
@@ -5800,19 +5888,32 @@ export default {
       if (path === '/icon.svg' || path === '/apple-touch-icon.png') return new Response(ICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
       // Giriş ekranı bilgisi: kullanıcı adı belirlenmiş mi, Face ID kurulu mu
       if (path === '/api/auth/info') {
-        const user = await authUser(env); const n = await env.DB.prepare('SELECT COUNT(*) n FROM wa_creds').first();
-        return json({ hasUser: !!user, passkeys: (n && n.n) || 0, authed: !!(await authed(req, env)) });
+        const [n, nu] = await env.DB.batch([env.DB.prepare('SELECT COUNT(*) n FROM wa_creds'), env.DB.prepare('SELECT COUNT(*) n FROM users')]); const A = await authed(req, env);
+        return json({ hasUser: !!(nu.results[0].n || await authUser(env)), passkeys: n.results[0].n || 0, authed: !!A, me: A ? { name: A.user.name, role: A.user.role } : null });
       }
       if (path === '/api/login' && req.method === 'POST') {
         const b = await req.json().catch(() => ({}));
-        const name = String(b.username || '').trim().toLocaleLowerCase('tr-TR');
-        const passOk = typeof b.password === 'string' && (await hmac('cmp', b.password)) === (await hmac('cmp', env.APP_PASSWORD));
-        const user = await authUser(env);
+        const name = userName(b.username), pw = typeof b.password === 'string' ? b.password : '';
         if (!name) return bad('Kullanıcı adını yaz.');
-        if (!passOk || (user && user !== name)) { await sleep(900); return bad('Kullanıcı adı ya da şifre hatalı.', 401); }
-        if (!user) { if (!/^[a-z0-9çğıöşü._-]{3,32}$/.test(name)) return bad('Kullanıcı adı 3-32 karakter olmalı; harf, rakam, nokta, tire kullanılabilir.'); await setSetting(env, 'auth_user', name); }
-        await setSetting(env, 'auth_user_tag', await hmac(env.APP_PASSWORD, 'user-tag'));
-        return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
+        const master = !!pw && (await hmac('cmp', pw)) === (await hmac('cmp', env.APP_PASSWORD));
+        const nU = ((await env.DB.prepare('SELECT COUNT(*) n FROM users').first()) || {}).n || 0;
+        let u = null;
+        if (!nU) { // ilk kurulum: eski tek kullanıcı (uygulama şifresi) yönetici olur; şifresi aynı kalır
+          const legacy = await authUser(env);
+          if (!master || (legacy && legacy !== name)) { await sleep(900); return bad('Kullanıcı adı ya da şifre hatalı.', 401); }
+          if (!USER_RE.test(name)) return bad('Kullanıcı adı 3-32 karakter olmalı; harf, rakam, nokta, tire kullanılabilir.');
+          const h = await pwHash(pw);
+          await env.DB.prepare('INSERT INTO users(name, hash, salt, role, active, ver, created_at) VALUES(?1,?2,?3,\'admin\',1,1,?4)').bind(name, h.hash, h.salt, iso()).run();
+          u = await env.DB.prepare('SELECT * FROM users WHERE name=?1').bind(name).first();
+          await env.DB.batch([env.DB.prepare('UPDATE wa_creds SET uid=?1 WHERE uid IS NULL').bind(u.id), setStmt(env, 'auth_user', name), setStmt(env, 'auth_user_tag', await hmac(env.APP_PASSWORD, 'user-tag'))]);
+        } else {
+          u = await env.DB.prepare('SELECT * FROM users WHERE name=?1').bind(name).first();
+          const ok = u && u.active && ((await pwCheck(pw, u)) || (u.role === 'admin' && master)); // yönetici, Cloudflare'deki uygulama şifresiyle de girebilir (şifremi unuttum)
+          if (!ok) { await sleep(900); return bad('Kullanıcı adı ya da şifre hatalı.', 401); }
+          if (!u.hash) { const h = await pwHash(pw); await env.DB.prepare('UPDATE users SET hash=?2, salt=?3 WHERE id=?1').bind(u.id, h.hash, h.salt).run(); } // Face ID ile kurulmuş yönetici: ilk şifreli girişte şifresi kaydedilir
+        }
+        await env.DB.prepare('UPDATE users SET last_at=?2 WHERE id=?1').bind(u.id, iso()).run();
+        return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env, u) });
       }
       if (path === '/api/passkey/login-options' && req.method === 'POST') {
         const { results } = await env.DB.prepare('SELECT id FROM wa_creds').all();
@@ -5833,8 +5934,12 @@ export default {
           const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, derToRaw(b64u.dec(b.signature)), signed);
           if (!ok) throw new Error('İmza doğrulanamadı');
           if (info.counter && cred.counter && info.counter <= cred.counter) throw new Error('Kayıt kopyalanmış olabilir');
-          await env.DB.prepare('UPDATE wa_creds SET counter=?2, used_at=?3 WHERE id=?1').bind(cred.id, info.counter, iso()).run();
-          return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env) });
+          let u = cred.uid ? await env.DB.prepare('SELECT * FROM users WHERE id=?1').bind(cred.uid).first() : await env.DB.prepare(`SELECT * FROM users WHERE role='admin' AND active=1 ORDER BY id LIMIT 1`).first();
+          if (!u && !cred.uid) { const legacy = await authUser(env); // ilk kurulum Face ID ile: eski kullanıcı yönetici olur (şifresi uygulama şifresi)
+            if (legacy && !((await env.DB.prepare('SELECT COUNT(*) n FROM users').first()) || {}).n) { await env.DB.prepare('INSERT INTO users(name, role, active, ver, created_at) VALUES(?1,\'admin\',1,1,?2)').bind(legacy, iso()).run(); u = await env.DB.prepare('SELECT * FROM users WHERE name=?1').bind(legacy).first(); } }
+          if (!u || !u.active) throw new Error('Bu kullanıcı kapatılmış');
+          await env.DB.batch([env.DB.prepare('UPDATE wa_creds SET counter=?2, used_at=?3, uid=?4 WHERE id=?1').bind(cred.id, info.counter, iso(), u.id), env.DB.prepare('UPDATE users SET last_at=?2 WHERE id=?1').bind(u.id, iso())]);
+          return json({ ok: true }, 200, { 'set-cookie': await loginCookie(env, u) });
         } catch (e) { await sleep(600); return bad('Face ID girişi olmadı: ' + (e.message || e), 401); }
       }
       if (path === '/__run' && req.method === 'POST') {
@@ -5857,15 +5962,18 @@ export default {
       }
       if (path === '/api/logout') return json({ ok: true }, 200, { 'set-cookie': 'lb=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' });
       if (path.startsWith('/api/')) {
-        const exp = await authed(req, env);
-        if (!exp) return bad('Oturum gerekli.', 401);
+        const A = await authed(req, env);
+        if (!A) return bad('Oturum gerekli.', 401);
+        const exp = A.exp, role = A.user.role;
+        if (!roleOk(role, path)) return bad('Bu işlem için yetkin yok.', 403);
         if (SELF_ORIGIN !== url.origin) { SELF_ORIGIN = url.origin; ctx.waitUntil(getSetting(env, 'self_origin').then(v => v !== url.origin ? setSetting(env, 'self_origin', url.origin) : null).catch(() => {})); }
-        const uc = { n: 0 }; const envU = { ...env, DB: countingDB(env.DB, uc) };
-        const res = await api(req, envU, path, ctx);
+        const uc = { n: 0 }; const envU = { ...env, DB: countingDB(env.DB, uc), USER: A.user, ROLE: role };
+        let res = await api(req, envU, path, ctx);
+        if (role === 'depo' && (res.headers.get('content-type') || '').includes('application/json')) { try { const d = stripCost(await res.clone().json()); res = new Response(JSON.stringify(d), { status: res.status, headers: res.headers }); } catch (e) {} } // depo: alış fiyatları gizli
         USE.req++; USE.wr += uc.w || 0; USE.rd += uc.r || 0;
         if (Date.now() - USE.at > 60000) ctx.waitUntil(flushUsage(env).catch(() => {}));
         // Kullandıkça oturum uzar
-        if (exp - Date.now() < SESSION_MS - 86400000) { try { res.headers.append('set-cookie', await loginCookie(env)); } catch (e) {} }
+        if (exp - Date.now() < SESSION_MS - 86400000) { try { res.headers.append('set-cookie', await loginCookie(env, A.user)); } catch (e) {} }
         return res;
       }
       return new Response(APP_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' } });
