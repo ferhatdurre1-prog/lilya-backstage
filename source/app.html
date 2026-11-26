@@ -306,6 +306,18 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .scrim{position:fixed;inset:0;background:rgba(10,18,14,.42);z-index:40;display:flex;justify-content:flex-end}
 .sheet{background:var(--bg);width:min(560px,100%);height:100%;overflow-y:auto;box-shadow:var(--shadow);display:flex;flex-direction:column}
 .sheet[data-type="setq"]{width:100%}
+.sheet[data-type="bundle"]{width:100%}
+.sq-box{position:relative}
+.sq-badge{position:absolute;top:8px;left:8px;background:var(--orange,#f97316);color:#fff;font-weight:800;font-size:22px;line-height:1;padding:8px 12px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.sq-drop{font-size:13px;font-weight:600;color:var(--orange,#f97316)}
+.bn-lbl{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.bn-lbl .input{width:86px!important;font-size:22px;font-weight:800;text-align:center;padding:6px}
+.sheet[data-type="bundle"] .thumb{width:110px!important;height:110px!important;border-radius:12px!important;background:#fff}
+.sheet[data-type="bundle"] .thumb img{object-fit:contain}
+.sheet[data-type="bundle"] .item .ttl{font-size:15px}
+.bq-grid{display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start}
+.bq-set{position:sticky;top:8px;display:flex;flex-direction:column;gap:6px}
+@media (max-width:760px){.bq-grid{grid-template-columns:1fr}.bq-set{position:static;max-width:340px}.sheet[data-type="bundle"] .thumb{width:72px!important;height:72px!important}}
 .sq{display:grid;grid-template-columns:auto auto 1fr;gap:14px;align-items:start}
 .sq-eq{font-size:34px;font-weight:700;color:var(--muted,#888);align-self:center}
 .sq-comps{display:flex;flex-wrap:wrap;gap:12px}
@@ -2977,7 +2989,7 @@ function sheetSetQ(){
   const L = setCands();
   const rows = L.map(p => { const g = setGuess(p), ok = g.parts.length && g.items.length === g.parts.length;
     const comps = g.parts.length ? g.parts.map((pt, i) => { const x = g.items.find(it => it.i === i), c = x && S.products.get(x.key);
-      return c ? `<div class="sq-c">${sqImg(c, c.name)}<div class="small"><b>× ${fmtN(x.n)}</b> ${esc(c.name)}</div><div class="small muted mono">${esc(c.code || c.sku || '')} · stok ${fmtN(c.qty)}</div></div>`
+      return c ? `<div class="sq-c"><div class="sq-box">${sqImg(c, c.name)}<div class="sq-badge">× ${fmtN(x.n)}</div></div><div class="sq-drop">Sette ${fmtN(x.n)} adet · 1 set satılınca stoktan ${fmtN(x.n)} düşer</div><div class="small">${esc(c.name)}</div><div class="small muted mono">${esc(c.code || c.sku || '')} · stok ${fmtN(c.qty)}</div></div>`
                : `<div class="sq-c"><div class="sq-noimg sq-miss">“${esc(pt.label)}” için ürün bulunamadı</div></div>`; }).join('')
       : `<div class="sq-c"><div class="sq-noimg">Adından içerik çıkarılamadı; elle seç.</div></div>`;
     return `<div class="card" style="gap:10px;margin-bottom:12px">
@@ -2989,13 +3001,13 @@ function sheetSetQ(){
 }
 function sheetBundle(){
   const sh = S.sheet, p = S.products.get(sh.id); if (!p) return {title: 'Ürün bulunamadı', body: ''};
-  const rows = sh.items.map((it, i) => { const x = S.products.get(it.key); return `<div class="item" style="cursor:default">${thumb(x || {name: '?'})}<div class="main"><div class="ttl">${esc(x ? x.name : 'Silinmiş ürün')}</div><div class="meta"><span class="mono">${esc(x ? x.code || x.sku : '')}</span>${x ? `<span>· stok ${fmtN(x.qty)}</span>` : ''}</div></div><div class="end" style="display:flex;align-items:center;gap:6px"><span class="small muted">adet</span><input class="input num" data-bn="${i}" inputmode="numeric" value="${it.n}" style="width:64px"><button class="btn sm ghost" type="button" data-act="bundle-rm" data-id="${i}" aria-label="Çıkar">✕</button></div></div>`; }).join('');
+  const rows = sh.items.map((it, i) => { const x = S.products.get(it.key); return `<div class="item" style="cursor:default">${thumb(x || {name: '?'})}<div class="main"><div class="ttl">${esc(x ? x.name : 'Silinmiş ürün')}</div><div class="meta"><span class="mono">${esc(x ? x.code || x.sku : '')}</span>${x ? `<span>· stok ${fmtN(x.qty)}</span>` : ''}</div></div><div class="end" style="display:flex;align-items:center;gap:6px"><label class="bn-lbl"><span class="small" style="font-weight:600">Sette kaç adet</span><input class="input num" data-bn="${i}" inputmode="numeric" value="${it.n}"><span class="small muted">1 set satılınca bu kadar düşer</span></label><button class="btn sm ghost" type="button" data-act="bundle-rm" data-id="${i}" aria-label="Çıkar">✕</button></div></div>`; }).join('');
   const units = sh.items.reduce((a, x) => a + (Number(x.n) || 0), 0);
-  return {title: 'Set içeriği', sub: `<span class="muted">${esc(p.name)}</span>`, body: `
+  return {title: 'Set içeriği', sub: `<span class="muted">${esc(p.name)}</span>`, body: `<div class="bq-grid"><div class="bq-set">${sqImg(p, p.name)}<div class="small"><b>${esc(p.name)}</b></div><div class="small muted mono">${esc(p.code || p.sku || '')}</div></div><div>
     <div class="card" style="gap:8px"><p class="muted small" style="margin:0">Bu set satıldığında hangi üründen kaç adet düşsün? Ürünü ara, ekle, adedini yaz.</p>
       <input class="input" id="bq" placeholder="Ürün adı ya da kodu ile ara (ör. LH-0012)" autocomplete="off"><div class="list" id="bres" style="box-shadow:none"></div></div>${bundleSugg(sh)}
     <div class="card" style="gap:6px"><h3 style="margin:0">Setin içindekiler · <span id="b-units">${fmtN(units)}</span> parça</h3>${rows ? `<div class="list" style="box-shadow:none">${rows}</div>` : '<p class="muted small" style="margin:0">Henüz ürün eklenmedi.</p>'}</div>
-    <div class="row" style="margin-top:12px"><button class="btn primary" type="button" data-act="bundle-save">Seti kaydet</button>${p.set ? '<button class="btn ghost" type="button" data-act="bundle-clear" style="color:var(--bad)">Set olmaktan çıkar</button>' : ''}<button class="btn ghost" type="button" data-act="product" data-id="${esc(p.id)}">Vazgeç</button></div>`};
+    <div class="row" style="margin-top:12px"><button class="btn primary" type="button" data-act="bundle-save">Seti kaydet</button>${p.set ? '<button class="btn ghost" type="button" data-act="bundle-clear" style="color:var(--bad)">Set olmaktan çıkar</button>' : ''}<button class="btn ghost" type="button" data-act="${sh.back === 'setq' ? 'setq-open' : 'product'}" data-id="${esc(p.id)}">Vazgeç</button></div></div></div>`};
 }
 function bundleSugg(sh){ if (!sh.parts || !sh.parts.length) return '';
   const g = sh.parts.map(pt => { const L = setMatch(pt.label, sh, 3); return `<div style="margin-top:6px"><div class="small"><b>${esc(pt.label)}</b>${pt.n > 1 ? ` · ${fmtN(pt.n)} adet` : ''}</div>${L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<button class="item" type="button" data-act="bundle-add" data-id="${esc(x.id)}" data-n="${pt.n}">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code || x.sku)}</span><span>· stok ${fmtN(x.qty)}</span></div></div><div class="end"><span class="btn sm">Ekle</span></div></button>`).join('')}</div>` : '<p class="muted small" style="margin:2px 0">Benzer ürün bulunamadı; yukarıdan ara.</p>'}</div>`; }).join('');
