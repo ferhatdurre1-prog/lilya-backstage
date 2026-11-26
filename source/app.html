@@ -311,6 +311,9 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .sq-badge{position:absolute;top:8px;left:8px;background:var(--orange,#f97316);color:#fff;font-weight:800;font-size:22px;line-height:1;padding:8px 12px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.35)}
 .sq-x{position:absolute;top:8px;right:8px;width:34px;height:34px;border-radius:50%;border:0;background:rgba(0,0,0,.65);color:#fff;font-size:16px;cursor:pointer}.sq-x:hover{background:var(--bad)}
 .sq-add{cursor:pointer;font-size:18px;font-weight:700;background:transparent;color:var(--ink)}.sq-add:hover{border-color:var(--brand)}
+.sq-bar{position:sticky;bottom:10px;z-index:3;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;margin:12px 0 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.sq-chk{align-self:flex-start;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:10px;padding:6px 12px;font-size:20px;cursor:pointer}
+.card.sq-on{outline:3px solid var(--brand);outline-offset:-1px}
 .sq-qty{display:flex;align-items:center;gap:8px;margin-top:4px}.sq-qty b{font-size:22px;min-width:28px;text-align:center}.sq-qty .btn{font-size:18px;min-width:38px}
 .sq-drop{font-size:13px;font-weight:600;color:var(--orange,#f97316)}
 .bn-lbl{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
@@ -2997,12 +3000,15 @@ function sheetSetQ(){
       return c ? `<div class="sq-c"><div class="sq-box">${sqImg(c, c.name)}<button class="sq-x" type="button" data-act="sq-rm" data-id="${esc(p.id)}|${i}" aria-label="Setten çıkar" title="Setten çıkar">✕</button><div class="sq-badge">× ${fmtN(x.n)}</div></div><div class="sq-qty"><button class="btn sm" type="button" data-act="sq-n" data-id="${esc(p.id)}|${i}|-1" aria-label="Azalt" ${x.n <= 1 ? 'disabled' : ''}>−</button><b>${fmtN(x.n)}</b><button class="btn sm" type="button" data-act="sq-n" data-id="${esc(p.id)}|${i}|1" aria-label="Artır">+</button><span class="small muted">adet</span></div><div class="sq-drop">Sette ${fmtN(x.n)} adet · 1 set satılınca stoktan ${fmtN(x.n)} düşer</div><div class="small">${esc(c.name)}</div><div class="small muted mono">${esc(c.code || c.sku || '')} · stok ${fmtN(c.qty)}</div></div>`
                : `<div class="sq-c"><div class="sq-box"><div class="sq-noimg sq-miss">“${esc(pt.label)}” için ürün bulunamadı</div><button class="sq-x" type="button" data-act="sq-rm" data-id="${esc(p.id)}|${i}" aria-label="Çıkar" title="Çıkar">✕</button></div></div>`; }).join('') + `<div class="sq-c"><button class="sq-noimg sq-add" type="button" data-act="sq-add" data-id="${esc(p.id)}">＋<br>Ürün ekle</button>${g.removed ? `<button class="btn sm ghost" type="button" data-act="sq-undo" data-id="${esc(p.id)}">Çıkarılanları geri al (${fmtN(g.removed)})</button>` : ''}</div>`
       : `<div class="sq-c"><div class="sq-noimg">Adından içerik çıkarılamadı; elle seç.</div></div>`;
-    return `<div class="card" style="gap:10px;margin-bottom:12px">
+    const sel = S.sqSel && S.sqSel.has(p.id);
+    return `<div class="card${sel ? ' sq-on' : ''}" style="gap:10px;margin-bottom:12px">${ok ? `<button class="sq-chk" type="button" data-act="sq-sel" data-id="${esc(p.id)}" aria-pressed="${sel ? 'true' : 'false'}">${sel ? '☑' : '☐'} <span class="small">${sel ? 'Seçildi' : 'Toplu onay için seç'}</span></button>` : ''}
       <div class="sq"><div class="sq-set">${sqImg(p, p.name)}<div class="small"><b>${esc(p.name)}</b></div><div class="small muted"><span class="mono">${esc(p.code || p.sku)}</span>${p.createdAt ? ` · eklendi ${esc(String(p.createdAt).slice(0, 10).split('-').reverse().join('.'))}` : ''}</div></div>
         <div class="sq-eq">=</div>
         <div><div class="small muted" style="margin-bottom:6px">${ok ? 'Önerilen içerik:' : 'Eşleşme eksik:'}</div><div class="sq-comps">${comps}</div></div></div>
       <div class="row" style="gap:6px">${ok ? `<button class="btn primary" type="button" data-act="setq-ok" data-id="${esc(p.id)}">Onayla</button><button class="btn" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Hayır, elle seçeyim</button>` : `<button class="btn primary" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Elle seç</button>`}<button class="btn ghost" type="button" data-act="setq-no" data-id="${esc(p.id)}">Set değil</button></div></div>`; }).join('');
-  return {title: 'Set mi?', sub: `<span class="muted">${fmtN(L.length)} ürün</span>`, body: `<p class="muted small" style="margin:0 0 10px">Adından set olabileceği tahmin edilen ürünler (en yeni eklenen üstte). Backstage set adından içeriği eşleştirdi. <b>Onayla</b>: set kaydedilir. <b>Hayır, elle seçeyim</b>: içeriği sen seçersin. <b>Set değil</b>: bir daha sorulmaz.</p>` + (rows || '<p class="muted" style="margin:0">Sorulacak ürün kalmadı.</p>')};
+  const nSel = S.sqSel ? [...S.sqSel].filter(k => L.some(p => p.id === k)).length : 0;
+  const bar = `<div class="sq-bar"><b>${fmtN(nSel)} set seçili</b><button class="btn sm" type="button" data-act="sq-all">Eşleşmesi tam olanların hepsini seç</button><button class="btn sm ghost" type="button" data-act="sq-none" ${nSel ? '' : 'disabled'}>Seçimi temizle</button><button class="btn primary" type="button" data-act="sq-okall" ${nSel ? '' : 'disabled'}>Seçilenleri onayla${nSel ? ` (${fmtN(nSel)})` : ''}</button></div>`;
+  return {title: 'Set mi?', sub: `<span class="muted">${fmtN(L.length)} ürün</span>`, body: `<p class="muted small" style="margin:0 0 10px">Adından set olabileceği tahmin edilen ürünler (en yeni eklenen üstte). Backstage set adından içeriği eşleştirdi. <b>Onayla</b>: set kaydedilir. <b>Hayır, elle seçeyim</b>: içeriği sen seçersin. <b>Set değil</b>: bir daha sorulmaz.</p>` + (rows || '<p class="muted" style="margin:0">Sorulacak ürün kalmadı.</p>') + bar};
 }
 function sheetBundle(){
   const sh = S.sheet, p = S.products.get(sh.id); if (!p) return {title: 'Ürün bulunamadı', body: ''};
@@ -5106,6 +5112,17 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'setq-open': openSheet('setq', {}); break;
+    case 'sq-sel': { S.sqSel = S.sqSel || new Set(); S.sqSel.has(id) ? S.sqSel.delete(id) : S.sqSel.add(id); renderSheet(false); break; }
+    case 'sq-all': { S.sqSel = S.sqSel || new Set(); for (const p of setCands()) if (setGuess(p).ok) S.sqSel.add(p.id); renderSheet(false); break; }
+    case 'sq-none': S.sqSel = new Set(); renderSheet(false); break;
+    case 'sq-okall': { const keys = [...(S.sqSel || [])].filter(k => S.products.get(k)); if (!keys.length || b.disabled) break;
+      if (!(await confirmBox(`${fmtN(keys.length)} set, ekranda gördüğün içerik ve adetlerle kaydedilsin mi?`, 'Hepsini kaydet'))) break; b.disabled = true;
+      await run(async () => { let ok = 0; const bad = [];
+        for (const k of keys) { const p = S.products.get(k), g = p && setGuess(p); if (!g || !g.ok) { bad.push(`${p ? p.code || p.name : k}: eşleşme eksik`); continue; }
+          try { await api('/api/products/bundle', {key: k, items: g.items.map(x => ({key: x.key, n: x.n}))}); ok++; S.sqSel.delete(k); } catch (e) { bad.push(`${p.code || p.name}: ${errText(e)}`); } }
+        await refresh(true); renderSheet(false);
+        if (bad.length) toast(`${fmtN(ok)} set kaydedildi. Kaydedilemeyen ${fmtN(bad.length)}: ${bad.slice(0, 3).join(' · ')}${bad.length > 3 ? ' …' : ''}`, true); else toast(`${fmtN(ok)} set kaydedildi.`); });
+      b.disabled = false; break; }
     case 'sq-rm': { const [sid, ix] = String(id || '').split('|'); S.sqRm = S.sqRm || {}; S.sqRm[sid] = S.sqRm[sid] || {}; S.sqRm[sid][ix] = 1; renderSheet(false); break; }
     case 'sq-undo': { if (S.sqRm) delete S.sqRm[id]; renderSheet(false); break; }
     case 'sq-add': { const p = S.products.get(id); if (!p) break; const g = setGuess(p); openSheet('bundle', {id, items: g.items.map(x => ({key: x.key, n: x.n})), back: 'setq'}); setTimeout(() => { const i = $('#bq'); if (i) i.focus(); }, 60); break; }
