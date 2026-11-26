@@ -1955,7 +1955,7 @@ function buyLinks(p, sup){ const kartal = /kartal/i.test(String(sup || '')) || /
   if (kartal) return `<div style="margin-top:4px"><a class="btn sm ghost" href="https://www.google.com/search?q=${encodeURIComponent('site:kartalistoc.com ' + p.name)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔎 Kartal'da ara</a> <span class="small muted">linki ürün sayfasından bir kere gir, sonra doğrudan açılır</span></div>`;
   return ''; }
 /* Alınacaklar: stoksuz satışta satılıp eksiye düşenler + stoğu biten (tükenen) ürünler; tükenende önerilen adet 10 */
-const isOutP = p => !p.mto && !p.set && p.qty <= 0, needBuyP = p => (p.mto && p.qty < 0) || isOutP(p);
+const isOutP = p => !p.mto && !p.set && p.qty <= 0 && !p.hideOut, needBuyP = p => (p.mto && p.qty < 0) || isOutP(p);
 function buyRows(){ const B = bS(), q = trFold(B.q);
   return productsArr().filter(p => (B.all ? (p.mto || isOutP(p)) : needBuyP(p)) && (!q || trFold(`${p.name} ${p.code} ${p.sku}`).includes(q)))
     .map(p => { const sp = (B.sup || {})[p.id] || {}, out = isOutP(p), need = out ? Math.max(10, -p.qty) : Math.max(0, -p.qty);
@@ -2232,7 +2232,7 @@ function viewHome(){
   h += `<div class="card h-act"><h3 style="margin:0">Aksiyonlar</h3>${conn}<div class="act-grid">
     ${act('Aksiyon bekleyen iade', pendN, 'ret-tab', 'action', false, true)}
     ${act('Cevap bekleyen soru', (S.sync.trendyol || {}).qnaWaiting || 0, 'tab', 'questions', true, true)}
-    ${act('Tükenen ürün', ps.filter(p => p.qty <= 0 && !p.mto).length, 'home-stock', 'zero', true, true)}
+    ${act('Tükenen ürün', ps.filter(p => p.qty <= 0 && !p.mto && !p.hideOut).length, 'home-stock', 'zero', true, true)}
     ${act('Stoğu azalan', low, 'home-stock', 'low')}
   </div></div>`;
   // Kısayollar: sık kullanılan işlemler
@@ -2413,7 +2413,7 @@ function passiveArr(){ return [...S.products.values()].filter(p => p.passive && 
 function viewStock(){
   const ps = productsArr();
   const total = ps.filter(p => !p.set).reduce((n,p) => n + Math.max(0,p.qty), 0); // setler fiziksel stok değil, içindekiler sayılır
-  const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0 && !p.mto && !p.set).length, need = ps.filter(needBuyP);
+  const low = ps.filter(isLow).length, zero = ps.filter(p => p.qty <= 0 && !p.mto && !p.set && !p.hideOut).length, hid = ps.filter(p => p.hideOut && p.qty <= 0).length, need = ps.filter(needBuyP);
   const head = `<div class="spread"><div><h2 class="sec">Ortak depo stoğu</h2><p class="lead small">Her ürünün bir Lilya kodu (LH-…) var; Trendyol ve Shopify ilanları bu ürüne bağlanır ve tek stoğu paylaşır.</p></div>
     <div class="row"><button class="btn" data-act="ws-open">Kusurlu ürün düş</button><button class="btn" data-act="need-open">Alınacaklar${need.length ? ` <span class="pill p-warn">${fmtN(need.length)}</span>` : ''}</button><button class="btn" data-act="psel-mode">${S.psel ? 'Seçimi kapat' : 'Toplu seç'}</button>${(() => { const n = setCands().length; return `<button class="btn" data-act="setq-open">Set mi?${n ? ` <span class="pill p-warn">${fmtN(n)}</span>` : ''}</button>`; })()}<button class="btn" data-act="scanin-open">Barkodla giriş</button><button class="btn" data-act="scan-open">Barkodla çıkış</button><button class="btn" data-act="outl-open">Çıkış listeleri</button><button class="btn" data-act="pur-open">Alış faturası yükle</button><button class="btn" data-act="purl-open">Alış listeleri</button><button class="btn" data-act="plabel-all">Koli etiketleri</button><button class="btn" data-act="desi-xls">📥 Desi Excel'i indir</button><label class="btn" style="cursor:pointer">📤 Desi Excel'i yükle<input type="file" id="desi-file" accept=".xlsx,.xls,.csv" style="display:none"></label><button class="btn" data-act="match-open">Ürün eşleştir</button><button class="btn" data-act="merges-open">Son birleştirmeler</button><button class="btn primary" data-act="new-product"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Yeni ürün</button></div></div>
     <div class="kpis">
@@ -2426,14 +2426,14 @@ function viewStock(){
   if (!ps.length) return head + `<div class="panel empty"><h4>Depo henüz boş</h4><p>Trendyol bağlantısı kurulunca ürünler stok kodları ve görselleriyle kendiliğinden gelir. Eski uygulamanın yedeğini yükleyebilir ya da ürünleri tek tek ekleyebilirsin.</p><div class="row"><button class="btn primary" data-act="open-import">Bağlantılar &amp; yedek</button><button class="btn" data-act="new-product">Elle ürün ekle</button></div></div>`;
   const usedCh = [...new Set(ps.flatMap(p => p.channels))].filter(c => CHANNELS[c]);
   const tools = `<div class="toolbar"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="input" id="q" type="search" placeholder="Ürün adı, Lilya kodu, stok kodu veya barkod" value="${esc(S.q)}" aria-label="Ürün ara" autocomplete="off"></div></div>
-    <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen'],['mto','Stoksuz satış']].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
+    <div class="filters"><div class="chips">${[['all','Tümü'],['active','Aktif'],['low','Düşük stok'],['zero','Tükenen'],['mto','Stoksuz satış'],['hid',`Gizlenenler${hid ? ' · ' + fmtN(hid) : ''}`]].map(([id,l]) => `<button class="chip" data-act="filter" data-id="${id}" aria-pressed="${S.filter===id}">${l}</button>`).join('')}</div>
     <label class="sortsel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 8l4-4 4 4"/><path d="M17 20V4M13 16l4 4 4-4"/></svg><select id="psort" aria-label="Sırala">${[['code_asc','Ürün kodu: LH-0001 → son'],['code_desc','Ürün kodu: son → LH-0001'],['name_asc','İsim: A → Z'],['name_desc','İsim: Z → A'],['qty_desc','Stok: çoktan aza'],['qty_asc','Stok: azdan çoğa'],['value_desc','Stok değeri: yüksekten düşüğe'],['new','En yeni eklenen'],['updated','Son güncellenen']].map(([v,l]) => `<option value="${v}"${S.psort===v?' selected':''}>${l}</option>`).join('')}</select></label>
     ${usedCh.length > 1 ? `<div class="chips"><button class="chip" data-act="chf" data-id="" aria-pressed="${!S.ch}">Tüm kanallar</button>${usedCh.map(c => `<button class="chip" data-act="chf" data-id="${c}" aria-pressed="${S.ch===c}">${esc(CHANNELS[c].name)}</button>`).join('')}</div>` : ''}</div>`;
   return head + tools + (S.psel ? `<div class="rbulk" id="psel-bar">${pselBar()}</div>` : '') + `<div id="plist">${productList()}</div>`;
 }
 function filteredProducts(){
   const q = searchNorm(S.q.trim());
-  let ps = productsArr().filter(p => (!q || searchNorm(`${p.name} ${p.code} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || S.filter==='passive' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0 && !p.mto) || (S.filter==='mto' && p.mto)) && (!S.ch || p.channels.includes(S.ch)));
+  let ps = productsArr().filter(p => (!q || searchNorm(`${p.name} ${p.code} ${p.sku} ${p.barcode}`).includes(q)) && (S.filter==='all' || S.filter==='passive' || (S.filter==='active' && p.qty > 0) || (S.filter==='low' && isLow(p)) || (S.filter==='zero' && p.qty <= 0 && !p.mto && !p.hideOut) || (S.filter==='hid' && p.hideOut && p.qty <= 0) || (S.filter==='mto' && p.mto)) && (!S.ch || p.channels.includes(S.ch)));
   const byName = (a,b) => a.name.localeCompare(b.name, 'tr');
   const val = p => Math.max(0, p.qty) * (p.cost || 0);
   const SORTS = {
@@ -2464,7 +2464,7 @@ function productList(){
   const ps = filteredProducts();
   if (!ps.length) return `<div class="panel empty"><h4>Eşleşen ürün yok</h4><p>Aramayı ya da filtreyi değiştir.</p></div>`;
   const shown = ps.slice(0, 300);
-  return `<div class="list">${shown.map(p => `<div class="item" role="button" tabindex="0" data-act="${S.psel ? 'psel' : 'product'}" data-id="${esc(p.id)}" style="cursor:pointer;${S.psel ? 'grid-template-columns:auto auto 1fr auto' : ''}">${S.psel ? `<span class="rsel" aria-pressed="${S.psel.has(p.id)}"></span>` : ''}${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end" style="display:flex;align-items:center;gap:10px"><div style="text-align:right"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div>${p.code ? `<button class="btn sm" type="button" data-act="plabel" data-id="${esc(p.id)}" title="Koli barkodu bas (${esc(p.code)})" aria-label="Koli barkodu bas" style="padding:6px 8px;gap:4px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 5v14M7 5v14M10 5v14M14 5v14M17 5v14M20 5v14" stroke-width="1.6"/></svg><span class="hide-xs">Koli</span></button>` : ''}</div></div>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
+  return `<div class="list">${shown.map(p => `<div class="item" role="button" tabindex="0" data-act="${S.psel ? 'psel' : 'product'}" data-id="${esc(p.id)}" style="cursor:pointer;${S.psel ? 'grid-template-columns:auto auto 1fr auto' : ''}">${S.psel ? `<span class="rsel" aria-pressed="${S.psel.has(p.id)}"></span>` : ''}${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono" style="font-weight:600">${esc(p.code || p.sku)}</span>${p.channels.map(chBadge).join('')}</div></div><div class="end" style="display:flex;align-items:center;gap:10px"><div style="text-align:right"><div class="qty ${p.qty<0?'neg':''}">${fmtN(p.qty)}<small>adet</small></div>${stockPill(p)}</div>${S.filter === 'zero' && !S.psel ? `<button class="btn sm" type="button" data-act="hideout" data-id="${esc(p.id)}" title="Tükenen listesinden gizle">Gizle</button>` : S.filter === 'hid' && !S.psel ? `<button class="btn sm" type="button" data-act="showout" data-id="${esc(p.id)}" title="Tükenen listesine geri al">Göster</button>` : ''}${p.code ? `<button class="btn sm" type="button" data-act="plabel" data-id="${esc(p.id)}" title="Koli barkodu bas (${esc(p.code)})" aria-label="Koli barkodu bas" style="padding:6px 8px;gap:4px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 5v14M7 5v14M10 5v14M14 5v14M17 5v14M20 5v14" stroke-width="1.6"/></svg><span class="hide-xs">Koli</span></button>` : ''}</div></div>`).join('')}${ps.length>300?`<div class="more">İlk 300 ürün gösteriliyor · aramayla daralt</div>`:''}</div>`;
 }
 
 /* ============ Ürün sayfası ============ */
@@ -5112,6 +5112,8 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'setq-open': openSheet('setq', {}); break;
+    case 'hideout': case 'showout': { const p = S.products.get(id); if (!p || b.disabled) break; const on = act === 'hideout'; b.disabled = true;
+      await run(async () => { await api('/api/products/hideout', {keys: [id], on}); p.hideOut = on; render(); toast(on ? 'Gizlendi. Filtrelerdeki "Gizlenenler"den geri açabilirsin; stok gelince kendiliğinden görünür.' : 'Tükenen listesine geri alındı.'); }); b.disabled = false; break; }
     case 'sq-sel': { S.sqSel = S.sqSel || new Set(); S.sqSel.has(id) ? S.sqSel.delete(id) : S.sqSel.add(id); renderSheet(false); break; }
     case 'sq-all': { S.sqSel = S.sqSel || new Set(); for (const p of setCands()) if (setGuess(p).ok) S.sqSel.add(p.id); renderSheet(false); break; }
     case 'sq-every': { S.sqSel = S.sqSel || new Set(); for (const p of setCands()) S.sqSel.add(p.id); renderSheet(false); break; }
