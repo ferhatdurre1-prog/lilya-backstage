@@ -2956,10 +2956,17 @@ function setMatch(q, sh, max){ const qs = setWords(q); if (!qs.length) return []
 // Set adından içindekileri çıkar: "… Seti – 1 Adet Ayna ve 1 Adet Lamba" → [{label:'Ayna', n:1}, {label:'Lamba', n:1}]
 function setParts(name){ let t = String(name || ''); const m = t.split(/\s[–—-]\s/); t = m.length > 1 ? m.slice(1).join(' ') : t.split('|')[0];
   return t.split(/\s+ve\s+|\s*\+\s*|,|&/i).map(x => x.trim()).filter(Boolean).map(x => { const k = x.match(/^([0-9]+)\s*adet\s+/i); return {label: k ? x.slice(k[0].length) : x, n: k ? Math.max(1, Number(k[1])) : 1}; }).filter(x => setWords(x.label).length).slice(0, 8); }
+function setGuess(p){ const parts = setParts(p.name), sh = {id: p.id, items: []}, items = [];
+  parts.forEach((pt, i) => { const x = setMatch(pt.label, sh, 1)[0]; if (x) { sh.items.push({key: x.id}); items.push({key: x.id, n: pt.n, i}); } });
+  return {parts, items}; }
 function sheetSetQ(){
   const L = setCands();
-  const rows = L.map(p => `<div class="item" style="cursor:default">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.code || p.sku)}</span>${p.createdAt ? `<span>· eklendi ${esc(String(p.createdAt).slice(0, 10).split('-').reverse().join('.'))}</span>` : ''}</div></div><div class="end" style="display:flex;gap:6px"><button class="btn sm primary" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Evet, set</button><button class="btn sm" type="button" data-act="setq-no" data-id="${esc(p.id)}">Hayır</button></div></div>`).join('');
-  return {title: 'Set mi?', sub: `<span class="muted">${fmtN(L.length)} ürün</span>`, body: `<p class="muted small" style="margin:0 0 10px">Adından set olabileceği tahmin edilen ürünler (en yeni eklenen üstte). <b>Evet, set</b>: içindeki ürünleri seçersin, benzer adlı ürünler önerilir. <b>Hayır</b>: bir daha sorulmaz.</p>` + (rows ? `<div class="list" style="box-shadow:none">${rows}</div>` : '<p class="muted" style="margin:0">Sorulacak ürün kalmadı.</p>')};
+  const rows = L.map(p => { const g = setGuess(p), ok = g.parts.length && g.items.length === g.parts.length;
+    const prop = g.parts.length ? g.parts.map((pt, i) => { const x = g.items.find(it => it.i === i), c = x && S.products.get(x.key); return c ? `<div class="meta" style="gap:6px;align-items:center">${thumb(c)}<span><b>${esc(c.name)}</b> × ${fmtN(x.n)} <span class="mono">${esc(c.code || '')}</span></span></div>` : `<div class="meta" style="color:var(--bad)">“${esc(pt.label)}” için ürün bulunamadı</div>`; }).join('') : '<div class="meta muted">Adından içerik çıkarılamadı; elle seç.</div>';
+    return `<div class="card" style="gap:6px;margin-bottom:8px"><div class="spread" style="gap:8px">${thumb(p)}<div style="flex:1;min-width:0"><div class="ttl" style="font-weight:600">${esc(p.name)}</div><div class="small muted"><span class="mono">${esc(p.code || p.sku)}</span>${p.createdAt ? ` · eklendi ${esc(String(p.createdAt).slice(0, 10).split('-').reverse().join('.'))}` : ''}</div></div></div>
+      <div class="small muted" style="margin-top:2px">${ok ? 'Önerilen içerik:' : 'Eşleşme eksik:'}</div>${prop}
+      <div class="row" style="gap:6px;margin-top:4px">${ok ? `<button class="btn sm primary" type="button" data-act="setq-ok" data-id="${esc(p.id)}">Onayla</button><button class="btn sm" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Hayır, elle seçeyim</button>` : `<button class="btn sm primary" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Elle seç</button>`}<button class="btn sm ghost" type="button" data-act="setq-no" data-id="${esc(p.id)}">Set değil</button></div></div>`; }).join('');
+  return {title: 'Set mi?', sub: `<span class="muted">${fmtN(L.length)} ürün</span>`, body: `<p class="muted small" style="margin:0 0 10px">Adından set olabileceği tahmin edilen ürünler (en yeni eklenen üstte). Backstage set adından içeriği eşleştirdi. <b>Onayla</b>: set kaydedilir. <b>Hayır, elle seçeyim</b>: içeriği sen seçersin. <b>Set değil</b>: bir daha sorulmaz.</p>` + (rows || '<p class="muted" style="margin:0">Sorulacak ürün kalmadı.</p>')};
 }
 function sheetBundle(){
   const sh = S.sheet, p = S.products.get(sh.id); if (!p) return {title: 'Ürün bulunamadı', body: ''};
@@ -5063,6 +5070,8 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'setq-open': openSheet('setq', {}); break;
+    case 'setq-ok': { const p = S.products.get(id); if (!p || b.disabled) break; const g = setGuess(p); if (!g.parts.length || g.items.length !== g.parts.length) { toast('Eşleşme eksik; elle seç.', true); break; } b.disabled = true;
+      await run(async () => { await api('/api/products/bundle', {key: id, items: g.items.map(x => ({key: x.key, n: x.n}))}); await refresh(true); toast('Set kaydedildi.'); renderSheet(false); }); b.disabled = false; break; }
     case 'setq-no': { const p = S.products.get(id); if (!p) break; await run(async () => { await api('/api/products/setno', {keys: [id], on: true}); p.setNo = true; renderSheet(false); toast('Bir daha sorulmayacak.'); }); break; }
     case 'setq-yes': { const p = S.products.get(id); if (!p) break; openSheet('bundle', {id, items: [], back: 'setq', parts: setParts(p.name)}); break; }
     case 'bundle-edit': { const p = S.products.get(id); if (!p) break; openSheet('bundle', {id, items: (p.set || []).map(([k, n]) => ({key: k, n}))}); setTimeout(() => { const i = $('#bq'); if (i) i.focus(); }, 60); break; }
