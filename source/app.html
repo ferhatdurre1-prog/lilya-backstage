@@ -309,6 +309,7 @@ table.t tfoot td{font-weight:600;background:var(--surface-2);border-top:1px soli
 .sheet[data-type="bundle"]{width:100%}
 .sq-box{position:relative}
 .sq-badge{position:absolute;top:8px;left:8px;background:var(--orange,#f97316);color:#fff;font-weight:800;font-size:22px;line-height:1;padding:8px 12px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.sq-qty{display:flex;align-items:center;gap:8px;margin-top:4px}.sq-qty b{font-size:22px;min-width:28px;text-align:center}.sq-qty .btn{font-size:18px;min-width:38px}
 .sq-drop{font-size:13px;font-weight:600;color:var(--orange,#f97316)}
 .bn-lbl{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
 .bn-lbl .input{width:86px!important;font-size:22px;font-weight:800;text-align:center;padding:6px}
@@ -2983,13 +2984,14 @@ function setParts(name){ let t = String(name || ''); const m = t.split(/\s[–�
 const sqSrc = (p) => p && p.imageAsset ? '/_blob/' + p.imageAsset : (p && p.image && /^https?:\/\//.test(p.image) ? p.image : '');
 const sqImg = (p, alt) => { const u = sqSrc(p); return u ? `<img class="sq-img" alt="${esc(alt || '')}" loading="lazy" referrerpolicy="no-referrer" src="${esc(u)}" data-act="sq-zoom" data-id="${esc(u)}">` : `<div class="sq-noimg">Resim yok</div>`; };
 function setGuess(p){ const parts = setParts(p.name), sh = {id: p.id, items: []}, items = [];
-  parts.forEach((pt, i) => { const x = setMatch(pt.label, sh, 1)[0]; if (x) { sh.items.push({key: x.id}); items.push({key: x.id, n: pt.n, i}); } });
+  const ov = (S.sqOv || {})[p.id] || {};
+  parts.forEach((pt, i) => { const x = setMatch(pt.label, sh, 1)[0]; if (x) { sh.items.push({key: x.id}); items.push({key: x.id, n: ov[i] || pt.n, i}); } });
   return {parts, items}; }
 function sheetSetQ(){
   const L = setCands();
   const rows = L.map(p => { const g = setGuess(p), ok = g.parts.length && g.items.length === g.parts.length;
     const comps = g.parts.length ? g.parts.map((pt, i) => { const x = g.items.find(it => it.i === i), c = x && S.products.get(x.key);
-      return c ? `<div class="sq-c"><div class="sq-box">${sqImg(c, c.name)}<div class="sq-badge">× ${fmtN(x.n)}</div></div><div class="sq-drop">Sette ${fmtN(x.n)} adet · 1 set satılınca stoktan ${fmtN(x.n)} düşer</div><div class="small">${esc(c.name)}</div><div class="small muted mono">${esc(c.code || c.sku || '')} · stok ${fmtN(c.qty)}</div></div>`
+      return c ? `<div class="sq-c"><div class="sq-box">${sqImg(c, c.name)}<div class="sq-badge">× ${fmtN(x.n)}</div></div><div class="sq-qty"><button class="btn sm" type="button" data-act="sq-n" data-id="${esc(p.id)}|${i}|-1" aria-label="Azalt" ${x.n <= 1 ? 'disabled' : ''}>−</button><b>${fmtN(x.n)}</b><button class="btn sm" type="button" data-act="sq-n" data-id="${esc(p.id)}|${i}|1" aria-label="Artır">+</button><span class="small muted">adet</span></div><div class="sq-drop">Sette ${fmtN(x.n)} adet · 1 set satılınca stoktan ${fmtN(x.n)} düşer</div><div class="small">${esc(c.name)}</div><div class="small muted mono">${esc(c.code || c.sku || '')} · stok ${fmtN(c.qty)}</div></div>`
                : `<div class="sq-c"><div class="sq-noimg sq-miss">“${esc(pt.label)}” için ürün bulunamadı</div></div>`; }).join('')
       : `<div class="sq-c"><div class="sq-noimg">Adından içerik çıkarılamadı; elle seç.</div></div>`;
     return `<div class="card" style="gap:10px;margin-bottom:12px">
@@ -5101,6 +5103,8 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'setq-open': openSheet('setq', {}); break;
+    case 'sq-n': { const [sid, ix, d] = String(id || '').split('|'); const p = S.products.get(sid); if (!p) break; const g = setGuess(p), it = g.items.find(x => x.i === Number(ix)); if (!it) break;
+      S.sqOv = S.sqOv || {}; S.sqOv[sid] = S.sqOv[sid] || {}; S.sqOv[sid][ix] = Math.max(1, Math.min(1000, it.n + Number(d))); renderSheet(false); break; }
     case 'sq-zoom': { if (!id) break; const d = document.createElement('div'); d.className = 'sq-lb'; d.innerHTML = `<img alt="" referrerpolicy="no-referrer" src="${esc(id)}">`; d.addEventListener('click', () => d.remove()); document.body.appendChild(d); break; }
     case 'setq-ok': { const p = S.products.get(id); if (!p || b.disabled) break; const g = setGuess(p); if (!g.parts.length || g.items.length !== g.parts.length) { toast('Eşleşme eksik; elle seç.', true); break; } b.disabled = true;
       await run(async () => { await api('/api/products/bundle', {key: id, items: g.items.map(x => ({key: x.key, n: x.n}))}); await refresh(true); toast('Set kaydedildi.'); renderSheet(false); }); b.disabled = false; break; }
