@@ -3001,13 +3001,13 @@ function sheetSetQ(){
                : `<div class="sq-c"><div class="sq-box"><div class="sq-noimg sq-miss">“${esc(pt.label)}” için ürün bulunamadı</div><button class="sq-x" type="button" data-act="sq-rm" data-id="${esc(p.id)}|${i}" aria-label="Çıkar" title="Çıkar">✕</button></div></div>`; }).join('') + `<div class="sq-c"><button class="sq-noimg sq-add" type="button" data-act="sq-add" data-id="${esc(p.id)}">＋<br>Ürün ekle</button>${g.removed ? `<button class="btn sm ghost" type="button" data-act="sq-undo" data-id="${esc(p.id)}">Çıkarılanları geri al (${fmtN(g.removed)})</button>` : ''}</div>`
       : `<div class="sq-c"><div class="sq-noimg">Adından içerik çıkarılamadı; elle seç.</div></div>`;
     const sel = S.sqSel && S.sqSel.has(p.id);
-    return `<div class="card${sel ? ' sq-on' : ''}" style="gap:10px;margin-bottom:12px">${ok ? `<button class="sq-chk" type="button" data-act="sq-sel" data-id="${esc(p.id)}" aria-pressed="${sel ? 'true' : 'false'}">${sel ? '☑' : '☐'} <span class="small">${sel ? 'Seçildi' : 'Toplu onay için seç'}</span></button>` : ''}
+    return `<div class="card${sel ? ' sq-on' : ''}" style="gap:10px;margin-bottom:12px"><button class="sq-chk" type="button" data-act="sq-sel" data-id="${esc(p.id)}" aria-pressed="${sel ? 'true' : 'false'}">${sel ? '☑' : '☐'} <span class="small">${sel ? 'Seçildi' : 'Toplu işlem için seç'}</span></button>
       <div class="sq"><div class="sq-set">${sqImg(p, p.name)}<div class="small"><b>${esc(p.name)}</b></div><div class="small muted"><span class="mono">${esc(p.code || p.sku)}</span>${p.createdAt ? ` · eklendi ${esc(String(p.createdAt).slice(0, 10).split('-').reverse().join('.'))}` : ''}</div></div>
         <div class="sq-eq">=</div>
         <div><div class="small muted" style="margin-bottom:6px">${ok ? 'Önerilen içerik:' : 'Eşleşme eksik:'}</div><div class="sq-comps">${comps}</div></div></div>
       <div class="row" style="gap:6px">${ok ? `<button class="btn primary" type="button" data-act="setq-ok" data-id="${esc(p.id)}">Onayla</button><button class="btn" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Hayır, elle seçeyim</button>` : `<button class="btn primary" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Elle seç</button>`}<button class="btn ghost" type="button" data-act="setq-no" data-id="${esc(p.id)}">Set değil</button></div></div>`; }).join('');
   const nSel = S.sqSel ? [...S.sqSel].filter(k => L.some(p => p.id === k)).length : 0;
-  const bar = `<div class="sq-bar"><b>${fmtN(nSel)} set seçili</b><button class="btn sm" type="button" data-act="sq-all">Eşleşmesi tam olanların hepsini seç</button><button class="btn sm ghost" type="button" data-act="sq-none" ${nSel ? '' : 'disabled'}>Seçimi temizle</button><button class="btn primary" type="button" data-act="sq-okall" ${nSel ? '' : 'disabled'}>Seçilenleri onayla${nSel ? ` (${fmtN(nSel)})` : ''}</button></div>`;
+  const bar = `<div class="sq-bar"><b>${fmtN(nSel)} set seçili</b><button class="btn sm" type="button" data-act="sq-all">Eşleşmesi tam olanların hepsini seç</button><button class="btn sm ghost" type="button" data-act="sq-none" ${nSel ? '' : 'disabled'}>Seçimi temizle</button><button class="btn primary" type="button" data-act="sq-okall" ${nSel ? '' : 'disabled'}>Seçilenleri onayla${nSel ? ` (${fmtN(nSel)})` : ''}</button><button class="btn" type="button" data-act="sq-noall" ${nSel ? '' : 'disabled'}>Seçilenler set değil${nSel ? ` (${fmtN(nSel)})` : ''}</button></div>`;
   return {title: 'Set mi?', sub: `<span class="muted">${fmtN(L.length)} ürün</span>`, body: `<p class="muted small" style="margin:0 0 10px">Adından set olabileceği tahmin edilen ürünler (en yeni eklenen üstte). Backstage set adından içeriği eşleştirdi. <b>Onayla</b>: set kaydedilir. <b>Hayır, elle seçeyim</b>: içeriği sen seçersin. <b>Set değil</b>: bir daha sorulmaz.</p>` + (rows || '<p class="muted" style="margin:0">Sorulacak ürün kalmadı.</p>') + bar};
 }
 function sheetBundle(){
@@ -5115,6 +5115,10 @@ document.addEventListener('click', async e => {
     case 'sq-sel': { S.sqSel = S.sqSel || new Set(); S.sqSel.has(id) ? S.sqSel.delete(id) : S.sqSel.add(id); renderSheet(false); break; }
     case 'sq-all': { S.sqSel = S.sqSel || new Set(); for (const p of setCands()) if (setGuess(p).ok) S.sqSel.add(p.id); renderSheet(false); break; }
     case 'sq-none': S.sqSel = new Set(); renderSheet(false); break;
+    case 'sq-noall': { const keys = [...(S.sqSel || [])].filter(k => S.products.get(k)); if (!keys.length || b.disabled) break;
+      if (!(await confirmBox(`${fmtN(keys.length)} ürün "set değil" olarak işaretlensin mi? Listeden düşer ve bir daha sorulmaz.`, 'Set değil'))) break; b.disabled = true;
+      await run(async () => { await api('/api/products/setno', {keys, on: true}); for (const k of keys) { const p = S.products.get(k); if (p) p.setNo = true; S.sqSel.delete(k); } renderSheet(false); toast(`${fmtN(keys.length)} ürün set değil olarak işaretlendi.`); });
+      b.disabled = false; break; }
     case 'sq-okall': { const keys = [...(S.sqSel || [])].filter(k => S.products.get(k)); if (!keys.length || b.disabled) break;
       if (!(await confirmBox(`${fmtN(keys.length)} set, ekranda gördüğün içerik ve adetlerle kaydedilsin mi?`, 'Hepsini kaydet'))) break; b.disabled = true;
       await run(async () => { let ok = 0; const bad = [];
