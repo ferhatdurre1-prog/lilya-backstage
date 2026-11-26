@@ -2944,6 +2944,18 @@ function setCands(){ const comps = new Set(); for (const p of S.products.values(
 function setBase(name){ let t = String(name || '').split('|')[0].toLocaleLowerCase('tr-TR');
   t = t.replace(/(^|[^0-9])([0-9]+)\s*['’`]?\s*(li|lı|lu|lü|lik|lık|luk|lük|adet|parça|parca|par[cç]al[ıi])(?![a-zçğıöşü])/g, '$1 ').replace(/(^|[^a-zçğıöşü])(set|seti|setleri|tak[ıi]m|tak[ıi]m[ıi])(?![a-zçğıöşü])/g, '$1 ');
   return purNorm(t).filter(w => !/^[0-9]+$/.test(w)).slice(0, 3).join(' '); }
+const SET_STOP = new Set(['lilya', 'home', 'adet', 'set', 'seti', 'setleri', 'takım', 'takımı', 'takim', 'parça', 'parca', 've', 'ile', 'için', 'icin', 'li', 'lı', 'lu', 'lü', 'lik', 'lık', 'renk', 'renkli']);
+const setWords = (t) => purNorm(t).filter(w => !SET_STOP.has(w) && !/^[0-9]+$/.test(w) && !/^[0-9]+(li|lı|lu|lü)$/.test(w));
+const SET_WORD_RX = /(^|[^a-zçğıöşü])(set|seti|setleri|tak[ıi]m|tak[ıi]m[ıi])(?![a-zçğıöşü])/;
+// Sete girebilecek ürünler içinde arama: marka/sayı/“set” kelimeleri sayılmaz; en az yarısı tutmalı
+function setMatch(q, sh, max){ const qs = setWords(q); if (!qs.length) return [];
+  const used = new Set((sh && sh.items || []).map(i => i.key));
+  return productsArr().concat(passiveArr()).filter(x => !x.merged && !x.set && (!sh || x.id !== sh.id) && !used.has(x.id) && !SET_WORD_RX.test(String(x.name || '').toLocaleLowerCase('tr-TR')))
+    .map(x => { const w = setWords(x.name); let n = 0; for (const t of qs) if (w.includes(t) || w.some(y => t.length >= 4 && (y.startsWith(t) || t.startsWith(y) && y.length >= 4))) n++; return {x, n, sc: n / qs.length}; })
+    .filter(r => r.n >= 1 && r.sc >= 0.5).sort((a, b) => b.sc - a.sc || b.n - a.n).slice(0, max || 8).map(r => r.x); }
+// Set adından içindekileri çıkar: "… Seti – 1 Adet Ayna ve 1 Adet Lamba" → [{label:'Ayna', n:1}, {label:'Lamba', n:1}]
+function setParts(name){ let t = String(name || ''); const m = t.split(/\s[–—-]\s/); t = m.length > 1 ? m.slice(1).join(' ') : t.split('|')[0];
+  return t.split(/\s+ve\s+|\s*\+\s*|,|&/i).map(x => x.trim()).filter(Boolean).map(x => { const k = x.match(/^([0-9]+)\s*adet\s+/i); return {label: k ? x.slice(k[0].length) : x, n: k ? Math.max(1, Number(k[1])) : 1}; }).filter(x => setWords(x.label).length).slice(0, 8); }
 function sheetSetQ(){
   const L = setCands();
   const rows = L.map(p => `<div class="item" style="cursor:default">${thumb(p)}<div class="main"><div class="ttl">${esc(p.name)}</div><div class="meta"><span class="mono">${esc(p.code || p.sku)}</span>${p.createdAt ? `<span>· eklendi ${esc(String(p.createdAt).slice(0, 10).split('-').reverse().join('.'))}</span>` : ''}</div></div><div class="end" style="display:flex;gap:6px"><button class="btn sm primary" type="button" data-act="setq-yes" data-id="${esc(p.id)}">Evet, set</button><button class="btn sm" type="button" data-act="setq-no" data-id="${esc(p.id)}">Hayır</button></div></div>`).join('');
@@ -2955,13 +2967,17 @@ function sheetBundle(){
   const units = sh.items.reduce((a, x) => a + (Number(x.n) || 0), 0);
   return {title: 'Set içeriği', sub: `<span class="muted">${esc(p.name)}</span>`, body: `
     <div class="card" style="gap:8px"><p class="muted small" style="margin:0">Bu set satıldığında hangi üründen kaç adet düşsün? Ürünü ara, ekle, adedini yaz.</p>
-      <input class="input" id="bq" placeholder="Ürün adı ya da kodu ile ara (ör. LH-0012)" autocomplete="off"><div class="list" id="bres" style="box-shadow:none"></div></div>
+      <input class="input" id="bq" placeholder="Ürün adı ya da kodu ile ara (ör. LH-0012)" autocomplete="off"><div class="list" id="bres" style="box-shadow:none"></div></div>${bundleSugg(sh)}
     <div class="card" style="gap:6px"><h3 style="margin:0">Setin içindekiler · <span id="b-units">${fmtN(units)}</span> parça</h3>${rows ? `<div class="list" style="box-shadow:none">${rows}</div>` : '<p class="muted small" style="margin:0">Henüz ürün eklenmedi.</p>'}</div>
     <div class="row" style="margin-top:12px"><button class="btn primary" type="button" data-act="bundle-save">Seti kaydet</button>${p.set ? '<button class="btn ghost" type="button" data-act="bundle-clear" style="color:var(--bad)">Set olmaktan çıkar</button>' : ''}<button class="btn ghost" type="button" data-act="product" data-id="${esc(p.id)}">Vazgeç</button></div>`};
 }
+function bundleSugg(sh){ if (!sh.parts || !sh.parts.length) return '';
+  const g = sh.parts.map(pt => { const L = setMatch(pt.label, sh, 3); return `<div style="margin-top:6px"><div class="small"><b>${esc(pt.label)}</b>${pt.n > 1 ? ` · ${fmtN(pt.n)} adet` : ''}</div>${L.length ? `<div class="list" style="box-shadow:none">${L.map(x => `<button class="item" type="button" data-act="bundle-add" data-id="${esc(x.id)}" data-n="${pt.n}">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code || x.sku)}</span><span>· stok ${fmtN(x.qty)}</span></div></div><div class="end"><span class="btn sm">Ekle</span></div></button>`).join('')}</div>` : '<p class="muted small" style="margin:2px 0">Benzer ürün bulunamadı; yukarıdan ara.</p>'}</div>`; }).join('');
+  return `<div class="card" style="gap:4px"><h3 style="margin:0">Öneriler (set adından)</h3>${g}</div>`; }
 function bundleSearch(){ const sh = S.sheet, box = $('#bres'), q = ($('#bq') || {}).value || ''; if (!box || !sh) return;
   if (!q.trim()) { box.innerHTML = ''; return; }
-  const L = purCands(q).filter(x => x.id !== sh.id && !x.set && !sh.items.some(i => i.key === x.id));
+  const Q = q.trim().toUpperCase(), byCode = productsArr().concat(passiveArr()).filter(x => x.code && Q.length >= 3 && x.code.toUpperCase().includes(Q) && x.id !== sh.id && !x.set && !sh.items.some(i => i.key === x.id));
+  const L = [...new Map([...byCode, ...setMatch(q, sh, 8)].map(x => [x.id, x])).values()].slice(0, 10);
   box.innerHTML = L.length ? L.map(x => `<button class="item" type="button" data-act="bundle-add" data-id="${esc(x.id)}">${thumb(x)}<div class="main"><div class="ttl">${esc(x.name)}</div><div class="meta"><span class="mono">${esc(x.code || x.sku)}</span><span>· stok ${fmtN(x.qty)}</span></div></div><div class="end"><span class="btn sm">Ekle</span></div></button>`).join('') : '<p class="muted small" style="margin:6px 0">Eşleşen ürün yok.</p>'; }
 function sheetMatch(){
   const sh = S.sheet;
@@ -5048,9 +5064,9 @@ document.addEventListener('click', async e => {
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'setq-open': openSheet('setq', {}); break;
     case 'setq-no': { const p = S.products.get(id); if (!p) break; await run(async () => { await api('/api/products/setno', {keys: [id], on: true}); p.setNo = true; renderSheet(false); toast('Bir daha sorulmayacak.'); }); break; }
-    case 'setq-yes': { const p = S.products.get(id); if (!p) break; openSheet('bundle', {id, items: [], back: 'setq'}); setTimeout(() => { const i = $('#bq'); if (i) { i.value = setBase(p.name); bundleSearch(); i.focus(); } }, 60); break; }
+    case 'setq-yes': { const p = S.products.get(id); if (!p) break; openSheet('bundle', {id, items: [], back: 'setq', parts: setParts(p.name)}); break; }
     case 'bundle-edit': { const p = S.products.get(id); if (!p) break; openSheet('bundle', {id, items: (p.set || []).map(([k, n]) => ({key: k, n}))}); setTimeout(() => { const i = $('#bq'); if (i) i.focus(); }, 60); break; }
-    case 'bundle-add': { const sh = S.sheet; if (!sh || sh.type !== 'bundle') break; sh.items.push({key: id, n: 1}); renderSheet(false); setTimeout(() => { const i = $('#bq'); if (i) { i.value = ''; i.focus(); } const n = $(`[data-bn="${sh.items.length - 1}"]`); if (n) n.select(); }, 30); break; }
+    case 'bundle-add': { const sh = S.sheet; if (!sh || sh.type !== 'bundle') break; sh.items.push({key: id, n: Math.max(1, Number(b.dataset.n) || 1)}); renderSheet(false); setTimeout(() => { const i = $('#bq'); if (i) { i.value = ''; i.focus(); } const n = $(`[data-bn="${sh.items.length - 1}"]`); if (n) n.select(); }, 30); break; }
     case 'bundle-rm': { const sh = S.sheet; if (!sh) break; sh.items.splice(Number(id), 1); renderSheet(false); break; }
     case 'bundle-save': case 'bundle-clear': { const sh = S.sheet; if (!sh) break; const clear = b.dataset.act === 'bundle-clear'; const items = clear ? [] : sh.items.filter(x => Number(x.n) > 0);
       if (!clear && !items.length) { toast('Sete en az bir ürün ekle.', true); break; }
