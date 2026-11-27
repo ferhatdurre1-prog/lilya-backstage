@@ -568,6 +568,12 @@ function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0
 const PERF = (() => { try { return JSON.parse(localStorage.getItem('lb-perf') || '[]'); } catch(e) { return []; } })(); let perfT = 0;
 function perfRec(path, ms, len, st){ PERF.push({p: String(path).split('?')[0], ms: Math.round(ms), kb: Math.round(len / 1024), st, t: Date.now(), tab: S.tab || ''}); if (PERF.length > 600) PERF.splice(0, PERF.length - 600);
   if (!perfT) perfT = setTimeout(() => { perfT = 0; try { localStorage.setItem('lb-perf', JSON.stringify(PERF)); } catch(e) {} }, 3000); }
+function sheetTicker(){ const T = (S.settings && S.settings.ticker) || {}, m = S.sheet.mode || T.mode || 'only';
+  return {title: 'Dönen yazı', sub: '<span class="muted">Sadece yönetici görür</span>', body: `<div class="card" style="gap:10px"><label class="small" for="tk-text"><b>Yazı</b> (boş bırakırsan bant sadece uyarıları gösterir)</label><input class="input" id="tk-text" maxlength="200" value="${esc(S.sheet.text !== undefined ? S.sheet.text : (T.text || ''))}" placeholder="Bantta dönecek yazı">
+    <div class="chips" role="radiogroup" aria-label="Gösterim">${[['only', 'Sadece benim yazım dönsün'], ['mix', 'Yazım + uyarılar birlikte']].map(([v, t]) => `<button class="chip" type="button" data-act="tk-mode" data-id="${v}" aria-pressed="${m === v}">${t}</button>`).join('')}</div>
+    <div class="row" style="gap:8px"><button class="btn primary" type="button" data-act="tk-save">Kaydet</button><button class="btn ghost" type="button" data-act="tk-clear">Yazıyı kaldır</button></div></div>`}; }
+// Bant (dönen yazı) üzerine 2 sn içinde 5 kez dokununca: yönetici için yazı ayarı
+{ let n = 0, t0 = 0; document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('#ticker')) return; const now = Date.now(); if (now - t0 > 2000) n = 0; if (!n) t0 = now; n++; if (n >= 5) { n = 0; if (isAdmin()) openSheet('ticker', {}); } }, true); }
 function sheetPerf(){ const G = new Map(); for (const x of PERF) { const g = G.get(x.p) || {p: x.p, a: [], kb: 0, last: 0, err: 0}; g.a.push(x.ms); g.kb = Math.max(g.kb, x.kb); g.last = Math.max(g.last, x.t); if (!(x.st >= 200 && x.st < 400)) g.err++; G.set(x.p, g); }
   const q = (a, f) => { const b = [...a].sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(b.length * f))]; }, sec = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' sn', col = ms => ms > 3000 ? 'var(--bad)' : ms > 1000 ? 'var(--orange,#f97316)' : 'var(--good)';
   const L = [...G.values()].map(g => ({...g, n: g.a.length, med: q(g.a, .5), p90: q(g.a, .9), max: Math.max(...g.a)})).sort((a, b) => b.med - a.med);
@@ -684,7 +690,7 @@ function renderAlerts(){
   if (old) A.push(['orders-new', 'bad', 'Geç kalıyor', `${fmtN(old)} sipariş 1 günden eski`]);
   if (zero) A.push(['home-stock', '', 'Stoğu biten ürün', fmtN(zero)]);
   if (sr) A.push(['tab', nw.srStuck ? 'bad' : '', 'Sürat takip no bekleyen', fmtN(sr) + (nw.srStuck ? ` (${fmtN(nw.srStuck)} tanesi 1 günden eski)` : '')]);
-  A.length = 0; A.push(['note', '', '', 'ŞEROOOOOOO İBAN AT']); // geçici: bantta sadece bu not döner (silinince uyarılar geri gelir)
+  const TK = (S.settings && S.settings.ticker) || {}; if (TK.text) { if (TK.mode !== 'mix') A.length = 0; A.unshift(['note', '', '', TK.text]); } // yöneticinin yazısı (banda 5 kez dokun)
   const key = JSON.stringify(A); if (key === alertKey && !el.hidden) return; alertKey = key;
   const id = (a) => a[0] === 'home-stock' ? 'zero' : a[0] === 'tab' ? 'addr' : a[0] === 'questions' || a[0] === 'returns' ? a[0] : '';
   const act = (a) => a[0] === 'questions' || a[0] === 'returns' ? 'tab' : a[0];
@@ -4969,7 +4975,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {perf:sheetPerf, setq:sheetSetQ, payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, users:sheetUsers, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts, fix1117:sheetFix1117, merges:sheetMerges}[sh.type];
+  const fn = {ticker:sheetTicker, perf:sheetPerf, setq:sheetSetQ, payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, users:sheetUsers, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts, fix1117:sheetFix1117, merges:sheetMerges}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -5133,6 +5139,9 @@ document.addEventListener('click', async e => {
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
     case 'perf-open': openSheet('perf', {}); break;
+    case 'tk-mode': { const i = $('#tk-text'); S.sheet.text = i ? i.value : S.sheet.text; S.sheet.mode = id; renderSheet(false); break; }
+    case 'tk-save': case 'tk-clear': { const i = $('#tk-text'), text = act === 'tk-clear' ? '' : (i ? i.value : ''), mode = S.sheet.mode || ((S.settings.ticker || {}).mode) || 'only';
+      await run(async () => { const r = await api('/api/ticker', {text, mode}); S.settings.ticker = {text: r.text, mode: r.mode}; alertKey = ''; renderAlerts(); closeSheetForce(); toast(r.text ? 'Dönen yazı kaydedildi.' : 'Yazı kaldırıldı; bant uyarıları gösteriyor.'); }); break; }
     case 'perf-clear': PERF.length = 0; try { localStorage.removeItem('lb-perf'); } catch(e) {} renderSheet(false); break;
     case 'setq-open': openSheet('setq', {}); break;
     case 'hideout': case 'showout': { const p = S.products.get(id); if (!p || b.disabled) break; const on = act === 'hideout'; b.disabled = true;
