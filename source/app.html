@@ -394,6 +394,7 @@ body[data-tab="home"] .act-grid .act .l{font-size:10px;line-height:1.2}body[data
 .skel{height:64px;border-top:1px solid var(--line);background:linear-gradient(90deg,var(--surface) 0%,var(--surface-2) 50%,var(--surface) 100%);background-size:200% 100%;animation:sk 1.4s infinite}
 @keyframes sk{to{background-position:-200% 0}}
 .ticker{overflow:hidden;margin:-4px 0 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:12px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent)}
+.ticker{touch-action:manipulation;-webkit-user-select:none;user-select:none}
 .ticker .rail{display:flex;width:max-content;animation:tick var(--dur,40s) linear infinite}
 .ticker:active .rail{animation-play-state:paused}
 .ticker .ti{display:flex;align-items:baseline;gap:6px;padding:8px 14px;white-space:nowrap;font-size:13px;border-right:1px solid rgba(255,255,255,.12)}
@@ -573,7 +574,7 @@ function sheetTicker(){ const T = (S.settings && S.settings.ticker) || {}, m = S
     <div class="chips" role="radiogroup" aria-label="Gösterim">${[['only', 'Sadece benim yazım dönsün'], ['mix', 'Yazım + uyarılar birlikte']].map(([v, t]) => `<button class="chip" type="button" data-act="tk-mode" data-id="${v}" aria-pressed="${m === v}">${t}</button>`).join('')}</div>
     <div class="row" style="gap:8px"><button class="btn primary" type="button" data-act="tk-save">Kaydet</button><button class="btn ghost" type="button" data-act="tk-clear">Yazıyı kaldır</button></div></div>`}; }
 // Bant (dönen yazı) üzerine 2 sn içinde 3 kez dokununca: yönetici için yazı ayarı
-{ let n = 0, t0 = 0; document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('#ticker')) return; const now = Date.now(); if (now - t0 > 2000) n = 0; if (!n) t0 = now; n++; if (n >= 3) { n = 0; if (isAdmin()) openSheet('ticker', {}); } }, true); }
+{ let n = 0, t0 = 0; document.addEventListener('pointerdown', e => { if (!e.target.closest || !e.target.closest('#ticker')) return; const now = Date.now(); if (now - t0 > 2000) n = 0; if (!n) t0 = now; n++; if (n >= 3) { n = 0; if (isAdmin()) openSheet('ticker', {}); } }, true); }
 function sheetPerf(){ const G = new Map(); for (const x of PERF) { const g = G.get(x.p) || {p: x.p, a: [], kb: 0, last: 0, err: 0}; g.a.push(x.ms); g.kb = Math.max(g.kb, x.kb); g.last = Math.max(g.last, x.t); if (!(x.st >= 200 && x.st < 400)) g.err++; G.set(x.p, g); }
   const q = (a, f) => { const b = [...a].sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(b.length * f))]; }, sec = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' sn', col = ms => ms > 3000 ? 'var(--bad)' : ms > 1000 ? 'var(--orange,#f97316)' : 'var(--good)';
   const L = [...G.values()].map(g => ({...g, n: g.a.length, med: q(g.a, .5), p90: q(g.a, .9), max: Math.max(...g.a)})).sort((a, b) => b.med - a.med);
