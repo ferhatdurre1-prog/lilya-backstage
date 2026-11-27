@@ -14,6 +14,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS products_barcode ON products(barcode)`,
   `CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY, channel TEXT, order_no TEXT, date TEXT, status TEXT, source TEXT, baseline INTEGER NOT NULL DEFAULT 0, lines TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS orders_date ON orders(date)`,
+  `CREATE INDEX IF NOT EXISTS orders_no_ch ON orders(order_no, channel)`, // iade/finans sorguları sipariş no ile arar (dizinsiz tüm tabloyu tarıyordu)
   `CREATE TABLE IF NOT EXISTS returns(id TEXT PRIMARY KEY, channel TEXT, order_no TEXT, order_id TEXT, line_key TEXT, pkey TEXT, sku TEXT, name TEXT, qty INTEGER, status TEXT, source TEXT, note TEXT, ext_status TEXT, created_at TEXT, decided_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS returns_created ON returns(created_at)`,
   `CREATE TABLE IF NOT EXISTS moves(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, pkey TEXT, sku TEXT, name TEXT, delta INTEGER, after INTEGER, type TEXT, channel TEXT, ref TEXT, note TEXT)`,
