@@ -572,8 +572,8 @@ function sheetTicker(){ const T = (S.settings && S.settings.ticker) || {}, m = S
   return {title: 'Dönen yazı', sub: '<span class="muted">Sadece yönetici görür</span>', body: `<div class="card" style="gap:10px"><label class="small" for="tk-text"><b>Yazı</b> (boş bırakırsan bant sadece uyarıları gösterir)</label><input class="input" id="tk-text" maxlength="200" value="${esc(S.sheet.text !== undefined ? S.sheet.text : (T.text || ''))}" placeholder="Bantta dönecek yazı">
     <div class="chips" role="radiogroup" aria-label="Gösterim">${[['only', 'Sadece benim yazım dönsün'], ['mix', 'Yazım + uyarılar birlikte']].map(([v, t]) => `<button class="chip" type="button" data-act="tk-mode" data-id="${v}" aria-pressed="${m === v}">${t}</button>`).join('')}</div>
     <div class="row" style="gap:8px"><button class="btn primary" type="button" data-act="tk-save">Kaydet</button><button class="btn ghost" type="button" data-act="tk-clear">Yazıyı kaldır</button></div></div>`}; }
-// Bant (dönen yazı) üzerine 2 sn içinde 5 kez dokununca: yönetici için yazı ayarı
-{ let n = 0, t0 = 0; document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('#ticker')) return; const now = Date.now(); if (now - t0 > 2000) n = 0; if (!n) t0 = now; n++; if (n >= 5) { n = 0; if (isAdmin()) openSheet('ticker', {}); } }, true); }
+// Bant (dönen yazı) üzerine 2 sn içinde 3 kez dokununca: yönetici için yazı ayarı
+{ let n = 0, t0 = 0; document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('#ticker')) return; const now = Date.now(); if (now - t0 > 2000) n = 0; if (!n) t0 = now; n++; if (n >= 3) { n = 0; if (isAdmin()) openSheet('ticker', {}); } }, true); }
 function sheetPerf(){ const G = new Map(); for (const x of PERF) { const g = G.get(x.p) || {p: x.p, a: [], kb: 0, last: 0, err: 0}; g.a.push(x.ms); g.kb = Math.max(g.kb, x.kb); g.last = Math.max(g.last, x.t); if (!(x.st >= 200 && x.st < 400)) g.err++; G.set(x.p, g); }
   const q = (a, f) => { const b = [...a].sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(b.length * f))]; }, sec = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' sn', col = ms => ms > 3000 ? 'var(--bad)' : ms > 1000 ? 'var(--orange,#f97316)' : 'var(--good)';
   const L = [...G.values()].map(g => ({...g, n: g.a.length, med: q(g.a, .5), p90: q(g.a, .9), max: Math.max(...g.a)})).sort((a, b) => b.med - a.med);
@@ -690,7 +690,7 @@ function renderAlerts(){
   if (old) A.push(['orders-new', 'bad', 'Geç kalıyor', `${fmtN(old)} sipariş 1 günden eski`]);
   if (zero) A.push(['home-stock', '', 'Stoğu biten ürün', fmtN(zero)]);
   if (sr) A.push(['tab', nw.srStuck ? 'bad' : '', 'Sürat takip no bekleyen', fmtN(sr) + (nw.srStuck ? ` (${fmtN(nw.srStuck)} tanesi 1 günden eski)` : '')]);
-  const TK = (S.settings && S.settings.ticker) || {}; if (TK.text) { if (TK.mode !== 'mix') A.length = 0; A.unshift(['note', '', '', TK.text]); } // yöneticinin yazısı (banda 5 kez dokun)
+  const TK = (S.settings && S.settings.ticker) || {}; if (TK.text) { if (TK.mode !== 'mix') A.length = 0; A.unshift(['note', '', '', TK.text]); } // yöneticinin yazısı (banda 3 kez dokun)
   const key = JSON.stringify(A); if (key === alertKey && !el.hidden) return; alertKey = key;
   const id = (a) => a[0] === 'home-stock' ? 'zero' : a[0] === 'tab' ? 'addr' : a[0] === 'questions' || a[0] === 'returns' ? a[0] : '';
   const act = (a) => a[0] === 'questions' || a[0] === 'returns' ? 'tab' : a[0];
