@@ -564,12 +564,31 @@ const S = {
 function initialTab(){ const h=(location.hash||'').slice(1); if(TABS.some(t=>t[0]===h)) return h; try{ const t=sessionStorage.getItem('lb-tab'); if(TABS.some(x=>x[0]===t)) return t; }catch(e){} return 'home'; }
 
 /* ============ Sunucu ============ */
+// ---- Hız ölçümü: her isteğin süresi bu cihazda tutulur (sunucuya gitmez) ----
+const PERF = (() => { try { return JSON.parse(localStorage.getItem('lb-perf') || '[]'); } catch(e) { return []; } })(); let perfT = 0;
+function perfRec(path, ms, len, st){ PERF.push({p: String(path).split('?')[0], ms: Math.round(ms), kb: Math.round(len / 1024), st, t: Date.now(), tab: S.tab || ''}); if (PERF.length > 600) PERF.splice(0, PERF.length - 600);
+  if (!perfT) perfT = setTimeout(() => { perfT = 0; try { localStorage.setItem('lb-perf', JSON.stringify(PERF)); } catch(e) {} }, 3000); }
+function sheetPerf(){ const G = new Map(); for (const x of PERF) { const g = G.get(x.p) || {p: x.p, a: [], kb: 0, last: 0, err: 0}; g.a.push(x.ms); g.kb = Math.max(g.kb, x.kb); g.last = Math.max(g.last, x.t); if (!(x.st >= 200 && x.st < 400)) g.err++; G.set(x.p, g); }
+  const q = (a, f) => { const b = [...a].sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(b.length * f))]; }, sec = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' sn', col = ms => ms > 3000 ? 'var(--bad)' : ms > 1000 ? 'var(--orange,#f97316)' : 'var(--good)';
+  const L = [...G.values()].map(g => ({...g, n: g.a.length, med: q(g.a, .5), p90: q(g.a, .9), max: Math.max(...g.a)})).sort((a, b) => b.med - a.med);
+  const since = PERF.length ? new Date(PERF[0].t).toLocaleString('tr-TR', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'}) : '';
+  return {title: 'Hız ölçümü', sub: `<span class="muted">${fmtN(PERF.length)} istek${since ? ' · ' + esc(since) + "'den beri" : ''}</span>`, body: `<p class="muted small" style="margin:0 0 10px">Bu cihazda her ekranın veriyi kaç saniyede getirdiği. En yavaş olan üstte. <b style="color:var(--good)">yeşil</b> 1 sn altı, <b style="color:var(--orange,#f97316)">turuncu</b> 1–3 sn, <b style="color:var(--bad)">kırmızı</b> 3 sn üstü. Birkaç saat normal kullandıktan sonra bu ekranın görüntüsünü Claude'a at.</p>
+    <div class="tbl-wrap"><table class="t"><thead><tr><th>İstek</th><th>Adet</th><th>Ortanca</th><th>Yavaş (%90)</th><th>En yavaş</th><th>Boyut</th></tr></thead><tbody>${L.length ? L.map(g => `<tr><td class="mono small">${esc(g.p.replace('/api/', ''))}${g.err ? ` <span style="color:var(--bad)">· ${fmtN(g.err)} hata</span>` : ''}</td><td>${fmtN(g.n)}</td><td style="color:${col(g.med)};font-weight:700">${sec(g.med)}</td><td style="color:${col(g.p90)}">${sec(g.p90)}</td><td style="color:${col(g.max)}">${sec(g.max)}</td><td class="small muted">${fmtN(g.kb)} KB</td></tr>`).join('') : '<tr><td colspan="6" class="muted">Henüz ölçüm yok.</td></tr>'}</tbody></table></div>
+    <div class="row" style="margin-top:10px"><button class="btn sm ghost" type="button" data-act="perf-clear">Ölçümleri sıfırla</button></div>`}; }
+// ---- Cihaz önbelleği (IndexedDB): son görülen veri açılışta anında gösterilir, yenisi arkada gelir ----
+const IDB = (() => { let p = null; const db = () => p || (p = new Promise((res, rej) => { try { const r = indexedDB.open('lb-cache', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }));
+  const tx = async (mode, fn) => { const d = await db(); return new Promise((res, rej) => { const t = d.transaction('kv', mode), q = fn(t.objectStore('kv')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); };
+  return { get: k => tx('readonly', s => s.get(k)).catch(() => undefined), set: (k, v) => tx('readwrite', s => s.put(v, k)).catch(() => {}), clear: () => tx('readwrite', s => s.clear()).catch(() => {}) }; })();
+let stSaveT = 0; function stSave(d){ clearTimeout(stSaveT); stSaveT = setTimeout(() => IDB.set('state', {v: 1, uid: S.me && S.me.id, rev: d.rev, products: d.products, orders: d.orders, returns: d.returns, moves: d.moves, settings: d.settings, sync: d.sync, me: d.me}), 1500); }
+async function bootCache(){ if (S.products && S.products.size) return false; let c; try { c = await IDB.get('state'); } catch(e) {} if (!c || c.v !== 1 || !Array.isArray(c.products)) return false;
+  S.rev = c.rev; S.products = new Map(c.products.map(p => [p.id, p])); applySets(); S.orders = c.orders || []; S.returns = c.returns || []; S.moves = c.moves || []; if (c.me) S.me = c.me; S.settings = c.settings || {}; S.sync = c.sync || S.sync;
+  for (const k in S.loaded) S.loaded[k] = true; if (S.authed !== false) { S.authed = true; render(); } return true; }
 async function api(path, body){
   const opt = body === undefined ? {method:'GET', credentials:'same-origin'} : {method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body:JSON.stringify(body)};
-  let r;
-  try { r = await fetch(path, opt); } catch(e) { throw new Error('Sunucuya ulaşılamadı. İnternet bağlantını kontrol et.'); }
-  if (r.status === 401 && path !== '/api/login' && !path.startsWith('/api/passkey/login')) { try { sessionStorage.removeItem('lb_live'); } catch(e) {} S.authed = false; render(); throw new Error('Oturum süresi doldu. Tekrar giriş yap.'); }
-  const data = await r.json().catch(() => ({}));
+  let r; const t0 = performance.now();
+  try { r = await fetch(path, opt); } catch(e) { perfRec(path, performance.now() - t0, 0, 0); throw new Error('Sunucuya ulaşılamadı. İnternet bağlantını kontrol et.'); }
+  if (r.status === 401 && path !== '/api/login' && !path.startsWith('/api/passkey/login')) { IDB.clear(); try { sessionStorage.removeItem('lb_live'); } catch(e) {} S.authed = false; render(); throw new Error('Oturum süresi doldu. Tekrar giriş yap.'); }
+  const txt = await r.text().catch(() => ''); perfRec(path, performance.now() - t0, txt.length, r.status); let data = {}; try { data = txt ? JSON.parse(txt) : {}; } catch(e) {}
   if (!r.ok) throw new Error(data.error || ('Sunucu hatası (' + r.status + ')'));
   return data;
 }
@@ -587,7 +606,7 @@ async function refresh(force){
     const nwKey = o => JSON.stringify(((o || {}).trendyol || {}).newOrders || null), nwChanged = nwKey(S.sync) !== nwKey(d.sync);
     if (d.me) S.me = d.me; S.settings = d.settings || {}; S.sync = d.sync || S.sync; if (d.usage) S.usage = d.usage; S.skew = Date.parse(d.now) - Date.now();
     if (!d.same) {
-      S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); applySets(); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves;
+      S.rev = d.rev; S.products = new Map(d.products.map(p => [p.id, p])); applySets(); S.orders = d.orders; S.returns = d.returns; S.moves = d.moves; stSave(d);
       for (const k in S.loaded) S.loaded[k] = true;
       if (userBusy()) S.dirty = true; else render(); // kullanıcı yazıyor / formla uğraşıyorsa ekran yenilenmez, işi bitince yenilenir
     } else if (nwChanged && S.tab === 'home') render(); // bekleyen sipariş sayısı veri sürümünden bağımsız değişebilir
@@ -612,7 +631,7 @@ function userBusy(forReload){
 }
 setInterval(() => { if (S.dirty && !userBusy()) render(); }, 3000);
 function startPolling(){
-  refresh(true);
+  bootCache().then(ok => refresh(!ok)).catch(() => refresh(true));
   if (pollTimer) return;
   // Maliyet koruması: tasarruf modunda uygulama da daha seyrek sorar
   let lastPoll = 0;
@@ -923,7 +942,7 @@ function renderDrawer(){
     ${grp('Stok & alış')}${item('stock', 'Stoklar')}${item('value', 'Stok değeri')}${item('buy', 'Sipariş ver')}${ROLE() === 'izle' ? '' : btn('ws-open', 'Kusurlu ürün düş', '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>')}
     ${ROLE() === 'depo' ? '' : grp('Para')}${item('pay', 'Ödemelerim', 'pay', S.pay && S.pay.data ? S.pay.data.sum.lateN + S.pay.data.sum.todayN : 0)}${item('profit', 'Kâr')}${item('reports', 'Raporlar')}${item('cari', 'Cariler')}${!isAdmin() ? '' : btn('add-expense', 'Gider / gelir ekle', '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M12 13v4M10 15h4"/>')}
     ${grp('Kayıtlar')}${item('moves', 'Hareketler')}
-    ${grp('Ayarlar')}${isAdmin() ? `<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>` : ''}${isAdmin() ? btn('users-open', 'Kullanıcılar', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 010 6M21 20c0-2.6-1.6-4.8-4-5.6"/>') : ''}${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
+    ${grp('Ayarlar')}${isAdmin() ? `<button class="di" data-act="dnav" data-id="__conn">${svg(ICONS.link)}Bağlantılar & yedek</button>` : ''}${isAdmin() ? btn('users-open', 'Kullanıcılar', '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 010 6M21 20c0-2.6-1.6-4.8-4-5.6"/>') : ''}${(() => { let t = 'auto'; try { t = localStorage.getItem('lb_theme') || 'auto'; } catch(e) {} return btn('theme-cycle', `Görünüm: <b style="margin-left:4px">${{auto: 'Otomatik', light: 'Açık', dark: 'Koyu'}[t] || 'Otomatik'}</b>`, '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'); })()}${btn('perf-open', 'Hız ölçümü', '<path d="M12 13l4-4"/><path d="M3.5 18a9 9 0 1117 0"/>')}${btn('security', 'Güvenlik & Face ID', '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>')}${btn('logout', 'Çıkış', ICONS.out)}
     <div class="small muted" style="padding:14px 16px 6px">Sürüm: __BUILD_TIME__</div>
   </nav>`;
 }
@@ -3960,7 +3979,8 @@ async function loadProfit(force){
   P.cache = P.cache || {};
   if (P.cache[ck] && P.data !== P.cache[ck]) { P.data = P.cache[ck]; P.err = ''; if (S.tab === 'profit') setTimeout(render, 0); }
   P.loading = true; P.key = key; P.err = '';
-  try { P.data = await api('/api/profit', {from:f.toISOString(), to:t.toISOString(), channel: P.ch || ''}); P.cache[ck] = P.data; P.at = Date.now(); }
+  if (!P.cache[ck]) IDB.get('prof:' + ck).then(c => { if (c && P.loading && P.key === key && !P.cache[ck]) { P.data = c; if (S.tab === 'profit') render(); } });
+  try { P.data = await api('/api/profit', {from:f.toISOString(), to:t.toISOString(), channel: P.ch || ''}); P.cache[ck] = P.data; P.at = Date.now(); IDB.set('prof:' + ck, P.data); }
   catch(e) { P.err = errText(e); }
   P.loading = false; if (S.tab === 'profit') render(); if (S.sheet && S.sheet.type === 'order') renderSheet(false);
 }
@@ -4948,7 +4968,7 @@ function closeSheetForce(){ S.sheet = null; $('#sheet-root').innerHTML = ''; doc
 function renderSheet(full){
   const sh = S.sheet; const root = $('#sheet-root');
   if (!sh) { root.innerHTML = ''; return; }
-  const fn = {setq:sheetSetQ, payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, users:sheetUsers, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts, fix1117:sheetFix1117, merges:sheetMerges}[sh.type];
+  const fn = {perf:sheetPerf, setq:sheetSetQ, payedit:sheetPayEdit, mcost:sheetMissingCost, repmetric:sheetRepMetric, repdrill:sheetRepDrill, security:sheetSecurity, users:sheetUsers, breakdown:sheetBreakdown, product:sheetProduct, orphan:sheetOrphan, merge:sheetMerge, match:sheetMatch, need:sheetNeed, carirep:sheetCariRep, carirepall:sheetCariRepAll, buylist:sheetBuyList, insp:sheetInsp, waste:sheetWaste, bundle:sheetBundle, scanout:sheetScanOut, retscan:sheetRetScan, outlists:sheetOutLists, purchase:sheetPurchase, purchases:sheetPurchases, 'new-product':sheetNewProduct, order:sheetOrder, 'new-order':sheetNewOrder, 'new-return':sheetNewReturn, 'ty-reject':sheetTyReject, labels:sheetLabels, kayitli:sheetKayitli, 'ret-shape':sheetRetShape, import:sheetImport, costs:sheetCosts, fix1117:sheetFix1117, merges:sheetMerges}[sh.type];
   const r = fn();
   const existing = root.querySelector('.sheet');
   if (!full && existing && existing.dataset.type === sh.type && existing.dataset.id === String(sh.id||'')) {
@@ -5111,6 +5131,8 @@ document.addEventListener('click', async e => {
     case 'vsort': S.vsort = id; render(); break;
     case 'vfilter': S.vfilter = id; render(); break;
     case 'product': openSheet('product', {id, mode:'in'}); break;
+    case 'perf-open': openSheet('perf', {}); break;
+    case 'perf-clear': PERF.length = 0; try { localStorage.removeItem('lb-perf'); } catch(e) {} renderSheet(false); break;
     case 'setq-open': openSheet('setq', {}); break;
     case 'hideout': case 'showout': { const p = S.products.get(id); if (!p || b.disabled) break; const on = act === 'hideout'; b.disabled = true;
       await run(async () => { await api('/api/products/hideout', {keys: [id], on}); p.hideOut = on; render(); toast(on ? 'Gizlendi. Filtrelerdeki "Gizlenenler"den geri açabilirsin; stok gelince kendiliğinden görünür.' : 'Tükenen listesine geri alındı.'); }); b.disabled = false; break; }
@@ -5702,7 +5724,7 @@ document.addEventListener('click', async e => {
     case 'resync-products': await run(async () => { let created = 0;
       for (let i = 0; i < 40; i++) { toast(`Trendyol ürün listesi taranıyor… (sayfa ${i * 2 + 1})`); const r = await api('/api/trendyol/products-now', {first: i === 0}); created += r.created || 0; if (r.finished) break; }
       await refresh(true); toast(created ? `Tarama bitti · ${fmtN(created)} yeni ürün eklendi.` : 'Tarama bitti · yeni ürün yok (ürün Trendyol\'da onaylı mı, stok kodu başka bir ürünle aynı mı?).'); }); break;
-    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; S.me = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
+    case 'logout': try { await fetch('/api/logout', {method:'POST'}); } catch(e){} IDB.clear(); S.products = new Map(); try { ['lb_seen','lb_home','lb_mkt','lb_wx'].forEach(k => localStorage.removeItem(k)); sessionStorage.removeItem('lb_live'); } catch(e) {} S.authInfo = null; S.me = null; closeSheetForce(); S.authed = false; S.rev = null; render(); break;
     case 'close': closeSheet(); break;
     case 'fix1117-ok': closeSheet(); api('/api/fix1117', {seen: 1}).catch(() => {}); break;
   }
