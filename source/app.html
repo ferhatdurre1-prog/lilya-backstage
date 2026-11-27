@@ -677,13 +677,14 @@ function renderAlerts(){
   const el = $('#ticker'); if (!el) return; if (!S.authed) { el.hidden = true; return; }
   const ty = S.sync.trendyol || {}, nw = ty.newOrders || {}, q = ty.qnaWaiting || 0, r = retActionCount(), pend = (nw.n || 0) + (nw.sh || 0), old = nw.old || 0, sr = nw.srWait || 0;
   const zero = S.products ? productsArr().filter(p => p.qty <= 0 && !p.mto).length : 0;
-  const A = [['note', '', '', 'Şervan iban at :)']]; // geçici not
+  const A = [];
   if (q) A.push(['questions', '', 'Bekleyen soru', fmtN(q)]);
   if (r) A.push(['returns', '', 'İade talebi', fmtN(r)]);
   if (pend) A.push(['orders-new', '', 'Kargolanacak sipariş', fmtN(pend) + (nw.sh ? ` (Trendyol ${fmtN(nw.n || 0)} · Shopify ${fmtN(nw.sh)})` : '')]);
   if (old) A.push(['orders-new', 'bad', 'Geç kalıyor', `${fmtN(old)} sipariş 1 günden eski`]);
   if (zero) A.push(['home-stock', '', 'Stoğu biten ürün', fmtN(zero)]);
   if (sr) A.push(['tab', nw.srStuck ? 'bad' : '', 'Sürat takip no bekleyen', fmtN(sr) + (nw.srStuck ? ` (${fmtN(nw.srStuck)} tanesi 1 günden eski)` : '')]);
+  A.length = 0; A.push(['note', '', '', 'ŞEROOOOOOO İBAN AT']); // geçici: bantta sadece bu not döner (silinince uyarılar geri gelir)
   const key = JSON.stringify(A); if (key === alertKey && !el.hidden) return; alertKey = key;
   const id = (a) => a[0] === 'home-stock' ? 'zero' : a[0] === 'tab' ? 'addr' : a[0] === 'questions' || a[0] === 'returns' ? a[0] : '';
   const act = (a) => a[0] === 'questions' || a[0] === 'returns' ? 'tab' : a[0];
